@@ -211,6 +211,21 @@ def _merge_result(stats, skipped_list, mesh_path, nif_str, r):
     else:
         stats['skipped'] += 1
         skipped_list.append((rel, r.get('skip_reason', '?')))
+    _merge_graph_error(stats, skipped_list, rel, r)
+
+
+def _merge_graph_error(stats, skipped_list, rel, r):
+    """Count a written mesh whose behaviour graph, or its pose holds, failed.
+
+    GRAPH: no graph was built, the mesh has no BGED.  HOLDS: the graph was
+    built without pose holds.  A tree that could not be installed is the
+    mesh's own error, 'TREE', and is already counted.
+    """
+    for key, tag in (('animobject_error', 'GRAPH'), ('hold_plan_error', 'HOLDS')):
+        if r.get(key) and not r.get('error'):
+            stats['errors'] += 1
+            skipped_list.append(
+                (rel, f'{tag} ' + str(r[key]).split('\n')[0][:160]))
 
 
 def _progress(stats, mesh_path, nif_str, done, total):
@@ -350,7 +365,10 @@ def _report_batch(stats, skipped_list, total, parallax):
           f'{total} total')
     if skipped_list:
         print(f'\nFailed/Skipped ({len(skipped_list)}) -- '
-              f'RD=read fail, WR=write fail, EXC=exception:')
+              f'RD=read fail, WR=write fail, EXC=exception, '
+              f'GRAPH=written with no BGED, unanimated, '
+              f'HOLDS=graph built without pose holds, '
+              f'TREE=BGED names a tree that could not be installed:')
         for rel, reason in sorted(skipped_list):
             print(f'  [{reason}] {rel}')
     _report_warnings(stats)

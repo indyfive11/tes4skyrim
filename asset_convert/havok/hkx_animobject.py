@@ -44,8 +44,11 @@ selects it, so `PlayAnimation("Forward")` sends `Forward` and the state machine
 transitions to the generator bound to the 'Forward' NiControllerSequence.
 """
 
+import collections
 import os
+import shutil
 import struct
+import time
 
 from asset_convert.havok.hkx_xml import HkxPackfile, compile_hkx, convert_hkx_to_amd64
 
@@ -89,12 +92,7 @@ def fix_identity_quat(hkx_path: str) -> bool:
         f.write(data[:idx] + _POSE_BYTES + data[idx + len(_POSE_BYTES):])
     return True
 
-# Wildcard transition: any state may be interrupted by any event.  Doors are
-# re-activated mid-swing constantly, so a blocked transition reads in-game as
-# "the door ignored me".  Vanilla's per-state arrays use plain
-# FLAG_DISABLE_CONDITION (they are already reached from one specific state);
-# ours live on the state machine's `wildcardTransitions`, which is what makes
-# them global, so DISABLE_CONDITION is the only flag needed.
+#: Flags of every per-state transition row, exactly as vanilla's Gamebryo machines write them.
 _TRANSITION_FLAGS = 'FLAG_DISABLE_CONDITION'
 
 # hkbStateMachineTimeInterval, "no interval restriction" — vanilla writes this
@@ -118,12 +116,12 @@ _AUTOLOOP_SEQUENCE = 'AutoLoop'   # where the real ambient motion lives
 VANILLA_AUTOPLAY_BGED = 'GenericBehaviors\\Autoplay.hkx'
 
 #: Sequences an object plays from load, most preferred first; SpecialIdle is Oblivion's rest group when no Idle exists.
-_LOAD_SEQUENCES = (_AUTOLOOP_SEQUENCE, _AUTOPLAY_SEQUENCE, 'SpecialIdle')
+LOAD_SEQUENCES = (_AUTOLOOP_SEQUENCE, _AUTOPLAY_SEQUENCE, 'SpecialIdle')
 
 
 def _start_state_id(sequences: list, rest_id: int) -> int:
-    """Start state: the first `_LOAD_SEQUENCES` name present, else `rest_id`."""
-    return next((sequences.index(s) for s in _LOAD_SEQUENCES if s in sequences),
+    """Start state: the first `LOAD_SEQUENCES` name present, else `rest_id`."""
+    return next((sequences.index(s) for s in LOAD_SEQUENCES if s in sequences),
                 rest_id)
 
 # Vanilla's fixed dummy bone name for single-bone animated objects
@@ -136,6 +134,25 @@ DUMMY_BONE = 'x_SingleBone'
 
 #: Graph event a `SoundPlay.<SNDR>` NIF text key raises; every vanilla sounded object graph declares it.
 SOUND_EVENT = 'SoundPlay'
+
+#: Graph event a NIF `end` text key raises; it moves a finished sequence onto its hold state.
+HOLD_EVENT = 'End'
+
+#: A compiled project awaiting its NIF: the BGED value, where it was built, and where it belongs.
+StagedProject = collections.namedtuple('StagedProject', 'bged stage_dir final_dir')
+
+#: Name prefix of every Gamebryo generator, and how far past it in the string pool its pSequence sits.
+_GENERATOR_PREFIX = 'GamebryoSequenceGenerator'
+_PSEQUENCE_WINDOW = 7
+
+#: How often the staged tree's move into place is tried before it is copied instead, and the pause between.
+_SWAP_TRIES = 3
+_SWAP_PAUSE = 0.1
+
+#: Folder suffixes of the final tree, one being built and one being replaced: equal length, for MAX_PATH.
+_TREE_SUFFIX = '_behavior'
+_STAGE_SUFFIX = '_hkxstage'
+_ASIDE_SUFFIX = '_hkxaside'
 
 
 def skeleton_xml(root_bone: str) -> str:
@@ -284,20 +301,12 @@ def _character_xml(name: str, behavior_file: str, skeleton_file: str) -> str:
     return pf.render(top)
 
 
-def behavior_xml(graph_name: str, sequences: list) -> str:
-    """State machine with one BGSGamebryoSequenceGenerator per NIF sequence.
+def _transition_effect(pf):
+    """The one blend every transition row shares.
 
-    `sequences` are the NiControllerSequence names from the converted NIF.
-    Each becomes a same-named event, so PlayAnimation("<seq>") selects it;
-    SOUND_EVENT follows them so the NIF's sound keys reach the engine.
+    Field set, order and values are vanilla's "BlendingTransitionEffectGB";
+    `flags` is the integer 0, not a FLAG_* name.
     """
-    pf = HkxPackfile(first_id=100)
-
-    events = list(sequences) + [SOUND_EVENT]
-    eid = {n: i for i, n in enumerate(events)}
-
-    # Field set/order/values copied from the vanilla template's
-    # "BlendingTransitionEffectGB" (flags is the integer 0, NOT a FLAG_* name).
     fx = pf.add('hkbBlendingTransitionEffect')
     fx.param('variableBindingSet', 'null')
     fx.param('userData', 0)
@@ -310,143 +319,127 @@ def behavior_xml(graph_name: str, sequences: list) -> str:
     fx.param('flags', 0)
     fx.param('endMode', 'END_MODE_NONE')
     fx.param('blendCurve', 'BLEND_CURVE_SMOOTH')
+    return fx
 
-    def _transitions(exclude_state=None):
-        """Per-state array: every sequence event reachable from this state.
 
-        Transitions must live ON THE STATE, not only in the machine's
-        `wildcardTransitions` — vanilla's Gamebryo state machine sets
-        wildcardTransitions=null and gives each state its own array (State00
-        carries event 0 -> state 4).  With a null array the state is a DEAD
-        END: once the machine started in Rest, no event could leave it and the
-        wall stopped opening from both the quest and console `activate`.
-        """
-        rows = [(eid[s], j) for j, s in enumerate(sequences)
-                if j != exclude_state]
-        if not rows and exclude_state is not None:
-            # A SINGLE-sequence object (IDCrumbleWall01's only sequence is
-            # `Unequip`) has no "other" sequence to reach, so the exclusion
-            # empties the array and the state ships transitions=null -- the
-            # exact dead end this docstring warns about.  The exclusion only
-            # exists to stop a repeated event restarting the sequence mid-play;
-            # a dead end is strictly worse, because the object can then never be
-            # re-played at all (OnReset and every repeat activation were inert).
-            # Keep the self-transition in that case.
-            rows = [(eid[sequences[exclude_state]], exclude_state)]
-        if not rows:
-            return 'null'
-        arr = pf.add('hkbStateMachineTransitionInfoArray')
-        arr.param_raw('transitions', '\n'.join(
-            '<hkobject>\n'
-            f'\t<hkparam name="triggerInterval">\n{_INTERVAL}\n\t</hkparam>\n'
-            f'\t<hkparam name="initiateInterval">\n{_INTERVAL}\n\t</hkparam>\n'
-            f'\t<hkparam name="transition">{fx.ref}</hkparam>\n'
-            '\t<hkparam name="condition">null</hkparam>\n'
-            f'\t<hkparam name="eventId">{ev}</hkparam>\n'
-            f'\t<hkparam name="toStateId">{to}</hkparam>\n'
-            '\t<hkparam name="fromNestedStateId">0</hkparam>\n'
-            '\t<hkparam name="toNestedStateId">0</hkparam>\n'
-            '\t<hkparam name="priority">0</hkparam>\n'
-            f'\t<hkparam name="flags">{_TRANSITION_FLAGS}</hkparam>\n'
-            '</hkobject>'
-            for ev, to in rows), numelements=len(rows))
-        return arr.ref
+def _transition_array(pf, fx, rows):
+    """Ref of one state's transition array for `rows` of (event id, state id).
 
-    states = []
-    for i, seq in enumerate(sequences):
-        gen = pf.add('BGSGamebryoSequenceGenerator')
-        gen.param('variableBindingSet', 'null')
-        gen.param('userData', 0)
-        gen.param('name', f'GamebryoSequenceGenerator{i:02d}')
-        # Exactly these three params, in this order — matches vanilla
-        # BlackPoolSecretDoor Behavior00.hkx.  The class also declares
-        # bLooping/bDelayedActivate/fTime/events, but they are
-        # SERIALIZE_IGNORED and must NOT be emitted.
-        # The whole point: name the NIF's NiControllerSequence.
-        gen.param('pSequence', seq)
-        gen.param('eBlendModeFunction', 'BMF_NONE')
-        gen.param('fPercent', '1.000000')
-
-        st = pf.add('hkbStateMachineStateInfo')
-        st.param('variableBindingSet', 'null')
-        st.param_array('listeners', [])
-        st.param('enterNotifyEvents', 'null')
-        st.param('exitNotifyEvents', 'null')
-        # Reach every OTHER sequence from here (a self-transition would restart
-        # the sequence mid-play on a repeated event).
-        st.param('transitions', _transitions(exclude_state=i))
-        st.param('generator', gen.ref)
-        st.param('name', seq)
-        st.param('stateId', i)
-        st.param('probability', '1.000000')
-        st.param('enable', 'true')
-        states.append(st)
-
-    # Rest state — the state machine STARTS here and plays nothing.
-    #
-    # Vanilla starts on an idle: BlackPoolSecretDoor's startStateId is 3 =
-    # AnimIdle01, and the motion (AnimPlay01) is only ever reached by event.
-    # Oblivion sources have no idle sequence — a converted wall has just
-    # Forward/Backward — so starting on state 0 made the engine play the OPEN
-    # animation the instant the object loaded: the secret wall swung open by
-    # itself instead of waiting for the CharacterGen switch.
-    #
-    # A generator whose pSequence names nothing holds the NIF's authored rest
-    # pose, which is exactly the "closed" state.  It is the LAST state so the
-    # event -> stateId mapping of the real sequences is untouched.
-    rest_gen = pf.add('BGSGamebryoSequenceGenerator')
-    rest_gen.param('variableBindingSet', 'null')
-    rest_gen.param('userData', 0)
-    rest_gen.param('name', 'GamebryoSequenceGeneratorRest')
-    rest_gen.param('pSequence', '')
-    rest_gen.param('eBlendModeFunction', 'BMF_NONE')
-    rest_gen.param('fPercent', '1.000000')
-
-    rest_id = len(sequences)
-    rest = pf.add('hkbStateMachineStateInfo')
-    rest.param('variableBindingSet', 'null')
-    rest.param_array('listeners', [])
-    rest.param('enterNotifyEvents', 'null')
-    rest.param('exitNotifyEvents', 'null')
-    # MUST be able to reach every sequence — this is the start state.
-    rest.param('transitions', _transitions())
-    rest.param('generator', rest_gen.ref)
-    rest.param('name', 'Rest')
-    rest.param('stateId', rest_id)
-    rest.param('probability', '1.000000')
-    rest.param('enable', 'true')
-    states.append(rest)
-
-    # Global wildcard transitions: event <seq> -> state <seq>, from anywhere.
-    # trigger/initiateInterval are NESTED hkobjects (hkbStateMachineTimeInterval),
-    # not tuple literals — param_structs renders values inline and cannot express
-    # that, so the body is built by hand to match the vanilla template exactly.
-    trans = pf.add('hkbStateMachineTransitionInfoArray')
-    trans.param_raw('transitions', '\n'.join(
+    'null' for no rows, which makes the state a dead end.  The intervals are
+    nested structs, so the body is rendered by hand.
+    See: docs/commentary/asset_convert_animation.md#transitions-live-on-the-state
+    """
+    if not rows:
+        return 'null'
+    arr = pf.add('hkbStateMachineTransitionInfoArray')
+    arr.param_raw('transitions', '\n'.join(
         '<hkobject>\n'
         f'\t<hkparam name="triggerInterval">\n{_INTERVAL}\n\t</hkparam>\n'
         f'\t<hkparam name="initiateInterval">\n{_INTERVAL}\n\t</hkparam>\n'
         f'\t<hkparam name="transition">{fx.ref}</hkparam>\n'
         '\t<hkparam name="condition">null</hkparam>\n'
-        f'\t<hkparam name="eventId">{eid[seq]}</hkparam>\n'
-        f'\t<hkparam name="toStateId">{i}</hkparam>\n'
+        f'\t<hkparam name="eventId">{ev}</hkparam>\n'
+        f'\t<hkparam name="toStateId">{to}</hkparam>\n'
         '\t<hkparam name="fromNestedStateId">0</hkparam>\n'
         '\t<hkparam name="toNestedStateId">0</hkparam>\n'
         '\t<hkparam name="priority">0</hkparam>\n'
         f'\t<hkparam name="flags">{_TRANSITION_FLAGS}</hkparam>\n'
         '</hkobject>'
-        for i, seq in enumerate(sequences)), numelements=len(sequences))
+        for ev, to in rows), numelements=len(rows))
+    return arr.ref
 
+
+def _sequence_rows(sequences, eid, state):
+    """Rows out of sequence state `state`: every other sequence, then itself if lone.
+
+    Lone means no other sequence at all, or a one-shot whose only neighbours
+    are load sequences: its self-row is what lets a finished one-shot replay.
+    See: docs/commentary/asset_convert_animation.md#transitions-live-on-the-state
+    """
+    others = [j for j in range(len(sequences)) if j != state]
+    rows = [(eid[sequences[j]], j) for j in others]
+    lone_shot = (sequences[state] not in LOAD_SEQUENCES
+                 and all(sequences[j] in LOAD_SEQUENCES for j in others))
+    if lone_shot or not rows:
+        rows.append((eid[sequences[state]], state))
+    return rows
+
+
+def _state(pf, fx, name, state_id, generator, sequence, rows):
+    """One state whose generator plays NIF sequence `sequence`.
+
+    The generator takes exactly pSequence, eBlendModeFunction and fPercent;
+    an empty `sequence` plays nothing.
+    See: docs/commentary/asset_convert_animation.md#animated-object-behaviour-graphs
+    """
+    gen = pf.add('BGSGamebryoSequenceGenerator')
+    gen.param('variableBindingSet', 'null')
+    gen.param('userData', 0)
+    gen.param('name', generator)
+    gen.param('pSequence', sequence)
+    gen.param('eBlendModeFunction', 'BMF_NONE')
+    gen.param('fPercent', '1.000000')
+
+    st = pf.add('hkbStateMachineStateInfo')
+    st.param('variableBindingSet', 'null')
+    st.param_array('listeners', [])
+    st.param('enterNotifyEvents', 'null')
+    st.param('exitNotifyEvents', 'null')
+    st.param('transitions', _transition_array(pf, fx, rows))
+    st.param('generator', gen.ref)
+    st.param('name', name)
+    st.param('stateId', state_id)
+    st.param('probability', '1.000000')
+    st.param('enable', 'true')
+    return st
+
+
+def _states(pf, fx, sequences, holds, eid):
+    """Every state in array order: one per sequence, Rest, then one per hold.
+
+    Rest plays nothing and reaches every sequence.  A held sequence gains an
+    End row to its hold; the hold carries that state's rows minus End.  Every
+    sequence owns one hold id slot, held or not, so no id depends on which
+    other sequences are held.
+    See: docs/commentary/asset_convert_animation.md#end-hold-states
+    """
+    rest_id = len(sequences)
+    held = [i for i, seq in enumerate(sequences) if seq in holds]
+    hold_id = {i: rest_id + 1 + i for i in held}
+    states = []
+    for i, seq in enumerate(sequences):
+        rows = _sequence_rows(sequences, eid, i)
+        if i in hold_id:
+            rows = rows + [(eid[HOLD_EVENT], hold_id[i])]
+        states.append(_state(pf, fx, seq, i,
+                             f'GamebryoSequenceGenerator{i:02d}', seq, rows))
+    states.append(_state(pf, fx, 'Rest', rest_id,
+                         'GamebryoSequenceGeneratorRest', '',
+                         [(eid[seq], j) for j, seq in enumerate(sequences)]))
+    for i in held:
+        hold = holds[sequences[i]]
+        states.append(_state(pf, fx, hold, hold_id[i],
+                             f'GamebryoSequenceGeneratorHold{i:02d}', hold,
+                             _sequence_rows(sequences, eid, i)))
+    return states
+
+
+def _state_machine(pf, graph_name, states, start_id):
+    """The machine over `states`, starting on `start_id`, with no wildcards.
+
+    `eventToSendWhenStateOrTransitionChanges` is an inline struct, not a
+    pointer; looping is the sequence's own cycle type, never the machine's.
+    See: docs/commentary/asset_convert_animation.md#transitions-live-on-the-state
+    """
     sm = pf.add('hkbStateMachine')
     sm.param('variableBindingSet', 'null')
     sm.param('userData', 0)
     sm.param('name', f'{graph_name}SM')
-    # Inline struct, NOT a pointer — a bare 'null' here fails to compile.
     sm.param_raw('eventToSendWhenStateOrTransitionChanges', (
         '<hkobject>\n\t<hkparam name="id">-1</hkparam>\n'
         '\t<hkparam name="payload">null</hkparam>\n</hkobject>'))
     sm.param('startStateChooser', 'null')
-    sm.param('startStateId', _start_state_id(sequences, rest_id))
+    sm.param('startStateId', start_id)
     sm.param('returnToPreviousStateEventId', -1)
     sm.param('randomTransitionEventId', -1)
     sm.param('transitionToNextHigherStateEventId', -1)
@@ -455,16 +448,19 @@ def behavior_xml(graph_name: str, sequences: list) -> str:
     sm.param('wrapAroundStateId', 'false')
     sm.param('maxSimultaneousTransitions', 32)
     sm.param('startStateMode', 'START_STATE_MODE_DEFAULT')
-    # Vanilla's shared AutoPlay graph (GenericBehaviors\Autoplay.hkx) decodes
-    # to selfTransitionMode=0, so this stays NO_TRANSITION.  Looping is the
-    # SEQUENCE's own cycle type, not the state machine's: an ambient sequence
-    # loops because it is CYCLE_LOOP, and FORCE_TRANSITION_TO_START_STATE
-    # (tried 2026-08-18) did not make a CLAMP sequence loop.
     sm.param('selfTransitionMode', 'SELF_TRANSITION_MODE_NO_TRANSITION')
     sm.params.append(('states', ' '.join(s.ref for s in states),
                       f'array:{len(states)}'))
-    sm.param('wildcardTransitions', trans.ref)
+    sm.param('wildcardTransitions', 'null')
+    return sm
 
+
+def _graph_data(pf, events):
+    """The graph's event table: `events` by id, and no variables at all.
+
+    The word min/max arrays must sit between eventInfos and
+    variableInitialValues, or hkxcmd fails the compile silently.
+    """
     strings = pf.add('hkbBehaviorGraphStringData')
     strings.param_strings('eventNames', events)
     strings.param_array('attributeNames', [])
@@ -481,12 +477,34 @@ def behavior_xml(graph_name: str, sequences: list) -> str:
     gdata.param_array('variableInfos', [])
     gdata.param_structs('characterPropertyInfos', [])
     gdata.param_structs('eventInfos', [[('flags', 0)] for _ in events])
-    # hkxcmd's class definition orders these between eventInfos and
-    # variableInitialValues; omitting them fails the compile silently.
     gdata.param_array('wordMinVariableValues', [])
     gdata.param_array('wordMaxVariableValues', [])
     gdata.param('variableInitialValues', values.ref)
     gdata.param('stringData', strings.ref)
+    return gdata
+
+
+def behavior_xml(graph_name: str, sequences: list, holds: dict = None) -> str:
+    """State machine with one BGSGamebryoSequenceGenerator per NIF sequence.
+
+    `sequences` are the NiControllerSequence names from the converted NIF.
+    Each becomes a same-named event, so PlayAnimation("<seq>") selects it;
+    SOUND_EVENT follows them so the NIF's sound keys reach the engine.
+    `holds` maps a sequence to its one-frame hold sequence: HOLD_EVENT is then
+    declared last and moves the finished sequence onto the hold's state.
+    See: docs/commentary/asset_convert_animation.md#end-hold-states
+    """
+    holds = {seq: hold for seq, hold in (holds or {}).items()
+             if seq in sequences}
+    events = list(sequences) + [SOUND_EVENT] + ([HOLD_EVENT] if holds else [])
+    eid = {n: i for i, n in enumerate(events)}
+
+    pf = HkxPackfile(first_id=100)
+    fx = _transition_effect(pf)
+    states = _states(pf, fx, sequences, holds, eid)
+    sm = _state_machine(pf, graph_name, states,
+                        _start_state_id(sequences, len(sequences)))
+    gdata = _graph_data(pf, events)
 
     graph = pf.add('hkbBehaviorGraph')
     graph.param('variableBindingSet', 'null')
@@ -503,61 +521,74 @@ def behavior_xml(graph_name: str, sequences: list) -> str:
     return pf.render(top)
 
 
-def generate_animobject_project(out_root: str, model_rel: str,
-                                sequences: list) -> str:
-    """Write the 4-file hkx tree for one animated object.
+def graph_generators(sequences: list, holds: dict = None) -> dict:
+    """{generator name: NIF sequence it plays} for the graph `behavior_xml` emits.
 
-    out_root:  output meshes root (…/output/<plugin>/meshes)
-    model_rel: NIF path relative to that root, e.g.
-               'tes4/dungeons/chargen/prisonsecretwall01.nif'
-    sequences: NiControllerSequence names in the converted NIF.
-
-    Returns the BGED value (data-relative path of the project hkx, backslashed)
-    or '' when there is nothing to animate.
+    Rest maps to the empty name.  This is what a compiled graph must contain.
     """
-    if not sequences:
-        return ''
+    held = {seq: hold for seq, hold in (holds or {}).items()
+            if seq in sequences}
+    out = {f'GamebryoSequenceGenerator{i:02d}': seq
+           for i, seq in enumerate(sequences)}
+    out['GamebryoSequenceGeneratorRest'] = ''
+    out.update({f'GamebryoSequenceGeneratorHold{sequences.index(seq):02d}': hold
+                for seq, hold in held.items()})
+    return out
 
-    # Ambient meshes use VANILLA'S OWN shared AutoPlay graph instead of a
-    # generated per-mesh project.
-    #
-    # All 63 self-playing vanilla meshes (atronach skins, dragon-priest mist,
-    # steam vents, the camera-attach weather effects) store
-    # 'GenericBehaviors\\Autoplay.hkx' in their BGED; none ships a project of
-    # its own.  Its four files are present in vanilla SSE, so pointing at it
-    # ships nothing extra.
-    #
-    # Vanilla proves this graph drives SKINNED bone animation off a
-    # single-bone rig, which is what an arena spectator needs:
-    # effects\\trailerfx\\tfxdsflight.nif is non-actor, skinned over 17
-    # bones, animates 13 NiTransformControllers, and runs on this graph.
-    #
-    # Read out of the live engine on a converted arena spectator
-    # (2026-08-18): the graph binds, AutoplayState plays 'AutoPlay' to its
-    # end, hands off to AutoLoopState, and 'AutoLoop' runs from there.
-    #
-    # Scoped to meshes whose sequences are ONLY ambient.  Anything a script
-    # drives by name (Forward/Backward/SpecialIdle) keeps its generated
-    # project: the shared graph has no state for those events, so
-    # PlayAnimation() would have nothing to transition to.
-    if all(seq in (_AUTOPLAY_SEQUENCE, _AUTOLOOP_SEQUENCE) for seq in sequences):
-        return VANILLA_AUTOPLAY_BGED
 
-    rel_dir = os.path.dirname(model_rel).replace('\\', '/')
-    stem = os.path.splitext(os.path.basename(model_rel))[0]
-    # Sibling folder per model, so two animated NIFs in one directory never
-    # collide on Characters\Character01.hkx.
-    proj_dir = os.path.join(out_root, *rel_dir.split('/'), stem + '_behavior')
+def compiled_generators(hkx_path) -> dict:
+    """{generator name: the sequence it plays} read from a compiled graph.
 
+    The string pool stores a generator's pSequence right after its name; an
+    empty pSequence leaves nothing before the next generator, and reads ''.
+    """
+    with open(hkx_path, 'rb') as f:
+        pool = [p.decode('latin-1') for p in f.read().split(b'\x00')]
+    found = {}
+    for i, name in enumerate(pool):
+        if not name.startswith(_GENERATOR_PREFIX):
+            continue
+        after = [p for p in pool[i + 1:i + 1 + _PSEQUENCE_WINDOW] if p]
+        plays = after[0] if after else ''
+        found[name] = '' if plays.startswith(_GENERATOR_PREFIX) else plays
+    return found
+
+
+def _verify_compiled_graph(hkx_path, sequences, holds):
+    """Raise unless each compiled generator plays exactly what it should.
+
+    hkxcmd exits 0 on a dangling reference and writes a smaller graph, so a
+    successful compile is not evidence of structure.  Transition rows are not
+    read: only the generators, what each plays, and the End event.
+    See: docs/commentary/asset_convert_animation.md#graph-and-nif-move-together
+    """
+    want = graph_generators(sequences, holds)
+    got = compiled_generators(hkx_path)
+    wrong = sorted(f'{gen} plays {got.get(gen)!r}, expected {seq!r}'
+                   for gen, seq in want.items() if got.get(gen) != seq)
+    wrong += sorted(f'unexpected generator {gen}' for gen in set(got) - set(want))
+    with open(hkx_path, 'rb') as f:
+        has_end = HOLD_EVENT.encode('ascii') in f.read().split(b'\x00')
+    if len(want) > len(sequences) + 1 and not has_end:
+        wrong.append(f'{HOLD_EVENT} event not declared')
+    if wrong:
+        raise RuntimeError(f'compiled graph {hkx_path} is wrong: {wrong}')
+
+
+def _compile_tree(proj_dir, stem, sequences, holds):
+    """Compile the four hkx files of one project into `proj_dir`.
+
+    The skeleton bone is always DUMMY_BONE; its pose is repaired while the
+    file is still WIN32, and the AMD64 step is last for every file.
+    See: docs/commentary/asset_convert_animation.md#animated-object-behaviour-graphs
+    """
     char_rel = os.path.join('Characters', 'Character01.hkx')
     behv_rel = os.path.join('Behaviors', 'Behavior00.hkx')
     skel_rel = os.path.join('CharacterAssets', 'Skeleton.hkx')
-
     targets = [
-        # The bone is a placeholder, NOT a node in the NIF — always the vanilla
-        # dummy name (see DUMMY_BONE).
         (os.path.join(proj_dir, skel_rel), skeleton_xml(DUMMY_BONE), True),
-        (os.path.join(proj_dir, behv_rel), behavior_xml(stem, sequences), False),
+        (os.path.join(proj_dir, behv_rel),
+         behavior_xml(stem, sequences, holds), False),
         (os.path.join(proj_dir, char_rel),
          _character_xml(stem, behv_rel, skel_rel), False),
         (os.path.join(proj_dir, stem + '.hkx'), _project_xml(char_rel), False),
@@ -571,19 +602,140 @@ def generate_animobject_project(out_root: str, model_rel: str,
         compile_hkx(xml_path, path)
         os.remove(xml_path)
         if is_skeleton:
-            # hkxcmd writes a ZERO reference-pose quaternion; must be repaired
-            # while the file is still WIN32 (the AMD64 output is not readable
-            # back by hkxcmd, and the pose offset shifts once converted).
             fix_identity_quat(path)
-        # SSE only loads 64-bit packfiles; must be the last step per hkx_xml.
         convert_hkx_to_amd64(path)
+    _verify_compiled_graph(os.path.join(proj_dir, behv_rel), sequences, holds)
 
-    # BGED is relative to meshes\, NOT data\ — the engine prepends "Meshes\%s"
-    # itself.  A leading 'meshes\' here resolves to Meshes\meshes\... , the
-    # project is never found, the object gets no animation graph and IS NEVER
-    # RENDERED — while NifSkope, which never loads the hkx, shows it animating
-    # perfectly.  Vanilla agrees: NocturnalsSecretDoor01 stores
-    # 'Clutter\BlackPool\BlackPoolSecretDoor\NocturnalsSecretDoor01.hkx', and
-    # our own working bow rig stores 'Weapons\Bow\BowProject.hkx'.
-    bged = '/'.join([rel_dir, stem + '_behavior', stem + '.hkx'])
-    return bged.replace('/', '\\')
+
+def stage_animobject_project(out_root: str, model_rel: str, sequences: list,
+                             holds: dict = None) -> StagedProject:
+    """Compile one animated object's hkx tree into a staging folder.
+
+    out_root is the output meshes root and model_rel the NIF path under it.
+    Nothing reaches the final `<stem>_behavior` folder until
+    `commit_animobject_project`.  Ambient-only meshes name vanilla's shared
+    graph and stage nothing; no sequences means no graph (empty BGED).
+    See: docs/commentary/asset_convert_animation.md#graph-and-nif-move-together
+    """
+    if not sequences:
+        return StagedProject('', None, None)
+    if all(seq in (_AUTOPLAY_SEQUENCE, _AUTOLOOP_SEQUENCE) for seq in sequences):
+        return StagedProject(VANILLA_AUTOPLAY_BGED, None, None)
+
+    rel_dir, stem, final_dir = _project_dir(out_root, model_rel)
+    stage_dir = final_dir[:-len(_TREE_SUFFIX)] + _STAGE_SUFFIX
+    shutil.rmtree(stage_dir, ignore_errors=True)
+    if os.path.lexists(stage_dir):
+        raise RuntimeError(f'staging folder cannot be cleared: {stage_dir}')
+    try:
+        _compile_tree(stage_dir, stem, sequences, holds)
+    except BaseException:
+        shutil.rmtree(stage_dir, ignore_errors=True)
+        raise
+    bged = '/'.join([rel_dir, stem + _TREE_SUFFIX, stem + '.hkx'])
+    return StagedProject(bged.replace('/', '\\'), stage_dir, final_dir)
+
+
+def _project_dir(out_root, model_rel):
+    """(folder of the model under out_root as posix, model stem, final tree folder)."""
+    rel_dir = os.path.dirname(model_rel).replace('\\', '/')
+    stem = os.path.splitext(os.path.basename(model_rel))[0]
+    return rel_dir, stem, os.path.join(out_root, *rel_dir.split('/'),
+                                       stem + _TREE_SUFFIX)
+
+
+def stale_animobject_project(out_root: str, model_rel: str) -> StagedProject:
+    """What a failed build commits: no BGED, and the old tree is removed."""
+    return StagedProject('', None, _project_dir(out_root, model_rel)[2])
+
+
+def _aside_dir(staged):
+    """Where the tree a staged project replaces waits while the NIF is written."""
+    return staged.final_dir[:-len(_TREE_SUFFIX)] + _ASIDE_SUFFIX
+
+
+def set_aside_animobject_project(staged: StagedProject) -> None:
+    """Move the tree a STAGED project replaces out of the way, before its NIF.
+
+    The old graph may name holds the new NIF lacks, so it must not sit beside
+    that NIF for a moment.  Raises OSError with nothing changed; a project
+    with nothing staged leaves its tree alone.
+    See: docs/commentary/asset_convert_animation.md#graph-and-nif-move-together
+    """
+    if staged is None or staged.stage_dir is None:
+        return
+    aside = _aside_dir(staged)
+    shutil.rmtree(aside, ignore_errors=True)
+    if os.path.lexists(aside):
+        raise OSError(f'old set-aside tree cannot be cleared: {aside}')
+    if os.path.isdir(staged.final_dir):
+        os.rename(staged.final_dir, aside)
+
+
+def restore_animobject_project(staged: StagedProject) -> None:
+    """Put a set-aside tree back; ONLY for a NIF replace that raised OSError."""
+    if staged is None or staged.stage_dir is None:
+        return
+    aside = _aside_dir(staged)
+    if os.path.isdir(aside) and not os.path.lexists(staged.final_dir):
+        os.rename(aside, staged.final_dir)
+
+
+def _install_staged_tree(staged):
+    """Move the staged tree to its final folder; copy it if the move keeps failing.
+
+    Raises OSError with no final folder left when even the copy fails: a
+    partial tree would be worse than none.
+    """
+    for attempt in range(_SWAP_TRIES):
+        try:
+            os.rename(staged.stage_dir, staged.final_dir)
+            return
+        except OSError:
+            time.sleep(_SWAP_PAUSE * attempt)
+    try:
+        shutil.copytree(staged.stage_dir, staged.final_dir)
+    except OSError:
+        shutil.rmtree(staged.final_dir, ignore_errors=True)
+        raise
+
+
+def commit_animobject_project(staged: StagedProject) -> None:
+    """Install a staged tree as a whole, once its NIF is in place.
+
+    The tree it replaces was set aside before the NIF and is deleted here.
+    A project with nothing staged removes the tree it names, if it names one.
+    Raises OSError, leaving NO tree, when the staged one cannot be installed.
+    """
+    if staged is None or staged.final_dir is None:
+        return
+    if staged.stage_dir is None:
+        shutil.rmtree(staged.final_dir, ignore_errors=True)
+        return
+    if os.path.lexists(staged.final_dir):
+        set_aside_animobject_project(staged)
+    try:
+        _install_staged_tree(staged)
+    finally:
+        shutil.rmtree(staged.stage_dir, ignore_errors=True)
+        shutil.rmtree(_aside_dir(staged), ignore_errors=True)
+
+
+def discard_animobject_project(staged: StagedProject) -> None:
+    """Drop a staged tree that will not ship; the final folder is untouched."""
+    if staged is not None and staged.stage_dir is not None:
+        shutil.rmtree(staged.stage_dir, ignore_errors=True)
+
+
+def generate_animobject_project(out_root: str, model_rel: str, sequences: list,
+                                holds: dict = None) -> str:
+    """Write the 4-file hkx tree for one animated object; return its BGED.
+
+    The BGED is the project hkx path relative to meshes\\, backslashed, or ''
+    when there is nothing to animate.  A caller that also writes the NIF
+    stages and commits around that write instead.
+    See: docs/commentary/asset_convert_animation.md#graph-and-nif-move-together
+    """
+    staged = stage_animobject_project(out_root, model_rel, sequences, holds)
+    commit_animobject_project(staged)
+    return staged.bged

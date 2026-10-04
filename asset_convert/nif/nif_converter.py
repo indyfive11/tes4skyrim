@@ -95,7 +95,14 @@ from asset_convert.nif.door_plan import latch_door_model
 from asset_convert.nif.fixture_plan import latch_fixture_model
 from asset_convert.character.body_wrap import morph_converted_to_weight1
 from asset_convert.havok.hkx_animobject import (VANILLA_AUTOPLAY_BGED,
-                                                generate_animobject_project)
+                                                commit_animobject_project,
+                                                discard_animobject_project,
+                                                restore_animobject_project,
+                                                set_aside_animobject_project,
+                                                stage_animobject_project,
+                                                stale_animobject_project)
+from asset_convert.nif.pose_hold import (apply_pose_holds, hold_names,
+                                         missing_holds, plan_pose_holds)
 from asset_convert.nif.addon_nodes_falloutnv import remap_addon_nodes
 from asset_convert.nif.gun_parts_falloutnv import add_gun_part_sequences
 from asset_convert.nif.particles import (convert_particle_system,
@@ -1229,25 +1236,18 @@ def convert_nif(src_path, dst_path, *, fix_textures=True, remap_skeleton=None,
                          biped_flags=_biped_flags,
                          tex_fallback=tex_fallback, hair=hair, race=race)
 
-    _run_post_passes(data, stats, result, src_path, dst_path, textures_only)
-
-    _harvest_textures(data, result['textures'])
-    result['overlay_diffuses'] = stats.get('overlay_diffuses', set())
-    if textures_only:
-        return _finish_result(result, stats)
-
-    buf = _io.BytesIO()
     try:
-        data.write(buf)
-    except Exception:
-        result['error'] = 'WR'
+        _run_post_passes(data, stats, result, src_path, dst_path, textures_only)
+        _harvest_textures(data, result['textures'])
+        result['overlay_diffuses'] = stats.get('overlay_diffuses', set())
+        if textures_only:
+            return _finish_result(result, stats)
+        buf = _serialize_and_write(data, stats, result, dst_path)
+    except BaseException:
+        discard_animobject_project(stats.get('_animobject_staged'))
+        raise
+    if buf is None:
         return result
-
-    dst_dir = os.path.dirname(dst_path)
-    if dst_dir:
-        os.makedirs(dst_dir, exist_ok=True)
-    with open(dst_path, 'wb') as f:
-        f.write(buf.getvalue())
     record_scan_entry(data, _output_root(dst_path)[2])
 
     _write_weight_variants(data, buf, src_path, dst_path, src_meshes_dir,
@@ -1258,6 +1258,66 @@ def convert_nif(src_path, dst_path, *, fix_textures=True, remap_skeleton=None,
             fix_textures=fix_textures, src_meshes_dir=src_meshes_dir,
             wearable_plan=wearable_plan, parallax=parallax)
     return _finish_result(result, stats)
+
+
+def _serialize_and_write(data, stats, result, dst_path):
+    """Serialize the converted NIF and write it with its staged graph tree.
+
+    Returns the serialized buffer, or None with result['error'] = 'WR' and
+    nothing on disk changed when pyffi cannot serialize the tree.
+    """
+    buf = _io.BytesIO()
+    staged = stats.get('_animobject_staged')
+    try:
+        data.write(buf)
+    except Exception:
+        discard_animobject_project(staged)
+        result['error'] = 'WR'
+        return None
+    _write_nif_then_graph(dst_path, buf, staged, result)
+    return buf
+
+
+#: Last character of a NIF's name while it is written: same folder, same length, unique per destination.
+TEMP_NIF_MARK = '~'
+
+
+def _temp_nif_path(dst_path):
+    """Where a NIF is written first: `dst_path` with its last character swapped."""
+    return str(dst_path)[:-1] + TEMP_NIF_MARK
+
+
+def _write_nif_then_graph(dst_path, buf, staged, result):
+    """Write the serialized NIF whole, with its staged graph tree around it.
+
+    The old tree is set aside BEFORE the NIF is replaced and the new one is
+    installed after, so no instant has a graph naming a hold its NIF lacks.
+    The old tree comes back only if the replace itself fails; an interrupt
+    leaves it aside. A tree that cannot be installed is error 'TREE'. The
+    caller discards the staging when this raises.
+    See: docs/commentary/asset_convert_animation.md#graph-and-nif-move-together
+    """
+    tmp_path = _temp_nif_path(dst_path)
+    try:
+        if os.path.dirname(dst_path):
+            os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+        with open(tmp_path, 'wb') as f:
+            f.write(buf.getvalue())
+        set_aside_animobject_project(staged)
+        try:
+            os.replace(tmp_path, dst_path)
+        except OSError:
+            restore_animobject_project(staged)
+            raise
+    except BaseException:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise
+    try:
+        commit_animobject_project(staged)
+    except OSError as e:
+        result['error'] = 'TREE'
+        result['animobject_error'] = str(e)
 
 
 def _output_root(dst_path):
@@ -1321,12 +1381,51 @@ def _build_height_maps(stats, dst_path):
             parallax.build_height_map(job['src'], out)
 
 
+def _stage_animobject_graph(data, seq_names, meshes_root, model_rel, result):
+    """Plan the pose holds, compile the graph that names them, then apply them.
+
+    A failure after planning records the error and returns a project that
+    only clears a stale tree: the mesh then gets no hold and no BGED, and
+    ships unanimated.  Nothing staged outlives a failure or an interrupt.
+    See: docs/commentary/asset_convert_animation.md#graph-and-nif-move-together
+    """
+    planned, staged = _plan_holds_or_none(data, seq_names, result), None
+    try:
+        staged = stage_animobject_project(meshes_root, model_rel, seq_names,
+                                          hold_names(planned))
+        apply_pose_holds(planned)
+        if missing_holds(data, planned):
+            raise RuntimeError(f'holds not registered: {missing_holds(data, planned)}')
+    except BaseException as e:
+        discard_animobject_project(staged)
+        if not isinstance(e, Exception):
+            raise
+        result['animobject_error'] = str(e)
+        return stale_animobject_project(meshes_root, model_rel)
+    return staged
+
+
+def _plan_holds_or_none(data, seq_names, result):
+    """The planned pose holds, or none when planning itself breaks.
+
+    An unexpected planning failure costs the mesh its holds, not its graph:
+    it gets the hold-less graph it had before holds existed, and the failure
+    is reported as result['hold_plan_error'].
+    """
+    try:
+        return plan_pose_holds(data, seq_names)[0]
+    except Exception as e:
+        result['hold_plan_error'] = str(e)
+        return []
+
+
 def _build_animobject_graph(data, stats, result, dst_path):
     """Give an animated object the behaviour graph PlayAnimation needs.
 
-    Runs AFTER the conversion so stripped sequences cannot become dead states,
-    and before the write so the BGED ships in the file. A gun's part
-    sequences never earn one: FalloutRuntime starts them itself.
+    Runs AFTER the conversion so stripped sequences cannot become dead states
+    and no pose hold reaches the rest-pose passes.  The tree is only staged
+    here; convert_nif moves it into place once the NIF is written. A gun's
+    part sequences never earn one: FalloutRuntime starts them itself.
     See: docs/commentary/asset_convert_nif.md#animated-object-graphs
     """
     seq_names = collect_sequence_names(data)
@@ -1339,8 +1438,11 @@ def _build_animobject_graph(data, stats, result, dst_path):
     _, meshes_root, model_rel = _output_root(dst_path)
     if meshes_root is None:
         return
+    staged = _stage_animobject_graph(data, seq_names, meshes_root, model_rel,
+                                     result)
+    stats['_animobject_staged'] = staged
     try:
-        bged = generate_animobject_project(meshes_root, model_rel, seq_names)
+        bged = staged.bged
         if bged and add_animobject_bged(data, bged):
             result['animobject_graph'] = bged
             stats['animobject_sequences'] = len(seq_names)

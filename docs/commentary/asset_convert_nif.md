@@ -1252,6 +1252,11 @@ points at it.
 Ordering matters twice: the pass runs **after** the conversion, so sequences
 stripped to nothing cannot become dead states that `PlayAnimation` would
 happily select, and **before** the write, so the BGED ships inside the file.
+The hkx tree itself is only *staged* at that point and moved into place after
+the NIF is written — see
+[never a graph that names a sequence its NIF lacks](asset_convert_animation.md#graph-and-nif-move-together).
+The same pass adds the one-frame pose-hold sequences
+([End → hold](asset_convert_animation.md#end-hold-states)).
 
 **A graph-bound mesh must ship no empty text keys.** The generator `strchr()`s
 every key value on activation and an empty `NiString` loads as a NULL pointer —
@@ -1260,11 +1265,12 @@ so the rule holds even if hkxcmd later fails and the BGED is skipped: a
 graph-less mesh with fewer dead keys loses nothing.
 
 A missing or failing hkxcmd never loses the mesh. The object still converts and
-renders; it just stays unanimated, and the error is recorded in the result.
+renders; it just stays unanimated, and the error is recorded in the result
+and counted in the batch's error list as `GRAPH`.
 
 ### <a id="specialidle-is-the-load-state"></a>SpecialIdle is the state an object loads into
 
-**Code:** `_start_state_id`, `_LOAD_SEQUENCES` in `asset_convert/havok/hkx_animobject.py`
+**Code:** `_start_state_id`, `LOAD_SEQUENCES` in `asset_convert/havok/hkx_animobject.py`
 
 The generated graph starts on a do-nothing `Rest` state so a door or wall does
 not play `Forward` by itself — unless the mesh carries a sequence the object plays

@@ -188,6 +188,15 @@ interpolator is legal**. Vanilla ships 72 dataless `NiFloatInterpolator`, 248
 sprigganfxtestunified). Both crashing meshes carry dataless blocks, but so does
 working vanilla content — it is not the discriminator.
 
+**What an empty generator does NOT do (observed live 2026-10-03):** it does not
+*reset* anything. A state whose generator names no sequence leaves every node
+where the last sequence put it for as long as the 3D is live; the authored pose
+is what you see only because a fresh 3D build starts from the NIF's own
+transforms. So `Rest` is a start state and nothing more — no row leads back to
+it, and it cannot be used to "close" an object. Showing an end pose after a
+load is the job of the hold states
+([End → hold](#end-hold-states)).
+
 RESOLVED (same day): the crash was **empty text key values** in the activated
 sequence — see "🔴 A graph-bound mesh must ship NO empty text keys" below.
 The secret door's `Forward` plays fine because its keys are only
@@ -196,7 +205,7 @@ keys.
 
 ### Every state needs a real transitions array — including at ONE sequence (2026-08-01)
 
-`_transitions(exclude_state=i)` gives each motion state "every OTHER sequence",
+`_sequence_rows` (formerly `_transitions(exclude_state=i)`) gives each motion state "every OTHER sequence",
 so a repeated event cannot restart a sequence mid-play. For a **one-sequence**
 object that set is EMPTY and the emitter writes `transitions=null` — the exact
 dead end the Rest-state comment warns about. `IDCrumbleWall01`'s only sequence
@@ -614,8 +623,8 @@ Every one was invisible to structural inspection **and to NifSkope, which render
 
 1. **BGED must NOT carry a `meshes\` prefix — the object is otherwise NEVER RENDERED.** The engine prepends `Meshes\%s` itself, so `meshes\tes4\…` resolves to `Meshes\meshes\tes4\…`, the project is never found, and the object silently gets no graph and never draws. Vanilla stores `Clutter\BlackPool\BlackPoolSecretDoor\NocturnalsSecretDoor01.hkx`; our own working bow rig stores `Weapons\Bow\BowProject.hkx`. **The path is relative to `meshes\`, not to `data\`.**
 2. **The skeleton's bone must be the fixed dummy name `x_SingleBone`, never the model stem.** The rig is a placeholder (the real motion is in the NIF's sequences), and vanilla's `SingleBoneSkeleton.hkx` uses that reserved name precisely so it can never collide with a NIF node. Naming it after the model made the engine bind the graph's identity bind pose onto the object and place it **far from its authored worldspace position**.
-3. **`startStateId` must point at a state that plays NOTHING.** Vanilla starts on an idle (`BlackPoolSecretDoor` `startStateId=3` = `AnimIdle01`) and reaches the motion only by event. Oblivion sources have no idle sequence — a converted wall has only `Forward`/`Backward` — so starting on state 0 made the wall **swing open by itself the instant the cell loaded**. Fix: synthesise a `Rest` state whose `pSequence` is empty (it holds the NIF's authored rest pose = closed) and start there. It is the LAST state, so the event→stateId mapping of the real sequences is untouched.
-4. **Transitions must live ON EACH STATE, not only in the machine's `wildcardTransitions`.** Vanilla's Gamebryo state machine sets `wildcardTransitions=null` and gives every state its own `hkbStateMachineTransitionInfoArray` (`State00` carries event 0 → state 4). Leaving `Rest.transitions = null` made the start state a **DEAD END**: nothing could open the wall again, from the quest *or* from console `activate`. Each state now reaches every *other* sequence (self-transitions excluded, or a repeated event restarts the sequence mid-play); the global wildcard array is kept as a harmless second route.
+3. **`startStateId` must point at a state that plays NOTHING.** Vanilla starts on an idle (`BlackPoolSecretDoor` `startStateId=3` = `AnimIdle01`) and reaches the motion only by event. Oblivion sources have no idle sequence — a converted wall has only `Forward`/`Backward` — so starting on state 0 made the wall **swing open by itself the instant the cell loaded**. Fix: synthesise a `Rest` state whose `pSequence` is empty and start there: a fresh 3D build shows the NIF's authored pose (= closed) and `Rest` plays nothing over it. It does **not** reset a pose on a live 3D — see [End → hold](#end-hold-states). It follows the sequence states, so the event→stateId mapping of the real sequences is untouched; hold states come after it.
+4. **Transitions must live ON EACH STATE, not only in the machine's `wildcardTransitions`.** Vanilla's Gamebryo state machine sets `wildcardTransitions=null` and gives every state its own `hkbStateMachineTransitionInfoArray` (`State00` carries event 0 → state 4). Leaving `Rest.transitions = null` made the start state a **DEAD END**: nothing could open the wall again, from the quest *or* from console `activate`. Each state now reaches every *other* sequence (self-transitions excluded, or a repeated event restarts the sequence mid-play). The global wildcard array that used to ride along as "a harmless second route" is gone: the machine now writes `wildcardTransitions=null` like vanilla — see [Transitions live on the state](#transitions-live-on-the-state).
 
 **`Open`/`Close` MUST NOT get a graph — attaching one is a CTD (2026-07-26).** They are the engine's own DOOR group names, driven natively through the NIF's `NiControllerManager`; no converted script ever names them (census of 18,566 output scripts: Forward 418, Backward 192, Unequip 45, Equip 27, SpecialIdle 10, FastForward 8, Left 6, FastBackward 6, Right 5, Stagger 1 — **zero Open/Close**). `prisonCellGate01` animated perfectly before the graph existed; giving it one made the engine bind the sequence through the graph instead of natively and crash on cell load (`EXCEPTION_ACCESS_VIOLATION`, `movdqu xmm2,[rax]` with `rax=0`, relevant objects `BGSGamebryoSequenceGenerator "GamebryoSequenceGenerator00"` + `hkbBehaviorGraph "prisoncellgate01"`). Vanilla agrees: the graph-driven `NocturnalsSecretDoor01` uses `AnimIdle01`/`AnimPlay01`, never Open/Close. **A mesh that already animates is not a mesh that needs a graph — check whether a script actually drives it first.**
 
@@ -633,6 +642,283 @@ Every one was invisible to structural inspection **and to NifSkope, which render
 - **`hkbCharacterData`'s field list is not what the name suggests** — copy `clutter\beehive\characters\Character00.hkx`: `characterControllerInfo, modelUpMS, modelForwardMS, modelRightMS, characterPropertyInfos, numBonesPerLod, characterPropertyValues (this is where the hkbVariableValueSet hangs), footIkDriverInfo (null POINTER, not an array), handIkDriverInfo (null), stringData, mirroredSkeletonInfo, scale`. There is **no `variableInitialValues` and no `aiControlDriverInfo`**. Getting it wrong made hkxcmd silently drop the `hkbVariableValueSet` — detectable by diffing the packfile's `__classnames__` string table against vanilla's, which is a fast sanity check for any generated hkx.
 - Vanilla lays these files out in the mesh's OWN folder (`clutter\beehive\{behaviors,characters,characterassets}\`), not a `<stem>_behavior\` subfolder; ours nests them so two animated NIFs in one directory cannot collide on `Character01.hkx`. Both work — the paths inside the character file resolve relative to the project file's folder. Our project hkx is byte-identical to vanilla's (880 bytes).
 - Final step is `convert_hkx_to_amd64` on every file: SSE loads only 64-bit packfiles (verified pointer-size byte 8 on all 161×4 outputs).
+
+<a id="transitions-live-on-the-state"></a>
+### Transitions live on the state; the machine has no wildcards (2026-10-03)
+
+**Code:** `_transition_array`, `_sequence_rows`, `_state_machine` in `asset_convert/havok/hkx_animobject.py`
+
+Every state owns a `hkbStateMachineTransitionInfoArray`; a state without one is
+a dead end. A sequence state's rows are "every OTHER sequence's event → that
+sequence's state", so any motion can be interrupted by any other and a repeated
+same-name event is a no-op. A graph with ONE sequence has no "other", so its
+state keeps a self-row (`IDCrumbleWall01`, above) — and so does a lone one-shot
+whose only neighbours are load sequences (`SpecialIdle`, `AutoLoop`,
+`AutoPlay`): a load sequence is a state to rest in, not "another sequence" to
+be interrupted by, so `[SpecialIdle, Forward]` and `[Forward, AutoLoop,
+AutoPlay]` give `Forward` the self-row too (the load states themselves gain
+none). `Rest` reaches every sequence. Rows carry plain `FLAG_DISABLE_CONDITION` and two all `-1 / 0.0`
+`hkbStateMachineTimeInterval` structs ("no interval restriction"), both exactly
+as vanilla writes them; the intervals are nested `hkobject`s, which
+`param_structs` cannot express, so the row body is rendered by hand.
+
+`wildcardTransitions` is `null`, as on vanilla's hold → move → hold Gamebryo
+machines (`IdleTransIdleBack`, `RotateHelper`, BlackPool `Behavior02`). It is
+NOT null on every vanilla Gamebryo machine: `GenericBehaviors\Autoplay` ships
+three wildcard rows, each flagged `FLAG_IS_LOCAL_WILDCARD|FLAG_DISABLE_CONDITION`.
+The array the generator used to emit lacked `FLAG_IS_LOCAL_WILDCARD` and was
+inert in-game: a script re-sent
+`Backward` about once a second while that state's timer ran 80–110 s unbroken,
+and spammed two-sequence pads recorded 0 transitions in 187 save rows. Dropping
+it changes no behaviour and makes the hold rule below determinate offline — a
+live wildcard `X → state X` would have re-animated a holding object on every
+re-sent `X`. `selfTransitionMode` stays `NO_TRANSITION`: looping is the
+sequence's own cycle type, and `FORCE_TRANSITION_TO_START_STATE` (tried
+2026-08-18) did not make a CLAMP sequence loop.
+
+<a id="end-hold-states"></a>
+### A finished transition moves to a one-frame hold on `End` (2026-10-03)
+
+**Code:** `asset_convert/nif/pose_hold.py`; `behavior_xml(…, holds)` and `_states` in `asset_convert/havok/hkx_animobject.py`; seam `_build_animobject_graph` in `asset_convert/nif/nif_converter.py`
+
+**The bug.** Skyrim saves each reference's behaviour-graph state (current state
+name/id plus a per-generator timer). On a fresh 3D build it re-enters the saved
+state and restarts its generator **from t=0** — the stored time is never
+applied. A generated graph had only the transition states and `Rest`, and
+nothing ever left `Forward` except the `Backward` event, so after any motion the
+saved state WAS the transition and **every load replayed it**, sound key and
+all: a wall that should stand closed swung open for 16 s on each cell load.
+
+**What vanilla does.** Two-state Gamebryo objects are hold → move → hold.
+`NocturnalsSecretDoor01`: `AnimIdle01 –Open→ AnimPlay01 –End→ AnimIdle02`.
+`GenericBehaviors\IdleTransIdleBack`: `Idle01 –PlayAnim02→ Transition01 –End→
+Idle02 –PlayAnim01→ Transition02 –End→ Idle01`. `End` is graph-internal — no
+vanilla script sends it; the NIF sequence's lowercase `end` text key at stop
+time raises it. The idles are one-frame sequences (0..0.0333 s) carrying only
+`start`/`end`.
+
+**Proven live on a generated graph (2026-10-03):** a one-file spike that
+declared `End` and gave `Forward`/`Backward` a row `End → Rest` moved a real
+object's persisted state from `Forward` to `Rest` once its clip finished. So a
+pyffi-written `end` key raises `End` in OUR graphs too. The same run showed the
+object did not snap shut on entering `Rest` — an empty generator does not reset
+the pose — which is why the target has to be a real hold sequence.
+
+**What is emitted**, for a graph with sequences `[Forward, Backward]` that both
+earn a hold:
+
+| id | state | generator → sequence | rows |
+|---|---|---|---|
+| 0 | `Forward` | `…Generator00` → `Forward` | `Backward→1`, `End→3` |
+| 1 | `Backward` | `…Generator01` → `Backward` | `Forward→0`, `End→4` |
+| 2 | `Rest` (start) | `…GeneratorRest` → *(none)* | `Forward→0`, `Backward→1` |
+| 3 | `ForwardHold` | `…GeneratorHold00` → `ForwardHold` | `Backward→1` |
+| 4 | `BackwardHold` | `…GeneratorHold01` → `BackwardHold` | `Forward→0` |
+
+- **Events** are `[<sequences…>, SoundPlay, End]`. `End` is appended last and
+  only when at least one hold exists, and hold states come after `Rest` — in
+  the state ARRAY as well as by id — so every existing event id and state id is
+  unchanged: a save made against the old graph still points at valid states.
+- **A hold's id is `Rest + 1 + its sequence's index`: one id slot per sequence,
+  held or not.** So `[Forward, Unequip✓, Backward]` gives `Rest`=3,
+  `UnequipHold`=5, and no hold's id depends on which OTHER sequences are held
+  (45 graphs mix held and unheld sequences). Fully-held graphs get the same ids
+  a dense numbering would. Sparse ids are vanilla-legal (BlackPool `Behavior02`
+  is `[5, 3, 4]`).
+  **TRIPWIRE:** whether the engine restores a saved state by id, by name or by
+  array position is NOT established. Stable ids protect only the first. Before
+  ANY change to hold eligibility ships (a newly held LOOP or `SpecialIdle`, a
+  new refusal), run the one-file id-swap spike: a graph whose two hold states
+  swap ids, loaded with a disposable save sitting in `ForwardHold`, read back
+  from the save.
+- **ONE rule for hold rows: a hold carries exactly its sequence state's rows,
+  minus `End`.** No shape test. In a multi-sequence graph that leaves the
+  same-name event a no-op while holding (the teleport pads re-send `Backward`
+  every 0.1 s). Where the sequence state has a self-row — a single-sequence
+  graph, or a lone one-shot beside load sequences — the hold inherits it and a
+  re-sent event REPLAYS the finished one-shot. Deliberate: it is what Oblivion
+  did, and a hold with no way back would be a dead end the save then restores
+  forever.
+  Census behind the choice, from the Oblivion SOURCE scripts. *129
+  single-sequence hold graphs:* 75 driven only by activation/trigger events,
+  33 latched once, 6 repeating on the script's own timer, 3 re-armed by script
+  state, 11 with no script driver or no base record, and 1 re-sent every frame
+  unconditionally (`OblivionLavaCloudInitSCRIPT`) — whose base `OBLavaCloud01`
+  has **0 placed references**, so nothing in the game runs it. *17 hold graphs
+  of the shape "load sequence(s) + one one-shot":* 5 driven from `OnActivate`
+  behind a latch, 5 from `gameMode` behind a one-way latch, 1 from a quest
+  stage, 2 on a timer (`OBTurretBig01SCRIPT`, 99 placed turrets, every 6 s;
+  a mod's fire-trap switch, on a frame-count timer that clears its own
+  flag), 4 with no `playgroup` of that group reaching them. **None is
+  re-sent every frame, and none sits behind `IsAnimPlaying`** (which converts
+  to a poll that is always "not playing"). Graphs with SEVERAL one-shots are
+  left alone: their same-name event stays a no-op until that poll is fixed.
+- A graph with no holds differs from the pre-hold emitter only by the wildcard
+  array.
+
+**The NIF half** (`pose_hold.py`). For each eligible sequence a `<Seq>Hold`
+sequence is registered: 0..1/30 s, CLAMP, covering ALL of the source's
+controlled blocks in order and sharing its controllers, frozen at the source's
+last key values. *Eligible* = CLAMP cycle (a LOOP sequence passes its `end` key
+every cycle and would freeze) · a script-driven name that is not a load
+sequence (`AutoPlay`/`AutoLoop`/`SpecialIdle` are states to rest in) ·
+frequency > 0 · the LAST text key is `end`, at stop time · the hold name is
+free. A hold must cover every block: it is what a restored state plays on a
+fresh 3D, so anything it left out would show the NIF's rest pose.
+
+- **The hold's text keys are a FRESH `[start, end]` block.** `clone_sequence_as`
+  shares the source's block, and a copied `SoundPlay.<SNDR>` key would replay
+  the sound on every hold entry and every load (254 of the 428 eligible
+  sequences carry one). Vanilla never shares a text-key block between
+  sequences.
+- **`collect_sequence_names` is unchanged**: a hold is not an event, so the
+  graph receives the holds as a separate `{sequence: hold}` map.
+- **It runs at the graph seam, after `_run_animation_passes`.**
+  `apply_rest_visibility` and `apply_rest_emissive` read every sequence's t=0
+  value as the object's rest state; a hold present there would stamp the END
+  pose onto rest (290 keyed `NiVisController` blocks in held sequences end
+  hidden). Meshes outside a `meshes/` tree get no graph and therefore no hold.
+- **Any unsupported case refuses that one sequence** and it behaves exactly as
+  before: no hold, no `End` row.
+
+Not covered: the 11 CLAMP `SpecialIdle` start states still replay on load; 33
+LOOP-cycle transitions get no hold; and in the 8 multi-sequence graphs whose
+sequences drive different node sets a restored hold writes only its own
+targets (the same picture the old replay ended on).
+
+Known and deliberately left (each is a tripwire, not an oversight):
+- `sequences.clone_sequence_as` reads `array_grow_by`, a field pyffi does not
+  have (it is `unknown_int_1`), so every clone — the hold sequences and the 174
+  existing `AutoPlay` clones — is written with Array Grow By 0 where the source
+  and vanilla carry 1. Harmless live (the `AutoPlay` clones run). Fixing it
+  changes the bytes of every hold-bearing NIF, so it waits for a build that is
+  re-verified anyway.
+- A mesh that STOPS earning a generated project (no sequences left, or only
+  ambient ones) keeps its old `<stem>_behavior` tree. Its new NIF has no BGED
+  to it, so the game is unaffected; `gamebryo_seq_check` flags the orphan.
+- A mesh whose graph or holds failed counts as converted AND as an error, so
+  the batch's four counters no longer sum to the total.
+- A lowercase `specialidle` would be neither a start state (`_start_state_id`
+  is case-sensitive) nor held (`pose_hold` compares in lower case). No
+  instance in the corpus.
+
+Still to be confirmed in-game: that a *restored* hold state applies its pose on
+a fresh 3D with no visible motion, and that a hold → same-name row visibly
+replays. Read both from a save (state name + generator timer), not by eye.
+
+<a id="hold-interpolator-forms"></a>
+### Hold interpolators keep the vanilla form — and never use QUADRATIC keys (2026-10-03)
+
+**Code:** `hold_interpolator` in `asset_convert/nif/pose_hold.py`
+
+| source interpolator | in the hold |
+|---|---|
+| null, dataless, or keyless | shared as it is (already a constant) |
+| keyed `NiTransformInterpolator` | new interpolator, same static fields, new `NiTransformData` with **two LINEAR keys** (t=0, t=1/30) per keyed channel at that channel's last value |
+| keyed `NiFloatInterpolator` / `NiPoint3Interpolator` | new interpolator + `NiFloatData` / `NiPosData` with two LINEAR keys |
+| keyed `NiBoolInterpolator` / `NiBoolTimelineInterpolator` | new **dataless** constant at the last key |
+| anything else (`NiPathInterpolator`), unsorted keys, a key past stop time | **refuse the sequence** |
+
+- **Never create QUADRATIC keys.** pyffi writes a freshly built QUADRATIC key
+  without its tangents and the file is corrupt; a LINEAR key is time + value
+  only. Euler (XYZ) rotation stays Euler, one key group per axis, so no
+  Euler→quaternion convention is involved; quaternion keys of any type become
+  two LINEAR quaternion keys.
+- **Why float and point3 keep key data instead of becoming dataless:** census
+  of vanilla idle sequences (≤ 0.07 s, 831 graph-driven NIFs) — shader colour
+  controllers ship 178 keyed and **0** dataless `NiPoint3Interpolator`s, float
+  shader controllers 3,788 keyed vs 98 dataless, while bools are dataless
+  (3,025 vs 87 keyed). A dataless colour interpolator has no vanilla
+  precedent, so it is not emitted.
+- The hand-off frame is seamless: of 15,419 keyed channels in the eligible
+  sequences, every last key sits at or before stop time (0 after).
+
+<a id="graph-and-nif-move-together"></a>
+### 🔴 Never a graph that names a sequence its NIF lacks (2026-10-03)
+
+**Code:** `_stage_animobject_graph`, `_write_nif_then_graph` in `asset_convert/nif/nif_converter.py`; `stage_animobject_project` / `commit_animobject_project` / `_verify_compiled_graph` in `asset_convert/havok/hkx_animobject.py`
+
+A generator whose `pSequence` resolves to nothing is a NULL sequence the engine
+dereferences on state entry (the `movdqu xmm2,[rax]` CTD). With holds that is
+reachable by ordinary play: a hold-bearing graph beside a hold-less NIF crashes
+the moment `End` fires. The reverse — a NIF carrying sequences its graph never
+names — is harmless. So the invariant is **NIF ⊇ graph at every instant**, and
+the order is:
+
+1. **plan** the holds without touching the NIF;
+2. **stage** the four hkx files in a sibling `<stem>_hkxstage` folder, never in
+   the final one (the name is exactly as long as `<stem>_behavior`: hkxcmd fails
+   past MAX_PATH, and a longer staging path broke a mesh whose final path
+   fitted), refuse if a stale staging folder cannot be cleared, and check that
+   each compiled generator plays exactly the sequence it should (`End`
+   declared when there are holds);
+3. **apply** the holds, BGED and sound-key rewrite to the in-memory NIF;
+4. **serialize** the NIF — a failure discards the staging and returns `WR`
+   with nothing on disk changed;
+5. **write** the NIF to a temp name beside it (last character `~`: same
+   length, so no path that fitted stops fitting);
+6. **set the OLD tree aside** (`<stem>_hkxaside`) — a failure here changes
+   nothing;
+7. **replace** the NIF. If, and only if, the replace itself raises `OSError`,
+   the old tree is put back. An interrupt is NOT followed by a restore: it may
+   have landed after the replace, and putting the old tree back would rebuild
+   the crash pair;
+8. **install** the staged tree (rename, retried, then a file copy), and delete
+   the set-aside one.
+
+"NIF first, then tree" was the first version of this and it was wrong in one
+direction: when a rebuild has FEWER holds than the tree on disk, the new NIF
+sat beside the old hold-bearing tree until the swap — and stayed there if the
+swap failed. Setting the old tree aside before the NIF closes that.
+
+What a kill or a failure can leave, none of them crash-capable:
+
+| stopped | NIF | tree | effect |
+|---|---|---|---|
+| before the old tree is set aside | old | old (+ staging folder) | none |
+| between set-aside and the NIF replace | old, BGED | none (+ aside, + staging) | object not drawn |
+| between the replace and the install | new, BGED | none (+ aside, + staging) | object not drawn |
+| install fails outright (`TREE`) | new, BGED | none | object not drawn |
+| after the install | new | new | none |
+
+"Object not drawn" is the repo's own record of a BGED naming a missing project
+(defect 1 above); it has not been re-checked in-game for this case. Every one
+of those rows is flagged by `gamebryo_seq_check` (leftover folder, or a BGED
+naming a project that is not there) and cured by rebuilding the mesh.
+
+Failures are reported, each under its own tag in the batch's Failed/Skipped
+list (`animobject_error` used to have no reader at all):
+- **`GRAPH`** — the graph could not be built (hkxcmd missing, compile error, a
+  hold that did not register). The mesh still converts but gets no hold and no
+  BGED, and any tree left by an earlier build is removed after the NIF is
+  written. Unanimated, but drawn.
+- **`HOLDS`** — planning the holds raised something other than a refusal. The
+  mesh gets the hold-less graph it had before holds existed (it animates, and
+  replays on load), not the loss of its graph.
+- **`TREE`** — the NIF is written with its BGED but the staged tree could not
+  be installed. The mesh is counted as an error, NOT as converted.
+
+**"It compiled" is not evidence.** hkxcmd exits 0 on a dangling object
+reference and writes a silently smaller graph (and exits 0 with a
+byte-identical file on an unknown parameter). Hence the string-pool check in
+step 2, and `tools/validate/gamebryo_seq_check.py` over the output, which pairs
+each tree with its NIF case-insensitively and fails unless at least one project
+was checked. Neither reads transition ROWS: both work from the string pool, so
+a graph with hold states and no `End` row passes both. The counts prove holds
+are present, not that they are reachable.
+
+**hkxcmd past MAX_PATH exits 0 and writes elsewhere** (observed 2026-10-03):
+with an output path over 259 characters it prints `Converting '…'`, returns 0,
+writes nothing at the requested path, and leaves a stray garbage-named file
+(and sometimes an empty one-letter folder) in the working directory.
+`_run_hkxcmd` catches it only because the output file is missing — which is why
+every compile here targets a fresh staging folder, where a file left by an
+earlier build cannot stand in for this one's.
+
+**Deploying loose files by hand:** when the new files only ADD holds (the
+first deploy over hold-less files), copy the NIF first, then its tree, and
+revert in the opposite order. When replacing one hold-bearing pair with
+another, remove the old tree first, as the converter does.
 
 ## Accum-bone bind pose leaks into every clip (user patches, 2026-08-30)
 <a id="accum-bind-pose-leak"></a>

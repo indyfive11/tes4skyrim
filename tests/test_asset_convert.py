@@ -4134,7 +4134,11 @@ class TestAnimationBlockLayout:
         assert normalize_blend_interpolators(root) == 0
 
     def _tripwire_root_and_vis(self):
-        """(converted ctrigtripwire01 root, its NiVisController entries); skips if unexported."""
+        """(converted ctrigtripwire01 root, its transitions' NiVisController entries).
+
+        Pose-hold sequences are left out: they freeze the last frame as
+        dataless constants. Skips if unexported.
+        """
         src = Path('export/Oblivion.esm/meshes/dungeons/caves/triggers/'
                    'ctrigtripwire01.nif')
         if not src.exists():
@@ -4151,6 +4155,7 @@ class TestAnimationBlockLayout:
                 data.read(f)
         root = data.roots[0]
         vis = [cb for seq in root.controller.controller_sequences
+               if not bytes(seq.name).endswith(b'Hold')
                for cb in seq.controlled_blocks
                if bytes(cb.controller_type or b'') == b'NiVisController']
         assert vis, 'the morph must still animate'
