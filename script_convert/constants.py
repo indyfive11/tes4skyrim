@@ -609,6 +609,16 @@ ANIM_GROUP_EVENTS = {
 }
 
 
+#: Zero-argument commands whose result is traceable to the records the script is attached to.
+TRACEABLE_SOURCES = ('getself', 'getparentref')
+
+#: Base signatures of an ACTOR (a leveled list spawns one), which takes a graph event and never PlayAnimation.
+ACTOR_SIGS = ('NPC_', 'CREA', 'ACHR', 'ACRE', 'LVLC', 'LVLN')
+
+#: Placeable object base signatures whose NIF can carry a NiControllerSequence; a TRACED target must be one.
+SEQUENCE_OBJECT_SIGS = ('ACTI', 'DOOR', 'CONT', 'FLOR', 'FURN', 'LIGH', 'MISC', 'STAT')
+
+
 #: Papyrus types holding a REFERENCE rather than a value.
 _REF_TYPES = frozenset({
     'ObjectReference', 'Actor', 'ActorBase', 'Form', 'Cell', 'Quest',

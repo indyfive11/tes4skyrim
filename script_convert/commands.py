@@ -18,8 +18,9 @@ argument text -- so those are properties of the CALL and live on it.
 
 from script_convert import resolve_name as _resolve_name
 from script_convert.constants import (
-    ANIM_GROUP_EVENTS, ATTRIBUTE_STUB_VALUE, AV_ARGUMENT_NAMES, CASTABLE,
-    FORCE_GREET_QUEST, PLACED_REF_SIGS, PRIMARY_STATS, TES4_ASSAULT_BOUNTY,
+    ACTOR_SIGS, ANIM_GROUP_EVENTS, ATTRIBUTE_STUB_VALUE, AV_ARGUMENT_NAMES,
+    CASTABLE, FORCE_GREET_QUEST, PLACED_REF_SIGS, PRIMARY_STATS,
+    SEQUENCE_OBJECT_SIGS, TES4_ASSAULT_BOUNTY,
     TES4_MISC_STAT_NAMES, TES4_MURDER_BOUNTY,
     TES4_STEAL_BOUNTY, is_generated_script_type, mgef_family_keyword_name,
     safe_property_name, papyrus_script_name
@@ -424,7 +425,8 @@ def play_group(ctx, call) -> str:
     anim = call.source(0, 'Idle').rstrip(',').strip('"').strip("'") or 'Idle'
     if call.ref:
         sig = ctx.xref.get_base_signature(call.ref) if ctx.xref else ''
-        is_actor = sig in ('NPC_', 'CREA', 'ACHR', 'ACRE') if sig else True
+        sig = sig or _traced_signature(ctx, call.ref)
+        is_actor = sig in ACTOR_SIGS if sig else True
     else:
         is_actor = call.extends == 'Actor'
 
@@ -442,6 +444,26 @@ def play_group(ctx, call) -> str:
     play = f'{obj}.PlayAnimation("{anim.capitalize()}")'
     return (f'{play}\n  TES4Polyfill.ReleaseBreakaway({obj})'
             if _needs_havok_release(ctx, call) else play)
+
+
+def _traced_signature(ctx, ref: str) -> str:
+    """Animated-object signature a ref VARIABLE provably holds, or '' when unproven.
+
+    Proof is its one assignment source (`getSelf`, `getParentRef`) resolving to
+    a SEQUENCE_OBJECT_SIGS base; a variable declared Actor, or one another
+    script assigns, proves nothing.  TRIPWIRE: a target promoted here skips
+    `_needs_havok_release`, which resolves the receiver by EditorID -- a held
+    prop reached through a variable would play its clip and never be released.
+    See: docs/commentary/script_convert.md#playgroup-variable-target
+    """
+    source = ctx.sc.ref_sources.get(ref.lower(), '')
+    if not source or not ctx.xref or ctx.type_of(ref) == 'Actor':
+        return ''
+    if ctx.xref.remotely_assigned(ctx.sc.edid, ref):
+        return ''
+    sig = (ctx.xref.script_self_signature(ctx.sc.edid) if source == 'getself'
+           else ctx.xref.script_parent_signature(ctx.sc.edid))
+    return sig if sig in SEQUENCE_OBJECT_SIGS else ''
 
 
 def _needs_havok_release(ctx, call) -> bool:

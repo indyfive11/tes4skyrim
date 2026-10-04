@@ -216,8 +216,10 @@ def _narrow_ref_types(conv, tree) -> None:
     if not refs or tree is None:
         return
     stmts = [st for block in tree.blocks for st in N.walk_stmts(block.body)]
+    usage = _symbols.scan_var_usage(stmts, refs, conv.type_of)
+    sc.ref_sources = _symbols.assignment_sources(usage)
     narrowed = _symbols.resolve_ref_types(
-        stmts, refs, conv.type_of, conv._base_record_type)
+        stmts, refs, conv.type_of, conv._base_record_type, usage)
     for low, ptype in narrowed.items():
         for spelling in (low, safe_property_name(low).lower()):
             sc.var_types[spelling] = ptype

@@ -6188,6 +6188,247 @@ class TestPlayGroupTargetRouting:
         out = self._convert('playgroup forward 1', {})
         assert 'Self.PlayAnimation("Forward")' in out, out
 
+    def test_every_actor_class_keeps_the_event(self):
+        """A leveled list places an actor, so its base is one too."""
+        for sig in ('CREA', 'LVLC', 'LVLN'):
+            out = self._convert('SpawnRef.playgroup forward 1', {'SpawnRef': sig})
+            assert 'SendAnimationEvent' in out, (sig, out)
+            assert 'PlayAnimation' not in out, (sig, out)
+
+
+class TestPlayGroupVariableTarget:
+    """A `playgroup` through a ref VARIABLE is traced to what the variable holds.
+
+    A variable is no EditorID, so its base signature reads '' and the call took
+    the actor event: `set targetref to getParentRef` /
+    `targetref.playgroup forward 0` became
+    `Debug.SendAnimationEvent(targetref, "moveStart")`, which an animated
+    object's graph does not carry, so the lever moved and the gate did not.
+
+    The variable is promoted to PlayAnimation only on PROOF: one traceable
+    source (`getSelf`, `getParentRef`), assigned by no other script, whose
+    every owner resolves to the same animated-object base.  Anything short of
+    that keeps the inert event, because PlayAnimation on an actor corrupts its
+    behavior graph.
+    """
+
+    PARENT_SRC = ('scn T\nref targetref\nbegin onActivate\n'
+                  '  set targetref to getParentRef\n'
+                  '  targetref.playgroup forward 0\nend\n')
+    SELF_SRC = ('scn T\nref selfRef\nbegin onActivate\n'
+                '  set selfRef to getSelf\n'
+                '  selfRef.playgroup backward 0\nend\n')
+
+    @staticmethod
+    def _attach(x, script, slot, owner_sig, parents):
+        """Put `script` on one new `owner_sig` base, placed once per entry of `parents`.
+
+        Each entry is the base signature of that placement's enable parent, or
+        '' for a placement that has none.  Placements are named
+        `<script>Ref<slot>_<n>`.
+        """
+        script_fid = f'{0x00020000 + ord(script):08X}'
+        owner = f'{0x00040000 + slot * 0x100:08X}'
+        x.script_formid_to_edid[script_fid] = script
+        x.record_type[owner] = owner_sig
+        x.record_scri[owner] = script_fid
+        for i, parent_sig in enumerate(parents):
+            ref, parent, parent_base = (
+                f'{int(owner, 16) + 1 + i * 3 + k:08X}' for k in range(3))
+            x.edid_to_formid[f'{script}Ref{slot}_{i}'.lower()] = ref
+            x.record_type[ref] = 'REFR'
+            x.record_base[ref] = owner
+            if parent_sig:
+                x.record_parent[ref] = parent
+                x.record_type[parent] = 'REFR'
+                x.record_base[parent] = parent_base
+                x.record_type[parent_base] = parent_sig
+
+    def _xref(self, owner_sig='ACTI', parents=('ACTI',), more_owners=()):
+        """Script T on one base (plus one per `more_owners` entry), beside an unrelated script U.
+
+        U sits on an NPC whose enable parent is an NPC, so any trace that
+        strays to another script's records reads an actor.
+        """
+        from script_convert.cross_ref import CrossRefGraph
+        x = CrossRefGraph()
+        self._attach(x, 'U', 0, 'NPC_', ('NPC_',))
+        self._attach(x, 'T', 1, owner_sig, parents)
+        for n, extra in enumerate(more_owners):
+            self._attach(x, 'T', 2 + n, owner_sig, extra)
+        return x
+
+    def _convert(self, src, xref, extends='ObjectReference'):
+        from script_convert.converter import ScriptConverter
+        return ScriptConverter(xref).convert_standalone('T', src, extends, 'T')
+
+    def _assert_inert(self, out):
+        assert 'SendAnimationEvent' in out, out
+        assert 'PlayAnimation' not in out, out
+
+    def test_enable_parent_activator_gets_playanimation(self):
+        """The gate behind `getParentRef` is an activator: play its sequence."""
+        out = self._convert(self.PARENT_SRC, self._xref())
+        assert 'targetref.PlayAnimation("Forward")' in out, out
+        assert 'SendAnimationEvent' not in out, out
+
+    def test_every_placement_and_owner_agreeing_still_promotes(self):
+        """Two placements of one base and a second base, every parent an activator."""
+        xref = self._xref(parents=('ACTI', 'ACTI'), more_owners=(('ACTI',),))
+        out = self._convert(self.PARENT_SRC, xref)
+        assert 'targetref.PlayAnimation("Forward")' in out, out
+
+    def test_getself_on_an_activator_script_gets_playanimation(self):
+        """`getSelf` is the record the script sits on, here an activator."""
+        out = self._convert(self.SELF_SRC, self._xref())
+        assert 'selfRef.PlayAnimation("Backward")' in out, out
+        assert 'SendAnimationEvent' not in out, out
+
+    def test_actor_enable_parent_keeps_the_event(self):
+        """A traced ACTOR is still an actor, a leveled spawn included."""
+        for sig in ('NPC_', 'CREA', 'LVLC', 'LVLN'):
+            out = self._convert(self.PARENT_SRC, self._xref(parents=(sig,)))
+            assert 'Debug.SendAnimationEvent(targetref, "moveStart")' in out, (sig, out)
+            assert 'PlayAnimation' not in out, (sig, out)
+
+    def test_getself_on_an_actor_script_keeps_the_event(self):
+        """`getSelf` on an NPC's script is that NPC."""
+        out = self._convert(self.SELF_SRC, self._xref(owner_sig='NPC_'), 'Actor')
+        self._assert_inert(out)
+
+    def test_only_an_animated_object_base_is_proof(self):
+        """A quest or a weapon is no actor, and no animated object either."""
+        for sig, extends in (('QUST', 'Quest'), ('WEAP', 'ObjectReference')):
+            out = self._convert(self.SELF_SRC, self._xref(owner_sig=sig), extends)
+            assert 'PlayAnimation' not in out, (sig, out)
+            assert 'SendAnimationEvent' in out, (sig, out)
+
+    def test_placement_without_a_parent_keeps_the_event(self):
+        """One placement with no enable parent leaves the target unproven."""
+        out = self._convert(self.PARENT_SRC, self._xref(parents=('ACTI', '')))
+        assert 'Debug.SendAnimationEvent(targetref, "moveStart")' in out, out
+        assert 'PlayAnimation' not in out, out
+
+    def test_unplaced_owner_keeps_the_event(self):
+        """An owner placed nowhere proves nothing, whatever the other owner says."""
+        self._assert_inert(self._convert(self.PARENT_SRC, self._xref(parents=())))
+        xref = self._xref(parents=('ACTI',), more_owners=((),))
+        self._assert_inert(self._convert(self.PARENT_SRC, xref))
+
+    def test_disagreeing_parents_keep_the_event(self):
+        """One script, two placements, an activator parent and a door one."""
+        out = self._convert(self.PARENT_SRC,
+                            self._xref(parents=('ACTI', 'DOOR')))
+        self._assert_inert(out)
+
+    def test_two_assignment_sources_keep_the_event(self):
+        """Nothing says which of two assignments the call sees."""
+        src = ('scn T\nref targetref\nbegin onActivate\n'
+               '  set targetref to getParentRef\n'
+               '  set targetref to getSelf\n'
+               '  targetref.playgroup forward 0\nend\n')
+        self._assert_inert(self._convert(src, self._xref()))
+
+    def test_a_named_ref_beside_the_traceable_source_keeps_the_event(self):
+        """`set t to SomeNPCRef` anywhere in the script could be what the call sees."""
+        src = ('scn T\nref targetref\nbegin onActivate\n'
+               '  set targetref to getParentRef\n'
+               '  targetref.playgroup forward 0\nend\n'
+               'begin onLoad\n  set targetref to URef0_0\nend\n')
+        self._assert_inert(self._convert(src, self._xref()))
+
+    def test_another_references_parent_is_not_this_scripts(self):
+        """`other.getParentRef` is the parent of whatever `other` holds."""
+        src = ('scn T\nref other\nref targetref\nbegin onActivate\n'
+               '  set targetref to other.getParentRef\n'
+               '  targetref.playgroup forward 0\nend\n')
+        self._assert_inert(self._convert(src, self._xref()))
+
+    def test_untraceable_source_keeps_the_event(self):
+        """`getActionRef` is whoever activated it -- unknowable statically."""
+        src = ('scn T\nref targetref\nbegin onActivate\n'
+               '  set targetref to getActionRef\n'
+               '  targetref.playgroup forward 0\nend\n')
+        self._assert_inert(self._convert(src, self._xref()))
+
+    def test_actor_typed_variable_is_never_promoted(self):
+        """Actor-only use declares the variable Actor, whatever the trace says."""
+        src = ('scn T\nref targetref\nbegin onActivate\n'
+               '  set targetref to getParentRef\n'
+               '  targetref.evaluatePackage\n'
+               '  targetref.playgroup forward 0\nend\n')
+        out = self._convert(src, self._xref())
+        assert 'Actor targetref' in out or 'Actor Property targetref' in out, out
+        self._assert_inert(out)
+
+    def test_a_variable_another_script_assigns_keeps_the_event(self):
+        """`set TRef1_0.targetref to X` reaches T through the placed ref's base."""
+        xref = self._xref()
+        xref.index_remote_writes(
+            ['begin gamemode\n\tSet TRef1_0.targetref To URef0_0 ; hand over\nend'])
+        assert xref.remote_writes == {('t', 'targetref')}
+        self._assert_inert(self._convert(self.PARENT_SRC, xref))
+
+    def test_a_write_through_an_unknown_owner_vetoes_the_name(self):
+        """An owner no script is found for could be this script's: refuse."""
+        xref = self._xref()
+        xref.index_remote_writes(['let Nowhere.targetref := URef0_0'])
+        assert xref.remote_write_names == {'targetref'}
+        self._assert_inert(self._convert(self.PARENT_SRC, xref))
+
+    def test_another_scripts_same_named_variable_does_not_veto(self):
+        """U's `targetref` is not T's; a commented-out write is no write."""
+        xref = self._xref()
+        xref.index_remote_writes(['set URef0_0.targetref to player\n'
+                                  '; set TRef1_0.targetref to player\n'
+                                  'set U.targetref to player'])
+        assert xref.remote_writes == {('u', 'targetref')}
+        out = self._convert(self.PARENT_SRC, xref)
+        assert 'targetref.PlayAnimation("Forward")' in out, out
+
+    def test_every_script_source_is_read_for_remote_writes(self, tmp_path):
+        """Scripts, dialogue results and stage results all assign other scripts' variables."""
+        from script_convert.cross_ref import _script_texts
+        (tmp_path / 'SCPT.txt').write_text(
+            'EditorID=S\nSCTX=scn S\\nset E.v to 5\n', encoding='utf-8')
+        (tmp_path / 'INFO.txt').write_text(
+            'Signature=INFO\nResultScript=set A.x to 1\\r\\n\\tset B.y to 2\n'
+            'ResultScriptEnd=set C.z to 3\n', encoding='utf-8')
+        (tmp_path / 'QUST.txt').write_text(
+            'Stage[3].Log[0].ResultScript=set D.w to 4\n', encoding='utf-8')
+        assert _script_texts(str(tmp_path)) == [
+            'scn S\nset E.v to 5',
+            'set A.x to 1\r\n\tset B.y to 2', 'set C.z to 3', 'set D.w to 4']
+
+    def test_enable_parent_is_indexed_from_the_export(self):
+        """XESP.Reference of a placed ref lands in `record_parent`, re-keyed for a master."""
+        from script_convert.cross_ref import CrossRefGraph, _new_scan_out, _scan_record_lines
+        out = _new_scan_out()
+        _scan_record_lines('REFR', [
+            'Signature=REFR', 'FormID=03020C8C', 'NAME=000228A9',
+            'XESP.Reference=03020C8F', 'XESP.Flags=0'], out)
+        _scan_record_lines('ACTI', [
+            'Signature=ACTI', 'FormID=000228A9', 'XESP.Reference=03020C8F'], out)
+        _scan_record_lines('REFR', [
+            'Signature=REFR', 'FormID=01000AAA', 'NAME=000228A9',
+            'XESP.Reference=01000BBB'], out, remap={0: 0, 1: 2})
+        x = CrossRefGraph()
+        x._merge_scan(out)
+        assert x.record_parent == {'03020C8C': '03020C8F',
+                                   '02000AAA': '02000BBB'}
+
+    def test_the_importers_graph_indexes_the_enable_parent_too(self):
+        """Both graph builders must agree, or the two conversion passes diverge."""
+        from script_convert.cross_ref import CrossRefGraph
+        from tes5_import.pipeline import _index_xref_record
+        x = CrossRefGraph()
+        _index_xref_record(
+            x, '02000AAA',
+            {'Signature': 'REFR', 'FormID': '01000AAA', 'NAME': '000228A9',
+             'XESP.Reference': '01000BBB'},
+            lambda v, own_raw, own_key: v.replace('01', '02', 1))
+        assert x.record_parent == {'02000AAA': '02000BBB'}
+
 
 class TestOwnedGroupAnchoring:
     """A type-1/6/7 GRUP must be preceded by the record that owns it.
