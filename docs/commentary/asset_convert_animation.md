@@ -920,6 +920,74 @@ first deploy over hold-less files), copy the NIF first, then its tree, and
 revert in the opposite order. When replacing one hold-bearing pair with
 another, remove the old tree first, as the converter does.
 
+<a id="build-gate"></a>
+### The build checks every animated object itself (2026-10-03)
+
+**Code:** `build_gate`, `audit(named_only=True)` in `tools/validate/gamebryo_seq_check.py`; `animobject_gate` in `asset_convert/sources/bsa_pack.py`, called from `pack_bsas` and from `animated_objects_ok` at the end of `phase_assets` in `convert.py`
+
+The validator's findings used to have no automatic reader: a crash pair or a
+leftover of an interrupted run was packed unless someone remembered to run the
+tool. Now the build runs it, imported as a function, at two points:
+
+- **the end of the mesh step** (`--meshes-only` included, `--mesh-subdirs`
+  included: the whole plugin tree is checked, not only the rebuilt subfolders).
+  A violation fails the step, so the run exits non-zero and the Meshes step is
+  not certified — this is the only gate a loose deploy from `output/` passes
+  through;
+- **the start of `pack_bsas`**, beside the case-twin gate, on every route that
+  packs (full build, `--pack-only`, the `bsa_pack` CLI). A violation is a pack
+  error: nothing is packed, the pack-failure marker stays, and the zip step
+  refuses.
+
+A failure names each path, then the count:
+
+    BAD .../meshes/tes4/dungeons/chargen/wall
+        GamebryoSequenceGeneratorHold00: names 'ForwardHold', NIF has ['Backward', 'Forward']
+    animated objects: behavior projects checked: 1   graphs declaring End: 1   hold sequences: 2   not named by a NIF: 0   violations: 1
+    ERROR 1 animated-object violation(s) under ... (listed above as BAD); nothing packed until those meshes are rebuilt or the leftovers removed
+
+The cure is to rebuild the named meshes (or delete the named leftover).
+
+**The gate is "violations == 0", with no expected counts** — counts are a
+property of one corpus, so `--expect-*` stay hand-run arguments. Two rules
+differ from a hand run, both so that the gate cannot false-fail:
+
+- **A plugin with no animated object passes.** "Nothing checked" is a failure
+  when a person points the tool at a tree and expects projects; for a
+  texture-only plugin it is the normal case.
+- **Only a project a NIF beside it names in its BGED is judged.** That is the
+  one code-independent mark of "an animated-object project this converter
+  generated and a mesh still uses". A `_behavior` folder nothing names — a
+  foreign folder that merely has the suffix, or the tree of a mesh that no
+  longer earns a graph — is printed as `skip` and counted, never failed: no
+  mesh loads it, so it cannot crash anything. (A hand run still flags it.)
+  Measured on the four built plugins: 290 `_behavior` folders, 290 named, 0
+  skipped — every such folder in a built tree today is a generated project.
+  The reverse direction is always judged: a NIF whose BGED names a project
+  that is not there is a violation.
+- **A NIF whose header cannot be read is a violation, anywhere under the
+  root** — empty, not a NIF, or cut off inside its header. Such a file names no
+  tree, so the tree beside it would read as "unnamed" and be skipped; a guard
+  that cannot determine the answer refuses. Other NIF versions with an intact
+  format line are searched whole and pass. Measured: 13,132 of 13,132 NIFs
+  under the four built `meshes` trees have a readable 20.2.0.7 header. A NIF
+  whose header is fine but whose body pyffi cannot parse is reported as one
+  `NIF cannot be read` line, without pyffi's traceback.
+
+An output tree from an older converter passes: hold-less graphs are valid, and
+the four plugins built before holds existed read 290 checked / 0 violations.
+A tree another process is still writing does not pass — a staging folder or a
+half-written NIF is a leftover — which is the right answer for a pack.
+
+Cost: the header-only NIF scan is 0.5 s for 13,217 NIFs. The time is the pyffi
+read of each project's NIF for its sequence names and text keys: under 1 s for
+each of the three small plugins, **40 s for Oblivion.esm** (256 projects; the
+three largest meshes, 6–29 MB, take 14 s of it), paid once per gate, so twice in a
+full build. A cheaper read exists and is not built: both facts live in
+`NiControllerSequence` and `NiTextKeyExtraData` blocks, which the header's
+block-size table lets a reader seek to without parsing geometry. It would have
+to be proven equal to the pyffi read on the whole corpus first.
+
 ## Accum-bone bind pose leaks into every clip (user patches, 2026-08-30)
 <a id="accum-bind-pose-leak"></a>
 

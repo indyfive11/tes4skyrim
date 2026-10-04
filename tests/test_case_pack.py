@@ -17,6 +17,7 @@ sys.path.insert(0, REPO)
 
 import convert
 from asset_convert.sources import bsa_pack
+from tests.conftest import NIF_STUB
 
 
 # ---------------------------------------------------------------------------
@@ -34,7 +35,7 @@ def _plugin(tmp_path, files):
     """output/Oblivion.esm holding the plugin, a stale BSA and `files`."""
     root = tmp_path / 'output' / 'Oblivion.esm'
     for rel in files:
-        _put(root / rel)
+        _put(root / rel, *([NIF_STUB] if rel.endswith('.nif') else []))
     _put(root / 'Oblivion.esm', b'TES4')
     _put(root / 'Oblivion.bsa', b'BSA')
     (tmp_path / 'output' / 'Finished Mods').mkdir(parents=True, exist_ok=True)

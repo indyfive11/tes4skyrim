@@ -173,6 +173,27 @@ def case_gate(plugin_dir: Path, collected, results: dict) -> bool:
     return False
 
 
+def animobject_gate(plugin_dir: Path, results: dict) -> bool:
+    """False, with an error in `results`, when an animated-object project is unsafe.
+
+    A graph naming a sequence its NIF lacks crashes the game, and a leftover of
+    an interrupted mesh run would be packed like any file.  Every violating
+    path is printed.  A plugin with no animated object passes.
+    See: docs/commentary/asset_convert_animation.md#build-gate
+    """
+    from tools.validate.gamebryo_seq_check import build_gate
+    bad = sum(build_gate(str(meshes))['violations']
+              for meshes in _top_variants(plugin_dir, 'meshes'))
+    if not bad:
+        return True
+    msg = (f"{bad} animated-object violation(s) under {plugin_dir} (listed "
+           f"above as BAD); nothing packed until those meshes are rebuilt or "
+           f"the leftovers removed")
+    print(f"  ERROR {msg}")
+    results['errors'].append(msg)
+    return False
+
+
 def bin_files(
     files: 'list[tuple[Path, Path, int]]',
     limit: int = BSA_SIZE_LIMIT,
@@ -618,6 +639,8 @@ def pack_bsas(
     keep = plugin_dir and _pruned_keep(plugin_dir, export_dir, manifest_dir,
                                        results)
     if keep is None or not plugin_dir:
+        return results
+    if not animobject_gate(plugin_dir, results):
         return results
     specs = _pack_specs(plugin_dir, compress_textures)
     collected = [_collect_files(plugin_dir, spec[0], keep) for spec in specs]

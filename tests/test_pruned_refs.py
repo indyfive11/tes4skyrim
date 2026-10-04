@@ -10,6 +10,7 @@ import convert
 from asset_convert.sources import bsa_pack
 from asset_convert.texture import texture_prune
 from output_layout import asset_root, plugin_out_root, record_dir
+from tests.conftest import NIF_STUB
 
 
 def _put(path, data=b'DDS '):
@@ -56,7 +57,7 @@ def _nested_mod(tmp_path, manifest=True, meshes=True):
                 'textures/tes4/menus/unused.dds'):
         _put(mod / rel)
     if meshes:
-        _put(mod / 'meshes' / 'tes4' / 'cup.nif', b'NIF')
+        _put(mod / 'meshes' / 'tes4' / 'cup.nif', NIF_STUB)
     _put(out / 'Base.esm' / 'textures' / 'tes4' / 'Menus' / 'Faders' / 'Black.dds')
     exe = tmp_path / 'BSArch.exe'
     exe.write_bytes(b'')

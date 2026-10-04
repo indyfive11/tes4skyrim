@@ -116,6 +116,9 @@ at the end of `convert_meshes` in `asset_convert/asset_pipeline.py`
   (a mod's own casing, or a writer that joined a record path as-is) never
   reached the BSA. Now each spelling is collected under the lowercase archive
   top, and misc folders are deduplicated by case the same way.
+- **A second gate sits beside it:** `animobject_gate` refuses a pack whose
+  animated-object projects have a violation — see
+  [the build checks every animated object itself](asset_convert_animation.md#build-gate).
 - **The gate fails only on file collisions**, measured on the lowercase
   archive path AFTER `texture_prune`, i.e. on exactly what would be packed:
   two files there means BSArch keeps one and silently drops the other. The

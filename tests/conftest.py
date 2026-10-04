@@ -10,6 +10,10 @@ from asset_convert.game_paths import NAMESPACE_ENV, current_namespace, set_names
 from asset_convert.sources.source_registry import SELECTED_DIR_ENV, select_directory
 
 
+#: The least a packed tree's `.nif` needs for the pack gate to read it: the format line and a version.
+NIF_STUB = b'Gamebryo File Format, Version 20.0.0.5\n\x05\x00\x00\x14'
+
+
 @pytest.fixture(autouse=True)
 def _restore_process_selection():
     """Put back the asset namespace and selected Data folder a pipeline call sets for the process."""

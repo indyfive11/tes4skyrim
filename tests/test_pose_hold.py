@@ -8,6 +8,7 @@ sequence) and the rule that the two never disagree on disk.
 See: docs/commentary/asset_convert_animation.md#end-hold-states
 """
 
+import collections
 import hashlib
 import io
 import os
@@ -19,6 +20,8 @@ from pathlib import Path
 
 import pytest
 
+import convert
+
 if not hasattr(time, 'clock'):
     time.clock = time.perf_counter
 
@@ -29,9 +32,10 @@ from asset_convert.havok.hkx_animobject import (HOLD_EVENT, SOUND_EVENT,
                                                 graph_generators,
                                                 stage_animobject_project)
 from asset_convert.nif import nif_batch, nif_converter, pose_hold, sse_nif
+from asset_convert.sources import bsa_pack
 from asset_convert.nif.nif_passes import collect_sequence_names
 from pyffi.formats.nif import NifFormat
-from tests.conftest import require_case_twins
+from tests.conftest import NIF_STUB, require_case_twins
 from tools.validate import gamebryo_seq_check
 
 EXPORT_MESHES = Path('export/Oblivion.esm/meshes')
@@ -1212,8 +1216,8 @@ class TestGamebryoSeqCheck:
         """It used to count as checked-and-clean."""
         root, dst, _tree = _copy_pair(wall[0], tmp_path)
         dst.write_bytes(b'not a nif')
-        code, summary = _audit(root, capsys)
-        assert code == 1 and summary.endswith('violations: 1')
+        code, out = _audit_text(root, capsys)
+        assert code == 1 and f'NIF cannot be read: {dst}: not a NIF' in out
 
     @pytest.mark.parametrize('missing', [
         'wall.nif', 'wall_behavior/Behaviors/Behavior00.hkx',
@@ -1337,3 +1341,187 @@ class TestGamebryoSeqCheck:
         assert _audit(wall[0], capsys, *good)[0] == 0
         for flag in ('--expect-checked', '--expect-end-graphs', '--expect-holds'):
             assert _audit(wall[0], capsys, flag, '7')[0] == 1
+
+
+# ---------------------------------------------------------------------------
+# The validator as the build's own gate
+# ---------------------------------------------------------------------------
+
+
+def _plugin_output(src_root, tmp_path):
+    """`src_root`'s meshes as the built tree of Oblivion.esm: (output dir, NIF folder)."""
+    plugin = tmp_path / 'output' / 'Oblivion.esm'
+    shutil.copytree(Path(src_root) / 'meshes', plugin / 'meshes')
+    return tmp_path / 'output', _wall_dst(plugin).parent
+
+
+def _pack(monkeypatch, tmp_path, output):
+    """(results, {archive: staged files}) of a BSA pack with BSArch stubbed out."""
+    staged = {}
+
+    def run(_exe, stage_root, bsa_path, _compress, results):
+        """Record what would be packed instead of packing it."""
+        staged[bsa_path.name] = sorted(
+            p.relative_to(stage_root).as_posix()
+            for p in Path(stage_root).rglob('*') if p.is_file())
+        results['packed'].append(str(bsa_path))
+        return True
+
+    monkeypatch.setattr(bsa_pack, '_run_bsarch', run)
+    exe = tmp_path / 'BSArch.exe'
+    exe.write_bytes(b'')
+    return bsa_pack.pack_bsas('Oblivion.esm', output_dir=str(output),
+                              bsarch_path=str(exe)), staged
+
+
+class TestBuildGate:
+    """The build runs the validator itself: violations == 0, or nothing ships."""
+
+    def test_clean_tree_passes(self, wall, capsys):
+        """One project, named by its NIF, nothing wrong."""
+        totals = gamebryo_seq_check.build_gate(str(wall[0]))
+        assert (totals['checked'], totals['violations']) == (1, 0)
+        assert 'violations: 0' in capsys.readouterr().out
+
+    def test_crash_pair_fails_and_names_the_path(self, wall, holdless_wall,
+                                                 tmp_path, capsys):
+        """A graph naming holds its NIF lacks: one violation, the mesh printed."""
+        root, dst, _tree = _crash_pair(wall, holdless_wall, tmp_path)
+        assert gamebryo_seq_check.build_gate(str(root))['violations'] == 1
+        out = capsys.readouterr().out
+        assert f'BAD {dst.with_suffix("")}' in out and "'ForwardHold'" in out
+
+    def test_a_recased_project_is_still_named(self, tmp_path):
+        """The BGED keeps its author's case; a loose deploy lowercases the files.
+
+        Matching the name case-sensitively would call the tree unnamed and
+        skip it, crash pair or not.
+        """
+        dst = tmp_path / 'meshes' / 'tes4' / 'Chargen' / 'Wall.NIF'
+        nif_converter.convert_nif(str(_sample(_WALL)), str(dst))
+        (dst.parent / 'Wall_behavior').rename(dst.parent / 'wall_behavior')
+        dst.rename(dst.parent / 'wall.nif')
+        totals = gamebryo_seq_check.build_gate(str(tmp_path))
+        assert (totals['checked'], totals['unnamed'], totals['violations']) == (1, 0, 0)
+
+    @pytest.mark.parametrize('size', [0, 9, 300])
+    def test_a_nif_whose_header_cannot_be_read_fails(self, wall, tmp_path,
+                                                     capsys, size):
+        """Empty, not a NIF, or cut off inside its header: refused, never skipped.
+
+        Such a NIF names no tree, so the tree beside it reads as unnamed; the
+        NIF itself must be the violation or a real pair is passed unread.
+        """
+        root, dst, _tree = _copy_pair(wall[0], tmp_path)
+        dst.write_bytes(dst.read_bytes()[:size])
+        totals = gamebryo_seq_check.build_gate(str(root))
+        assert totals['violations'] == 1
+        assert gamebryo_seq_check.main([str(root), '--build-gate']) == 1
+        assert f'NIF cannot be read: {dst}' in capsys.readouterr().out
+
+    def test_a_nif_cut_off_after_its_header_fails_without_a_traceback(
+            self, wall, tmp_path, capsys, caplog):
+        """pyffi logs a traceback for the broken block; the gate prints one line."""
+        root, dst, _tree = _copy_pair(wall[0], tmp_path)
+        dst.write_bytes(dst.read_bytes()[:-200])
+        assert gamebryo_seq_check.build_gate(str(root))['violations'] == 1
+        assert f'NIF cannot be read: {dst}' in capsys.readouterr().out
+        assert not [r for r in caplog.records if r.exc_info]
+
+    def test_a_nif_of_another_version_is_read_whole_and_passes(self, tmp_path):
+        """Only a 20.2.0.7 header has the string table; any other NIF is searched."""
+        (tmp_path / 'old.nif').write_bytes(NIF_STUB)
+        totals = gamebryo_seq_check.build_gate(str(tmp_path))
+        assert (totals['nifs'], totals['violations']) == (1, 0)
+
+    @pytest.mark.parametrize('kind', ['tree with no NIF', 'empty tree'])
+    def test_trees_with_nothing_to_read_still_pass(self, wall, tmp_path, kind):
+        """No NIF at all is not an unreadable NIF."""
+        root, dst, _tree = _copy_pair(wall[0], tmp_path)
+        if kind == 'empty tree':
+            shutil.rmtree(root / 'meshes')
+            (root / 'meshes').mkdir()
+        else:
+            dst.unlink()
+        totals = gamebryo_seq_check.build_gate(str(root))
+        assert (totals['checked'], totals['violations']) == (0, 0)
+
+    def test_leftover_staging_folder_fails(self, wall, tmp_path, capsys):
+        """An interrupted mesh run must not be packed."""
+        root, dst, _tree = _copy_pair(wall[0], tmp_path)
+        (dst.parent / 'wall_hkxstage').mkdir()
+        assert gamebryo_seq_check.build_gate(str(root))['violations'] == 1
+        assert 'wall_hkxstage' in capsys.readouterr().out
+
+    def test_tree_with_no_animated_object_passes(self, tmp_path, capsys):
+        """A hand run fails "nothing checked"; the build must not."""
+        nif_converter.convert_nif(str(_sample(_WALL)),
+                                  str(tmp_path / 'plain' / 'wall.nif'))
+        (tmp_path / 'textures').mkdir()
+        totals = gamebryo_seq_check.build_gate(str(tmp_path))
+        assert (totals['checked'], totals['nifs'], totals['violations']) == (0, 1, 0)
+        assert gamebryo_seq_check.main([str(tmp_path), '--build-gate']) == 0
+        assert _audit(tmp_path, capsys)[0] == 1
+
+    @pytest.mark.parametrize('kind', ['foreign folder', 'tree of a removed mesh'])
+    def test_a_behavior_folder_no_nif_names_is_skipped_not_failed(
+            self, wall, tmp_path, capsys, kind):
+        """Only a project a NIF names is ours to judge; the hand run still flags it."""
+        root, dst, _tree = _copy_pair(wall[0], tmp_path)
+        if kind == 'foreign folder':
+            (dst.parent / 'mt_behavior').mkdir()
+            (dst.parent / 'mt_behavior' / 'mt_behavior.hkx').write_bytes(b'x')
+        else:
+            shutil.copytree(dst.parent / 'wall_behavior', dst.parent / 'old_behavior')
+        totals = gamebryo_seq_check.build_gate(str(root))
+        assert (totals['checked'], totals['unnamed'], totals['violations']) == (1, 1, 0)
+        assert 'skip ' in capsys.readouterr().out
+        assert _audit(root, capsys)[0] == 1
+
+    def test_a_missing_project_fails_even_with_no_tree_at_all(self, wall, tmp_path,
+                                                             capsys):
+        """Zero projects is a pass only when no NIF names one."""
+        root, _dst, tree = _copy_pair(wall[0], tmp_path)
+        shutil.rmtree(tree)
+        totals = gamebryo_seq_check.build_gate(str(root))
+        assert (totals['checked'], totals['violations']) == (0, 1)
+        assert 'does not exist' in capsys.readouterr().out
+
+    def test_the_pack_refuses_a_violating_tree(self, wall, holdless_wall,
+                                               tmp_path, monkeypatch, capsys):
+        """Nothing is handed to BSArch, and the error says why."""
+        root, _dst, _tree = _crash_pair(wall, holdless_wall, tmp_path)
+        output, _folder = _plugin_output(root, tmp_path)
+        results, staged = _pack(monkeypatch, tmp_path, output)
+        assert staged == {} and results['packed'] == []
+        assert len(results['errors']) == 1
+        assert 'animated-object violation' in results['errors'][0]
+        assert 'BAD ' in capsys.readouterr().out
+
+    def test_the_pack_takes_a_clean_tree(self, wall, tmp_path, monkeypatch):
+        """Positive control: the same pack, without the crash pair, packs the pair."""
+        output, _folder = _plugin_output(wall[0], tmp_path)
+        results, staged = _pack(monkeypatch, tmp_path, output)
+        assert results['errors'] == []
+        assert 'meshes/tes4/dungeons/chargen/wall.nif' in staged['Oblivion.bsa']
+        assert len(staged['Oblivion.bsa']) == 5
+
+    @pytest.mark.parametrize('broken', [False, True])
+    def test_the_mesh_step_ends_on_the_gate(self, wall, tmp_path, monkeypatch,
+                                            broken):
+        """`phase_assets` fails when the tree it leaves has a violation.
+
+        The conversion itself is stubbed; the tree on disk is what is judged,
+        which is also what a `--mesh-subdirs` partial run leaves.
+        """
+        output, folder = _plugin_output(wall[0], tmp_path)
+        if broken:
+            (folder / 'wall_hkxaside').mkdir()
+        monkeypatch.setattr(convert.os, 'environ', dict(os.environ))
+        monkeypatch.setattr('asset_convert.asset_pipeline.convert_meshes',
+                            lambda **_k: {})
+        monkeypatch.setattr('asset_convert.ui.book_inam.generate_book_inams',
+                            lambda **_k: collections.Counter())
+        assert convert.phase_assets('Oblivion.esm', {},
+                                    output_dir=str(output)) is not broken
+

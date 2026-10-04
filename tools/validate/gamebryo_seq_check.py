@@ -31,12 +31,17 @@ Gamebryo generator, extracted from Skyrim - Animations.bsa: 0 violations):
 Usage:
     python tools/validate/gamebryo_seq_check.py <output-meshes-dir> [--quiet]
         [--expect-checked N] [--expect-end-graphs N] [--expect-holds N]
+    python tools/validate/gamebryo_seq_check.py <output-meshes-dir> --build-gate
+
+The build runs `build_gate` itself, after the mesh step and before any pack.
 
 Each tree is paired with its NIF and its four members IGNORING CASE; a tree
 that cannot be paired, lacks a member, or whose NIF or graph cannot be read
 (no generators, no Rest generator) is a violation.  So is a leftover of an
-interrupted build (`_hkxstage` / `_hkxaside` folder, `.ni~` file) and a NIF
-whose BGED names a `_behavior` project that does not exist.  Exit code is 0
+interrupted build (`_hkxstage` / `_hkxaside` folder, `.ni~` file), a NIF
+whose BGED names a `_behavior` project that does not exist, and ANY `.nif`
+under the root whose header cannot be read (not a NIF, or cut off inside its
+header): what it names cannot be determined, so it is refused, not passed.  Exit code is 0
 only when at least one project was checked, there is NO violation, and every
 --expect-* count matches; matching counts never excuse a violation.
 
@@ -47,17 +52,13 @@ See: docs/commentary/asset_convert_animation.md#graph-and-nif-move-together
 """
 import argparse
 import collections
+import logging
 import os
 import re
 import struct
 import sys
 import time
 import warnings
-
-warnings.filterwarnings('ignore')
-if not hasattr(time, '_original_clock'):
-    time.clock = time.perf_counter
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 
 #: Folder suffix of a generated project tree, compared in lower case.
@@ -77,6 +78,9 @@ _MEMBERS = ('behaviors/behavior00.hkx', 'characters/character01.hkx',
 _LEFTOVER_DIRS = ('_hkxstage', '_hkxaside')
 _LEFTOVER_NIF = '.ni~'
 
+#: How every NIF begins, whichever engine version wrote it.
+_NIF_MAGIC = (b'Gamebryo File Format', b'NetImmerse File Format')
+
 #: The NIF version whose header layout `_header_strings` knows (Skyrim LE and SE).
 _NIF_VERSION = 0x14020007
 
@@ -89,14 +93,32 @@ _COUNTS = (('checked', 'behavior projects checked'),
            ('holds', 'hold sequences'))
 
 
-def _nif_sequences(nif_path):
-    """(declared sequence names, [(seq name, empty text key count), ...])."""
+def _read_quietly(nif_path):
+    """(parsed NIF, None), or (None, why it could not be parsed).
+
+    pyffi logs a full traceback for a block it cannot read; logging is held
+    off for the read so the failure reaches the output as one violation line.
+    """
     from asset_convert.nif import sse_nif
-    from pyffi.formats.nif import NifFormat
+    held = logging.root.manager.disable
+    logging.disable(logging.CRITICAL)
     try:
-        data = sse_nif.read_nif(nif_path)
-    except Exception:
-        return None, []
+        return sse_nif.read_nif(nif_path), None
+    except Exception as exc:
+        return None, f'{type(exc).__name__}: {exc}'
+    finally:
+        logging.disable(held)
+
+
+def _nif_sequences(nif_path):
+    """(declared sequence names, [(seq name, empty text key count), ...]).
+
+    (None, the reason) when the NIF cannot be parsed.
+    """
+    from pyffi.formats.nif import NifFormat
+    data, why = _read_quietly(nif_path)
+    if data is None:
+        return None, why
     names = set()
     empty = []
     for root in data.roots:
@@ -232,7 +254,7 @@ def check_project(base, sub):
         return verdict
     declared, empty_keys = _nif_sequences(nif)
     if declared is None:
-        verdict['problems'] = [f'NIF cannot be read: {nif}']
+        verdict['problems'] = [f'NIF cannot be read: {nif}: {empty_keys}']
         return verdict
     generators = _graph_sequences(hkx)
     if not any(gen.endswith('Rest') for gen, _seq in generators):
@@ -253,25 +275,37 @@ def check_project(base, sub):
     return verdict
 
 
+def _take(fh, size):
+    """The next `size` bytes of `fh`; ValueError when the file ends first."""
+    data = fh.read(size)
+    if len(data) != size:
+        raise ValueError('the file ends inside its header')
+    return data
+
+
 def _header_strings(fh):
-    """The header string table of an open 20.2.0.7 NIF; None for any other layout."""
-    if not fh.readline(96).startswith(b'Gamebryo File Format'):
+    """The header string table of an open 20.2.0.7 NIF; None for another version.
+
+    ValueError when the file does not start with a NIF header, or when a
+    20.2.0.7 header cannot be read to the end of its string table.
+    """
+    if not fh.readline(96).startswith(_NIF_MAGIC):
+        raise ValueError('not a NIF: no file-format line')
+    if struct.unpack('<I', _take(fh, 4))[0] != _NIF_VERSION:
         return None
-    version, _endian, _user, blocks, _bs = struct.unpack('<IBIII', fh.read(17))
-    if version != _NIF_VERSION:
-        return None
+    blocks = struct.unpack('<BIII', _take(fh, 13))[2]
     for _ in range(3):
-        fh.seek(fh.read(1)[0], 1)
-    for _ in range(struct.unpack('<H', fh.read(2))[0]):
-        fh.seek(struct.unpack('<I', fh.read(4))[0], 1)
-    fh.seek(6 * blocks, 1)
-    count, longest = struct.unpack('<II', fh.read(8))
+        _take(fh, _take(fh, 1)[0])
+    for _ in range(struct.unpack('<H', _take(fh, 2))[0]):
+        _take(fh, struct.unpack('<I', _take(fh, 4))[0])
+    _take(fh, 6 * blocks)
+    count, longest = struct.unpack('<II', _take(fh, 8))
     strings = []
     for _ in range(count):
-        size = struct.unpack('<I', fh.read(4))[0]
+        size = struct.unpack('<I', _take(fh, 4))[0]
         if size > longest:
-            return None
-        strings.append(fh.read(size))
+            raise ValueError('a header string is longer than the header allows')
+        strings.append(_take(fh, size))
     return strings
 
 
@@ -279,13 +313,12 @@ def bged_projects(nif_path):
     """Generated-project paths a NIF's BGED names, read without parsing blocks.
 
     A 20.2.0.7 NIF keeps the BGED's path in its header string table, so only
-    the header is read; any other layout is searched whole.  Raises OSError.
+    the header is read; another NIF version is searched whole.  Raises OSError
+    or ValueError when the answer cannot be determined: a file that is not a
+    NIF, or one cut off inside its header, names nothing anyone can vouch for.
     """
     with open(nif_path, 'rb') as fh:
-        try:
-            strings = _header_strings(fh)
-        except (struct.error, IndexError):
-            strings = None
+        strings = _header_strings(fh)
         if strings is None:
             fh.seek(0)
             strings = _PROJECT_PATH.findall(fh.read())
@@ -312,11 +345,11 @@ def _project_exists(nif_path, project):
 
 
 def _nif_problems(nif_path, totals):
-    """Problems with one NIF's BGED: a generated project that is not there."""
+    """Problems with one NIF: unreadable, or its BGED names a missing project."""
     try:
         projects = bged_projects(nif_path)
-    except OSError as exc:
-        return [f'NIF cannot be read for its BGED: {exc}']
+    except (OSError, ValueError) as exc:
+        return [f'NIF cannot be read: {nif_path}: {exc}']
     totals.update(nifs=1, nifs_with_project=int(bool(projects)))
     return [f'BGED names {project!r}, which does not exist (object not drawn)'
             for project in projects if not _project_exists(nif_path, project)]
@@ -352,14 +385,45 @@ def _report(label, verdict, totals, quiet):
         print(f'  ok  {label}: {verdict["declared"]}')
 
 
-def audit(root, quiet=False):
+def _named_trees(base, files):
+    """Lower-case names of the project folders the NIFs in `base` name in a BGED.
+
+    This is what makes a `_behavior` folder one of OURS: a converted NIF beside
+    it points at it.  A NIF whose header cannot be read names nothing here, so
+    a tree beside it may be skipped as unnamed; `_nif_problems` makes that NIF
+    a violation in the same walk, so the run fails all the same.
+    """
+    named = set()
+    for name in files:
+        if not name.lower().endswith('.nif'):
+            continue
+        try:
+            projects = bged_projects(os.path.join(base, name))
+        except (OSError, ValueError):
+            continue
+        named.update(p.replace('/', '\\').split('\\')[-2].lower() for p in projects)
+    return named
+
+
+def audit(root, quiet=False, named_only=False):
     """Check every project tree, NIF and leftover under `root`; the totals.
 
-    Keys: checked, end_graphs, holds, violations, nifs, nifs_with_project.
+    `named_only` leaves out, and counts as `unnamed`, any `_behavior` folder
+    no NIF beside it names: the build gate must not judge a tree the converter
+    did not generate, or one a mesh no longer uses.
+    Keys: checked, end_graphs, holds, violations, nifs, nifs_with_project,
+    unnamed.
     """
     totals = collections.Counter()
     for base, dirs, files in os.walk(root):
-        for sub in sorted(d for d in dirs if d.lower().endswith(_TREE_SUFFIX)):
+        subs = sorted(d for d in dirs if d.lower().endswith(_TREE_SUFFIX))
+        named = _named_trees(base, files) if named_only and subs else None
+        for sub in subs:
+            if named is not None and sub.lower() not in named:
+                totals.update(unnamed=1)
+                print(f'  skip {os.path.join(base, sub)}: no NIF beside it '
+                      f'names it')
+                continue
             verdict = check_project(base, sub)
             totals.update(checked=1, end_graphs=int(verdict['end']),
                           holds=verdict['holds'])
@@ -370,6 +434,22 @@ def audit(root, quiet=False):
     return totals
 
 
+def build_gate(root):
+    """The automatic build gate over a meshes tree: the totals, problems printed.
+
+    Passes when `violations` is 0.  Unlike a hand run it judges only projects
+    a converted NIF names, and a tree with no animated object at all passes:
+    a texture-only plugin is not a failure.
+    See: docs/commentary/asset_convert_animation.md#build-gate
+    """
+    totals = audit(root, quiet=True, named_only=True)
+    print('  animated objects: '
+          + '   '.join(f'{text}: {totals[key]}' for key, text in _COUNTS)
+          + f'   not named by a NIF: {totals["unnamed"]}'
+          + f'   violations: {totals["violations"]}')
+    return totals
+
+
 def _parser():
     """The command line."""
     ap = argparse.ArgumentParser(
@@ -377,6 +457,9 @@ def _parser():
         formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('root')
     ap.add_argument('--quiet', action='store_true')
+    ap.add_argument('--build-gate', action='store_true',
+                    help='judge as the build does: only projects a NIF names, '
+                         'and no project at all is a pass')
     for key, text in _COUNTS:
         ap.add_argument('--expect-' + key.replace('_', '-'), type=int,
                         metavar='N', help=f'fail unless {text} == N')
@@ -390,6 +473,8 @@ def main(argv=None):
     so does any `--expect-*` count the tree does not match.
     """
     args = _parser().parse_args(argv)
+    if args.build_gate:
+        return 1 if build_gate(args.root)['violations'] else 0
     totals = audit(args.root, args.quiet)
     print('\n' + '   '.join(f'{text}: {totals[key]}' for key, text in _COUNTS)
           + f'   violations: {totals["violations"]}')
@@ -407,5 +492,15 @@ def main(argv=None):
     return 0 if clean else 1
 
 
+def _run_as_script():
+    """Quiet pyffi and make the repo importable, then run `main`."""
+    warnings.filterwarnings('ignore')
+    if not hasattr(time, '_original_clock'):
+        time.clock = time.perf_counter
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__)))))
+    return main()
+
+
 if __name__ == '__main__':
-    sys.exit(main())
+    sys.exit(_run_as_script())

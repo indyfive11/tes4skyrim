@@ -666,7 +666,21 @@ def phase_assets(file_name: str, config: dict, output_dir: str = None,
     )
     print(f"[{file_name}] Book INAM complete: ok={bstats['ok']} "
           f"note={bstats['note']} skip={bstats['skip']} fail={bstats['fail']}")
-    return True
+    return animated_objects_ok(file_name, out_dir)
+
+
+def animated_objects_ok(file_name: str, out_dir: str) -> bool:
+    """Whether the plugin's converted animated objects are safe to ship.
+
+    The mesh step ends on the same gate the pack starts with, so a run that
+    never packs (loose files, `--meshes-only`) still fails loudly.
+    See: docs/commentary/asset_convert_animation.md#build-gate
+    """
+    from asset_convert.sources.bsa_pack import animobject_gate
+    plugin_dir = plugin_out_root(Path(out_dir), file_name,
+                                 str(SCRIPT_DIR / "export"))
+    print(f"[{file_name}] Checking animated-object projects...")
+    return animobject_gate(plugin_dir, {'errors': []})
 
 # ===========================================================================
 # Phase 4: CONVERT SPEEDTREES
