@@ -31,7 +31,10 @@ Gamebryo generator, extracted from Skyrim - Animations.bsa: 0 violations):
 Usage:
     python tools/validate/gamebryo_seq_check.py <output-meshes-dir> [--quiet]
         [--expect-checked N] [--expect-end-graphs N] [--expect-holds N]
+        [--expect-anim-var N] [--expect-wrapped N] [--expect-legacy N]
+        [--require-playing-variable]
     python tools/validate/gamebryo_seq_check.py <output-meshes-dir> --build-gate
+        [--require-playing-variable]
 
 The build runs `build_gate` itself, after the mesh step and before any pack.
 
@@ -44,6 +47,15 @@ under the root whose header cannot be read (not a NIF, or cut off inside its
 header): what it names cannot be determined, so it is refused, not passed.  Exit code is 0
 only when at least one project was checked, there is NO violation, and every
 --expect-* count matches; matching counts never excuse a violation.
+
+A graph that declares `bAnimPlaying` must write it in exactly the states that
+are held (this graph's hold generators) or LOOP (the NIF's cycle type 0); a
+graph without the variable is LEGACY: valid and counted, a violation only
+under --require-playing-variable.
+
+NOT READ: object fields.  A wrapper is found by its NAME,
+`ModifierGenerator<digits>`; a modifier generator under any other name is not
+seen (one whose name merely starts with `ModifierGenerator` is reported).
 
 NOT READ: transition rows.  Everything here comes from the graph's string
 pool, so a graph whose hold states exist but which has no `End` row to reach
@@ -90,7 +102,25 @@ _PROJECT_PATH = re.compile(rb'[\x20-\x7e]*_behavior[\\/][\x20-\x7e]*?\.hkx', re.
 #: (totals key, printed label) of the counts a run reports and can be held to.
 _COUNTS = (('checked', 'behavior projects checked'),
            ('end_graphs', 'graphs declaring End'),
-           ('holds', 'hold sequences'))
+           ('holds', 'hold sequences'),
+           ('anim_var', 'declaring bAnimPlaying'),
+           ('wrapped', 'wrapped states'),
+           ('legacy', 'legacy graphs'))
+
+#: The graph bool a playing state holds at 1, and the modifier member that writes it, as the pool stores them.
+_PLAYING_VARIABLE = b'bAnimPlaying'
+_ACTIVE_MEMBER = b'bIsActive0'
+
+#: Name prefixes of a sequence generator and of the wrapper that marks its state as playing.
+_GENERATOR = 'GamebryoSequenceGenerator'
+_WRAPPER = 'ModifierGenerator'
+_NODE_PREFIXES = (b'GamebryoSequenceGenerator', b'ModifierGenerator')
+_WRAPPER_NAME = re.compile(r'ModifierGenerator\d+$')
+_HOLD_NAME = re.compile(r'GamebryoSequenceGeneratorHold\d+$')
+_SEQUENCE_GENERATOR = re.compile(r'GamebryoSequenceGenerator\d+$')
+
+#: nif.xml CycleType LOOP: the only cycle type that never finishes.
+_CYCLE_LOOP = 0
 
 
 def _read_quietly(nif_path):
@@ -111,16 +141,19 @@ def _read_quietly(nif_path):
 
 
 def _nif_sequences(nif_path):
-    """(declared sequence names, [(seq name, empty text key count), ...]).
+    """(declared names, [(seq name, empty text key count), ...], LOOP names).
 
-    (None, the reason) when the NIF cannot be parsed.
+    A name loops when the FIRST sequence of that name with controlled blocks
+    has cycle type 0.  (None, the reason, nothing) when the NIF cannot be
+    parsed.
     """
     from pyffi.formats.nif import NifFormat
     data, why = _read_quietly(nif_path)
     if data is None:
-        return None, why
+        return None, why, set()
     names = set()
     empty = []
+    cycles = {}
     for root in data.roots:
         for block in root.tree():
             if isinstance(block, NifFormat.NiControllerManager):
@@ -129,13 +162,16 @@ def _nif_sequences(nif_path):
                         continue
                     sname = bytes(seq.name or b'').decode('latin-1')
                     names.add(sname)
+                    if seq.num_controlled_blocks:
+                        cycles.setdefault(sname, int(seq.cycle_type))
                     tk = getattr(seq, 'text_keys', None)
                     if tk is not None:
                         n = sum(1 for k in tk.text_keys
                                 if not bytes(k.value or b'').strip())
                         if n:
                             empty.append((sname, n))
-    return names, empty
+    return names, empty, {name for name, cycle in cycles.items()
+                          if cycle == _CYCLE_LOOP}
 
 
 def _graph_sequences(hkx_path):
@@ -235,24 +271,80 @@ def _generator_problems(declared, generators):
     return problems
 
 
-def _declares_end(hkx_path):
-    """Whether the graph's string pool holds the `End` event."""
+def _graph_pool(hkx_path, stem):
+    """The graph's string pool, without the three strings that are its own name.
+
+    The graph is named after the model: `<stem>` twice and `<stem>SM`, ahead
+    of every node.  Left in, a model called `End` or `bAnimPlaying` would
+    stand in for the event or the variable, and one called `ModifierGenerator01`
+    for a wrapper.  Compared ignoring case: a deploy may lowercase the folder.
+    """
     with open(hkx_path, 'rb') as fh:
-        return _END_EVENT in fh.read().split(b'\x00')
+        pool = fh.read().split(b'\x00')
+    for own in (stem, stem, stem + 'SM'):
+        hits = [i for i, p in enumerate(pool)
+                if p.decode('latin-1').lower() == own.lower()]
+        if hits:
+            del pool[hits[0]]
+    return pool
 
 
-def check_project(base, sub):
+def _playing_problems(pool, generators, loops, verdict, require_variable):
+    """Problems with who writes `bAnimPlaying`; fills the verdict's counts.
+
+    Expected wrapped states, by state id: every sequence with a hold generator
+    in THIS graph, and every sequence the NIF loops.  A graph that declares
+    the variable must wrap exactly those, each wrapper right before the
+    generator of its own id, with one `bIsActive0`.  A graph without the
+    variable and without wrappers is legacy: valid, a problem only under
+    `require_variable`.  Wrappers are found by NAME.
+    See: docs/commentary/asset_convert_animation.md#playing-variable
+    """
+    nodes = [p.decode('latin-1') for p in pool if p.startswith(_NODE_PREFIXES)]
+    wrapped = {int(n[len(_WRAPPER):]) for n in nodes if _WRAPPER_NAME.match(n)}
+    plays = {int(gen[len(_GENERATOR):]): seq for gen, seq in generators
+             if _SEQUENCE_GENERATOR.match(gen)}
+    expected = ({int(gen[len(_HOLD_GENERATOR):]) for gen, _seq in generators
+                 if _HOLD_NAME.match(gen)}
+                | {i for i, seq in plays.items() if seq in loops})
+    declares = _PLAYING_VARIABLE in pool
+    verdict.update(variable=None if wrapped and not declares else declares,
+                   wrapped=len(wrapped) if declares else 0)
+    if not declares:
+        return (['wrapped states but no bAnimPlaying variable'] * bool(wrapped)
+                + ['legacy graph: bAnimPlaying is not declared']
+                * (require_variable and not wrapped))
+    problems = [f'wrapped states {sorted(wrapped)}, expected {sorted(expected)} '
+                f'(held or LOOP)'] * (wrapped != expected)
+    problems += [f'hold generator {gen} carries no state id'
+                 for gen, _seq in generators
+                 if gen.startswith(_HOLD_GENERATOR) and not _HOLD_NAME.match(gen)]
+    problems += [f'{name} is not a wrapper name this tool can place'
+                 for name in nodes if name.startswith(_WRAPPER)
+                 and not _WRAPPER_NAME.match(name)]
+    problems += [f'{name} does not wrap {_GENERATOR}{name[len(_WRAPPER):]}'
+                 for name, after in zip(nodes, nodes[1:] + [''])
+                 if _WRAPPER_NAME.match(name)
+                 and after != _GENERATOR + name[len(_WRAPPER):]]
+    if pool.count(_ACTIVE_MEMBER) != int(bool(wrapped)):
+        problems.append(f'{pool.count(_ACTIVE_MEMBER)} bIsActive0 binding(s) for '
+                        f'{len(wrapped)} wrapped state(s)')
+    return problems
+
+
+def check_project(base, sub, require_variable=False):
     """One project tree's verdict: problems, End declared, holds, NIF names.
 
     An unreadable NIF is a problem: a graph beside a mesh nobody could inspect
     is not known to be safe.  So is a behaviour file that yields no generator,
     or no Rest generator: nothing was read from it.
     """
-    verdict = {'problems': [], 'end': False, 'holds': 0, 'declared': []}
+    verdict = {'problems': [], 'end': False, 'holds': 0, 'declared': [],
+               'variable': None, 'wrapped': 0}
     nif, hkx, verdict['problems'] = _pair(base, sub)
     if verdict['problems']:
         return verdict
-    declared, empty_keys = _nif_sequences(nif)
+    declared, empty_keys, loops = _nif_sequences(nif)
     if declared is None:
         verdict['problems'] = [f'NIF cannot be read: {nif}: {empty_keys}']
         return verdict
@@ -263,7 +355,8 @@ def check_project(base, sub):
             f'{hkx}: not a graph this tool can vouch for']
         return verdict
     holds = [gen for gen, _seq in generators if gen.startswith(_HOLD_GENERATOR)]
-    verdict.update(end=_declares_end(hkx), holds=len(holds),
+    pool = _graph_pool(hkx, sub[:-len(_TREE_SUFFIX)])
+    verdict.update(end=_END_EVENT in pool, holds=len(holds),
                    declared=sorted(declared))
     verdict['problems'] = [
         f'sequence {sname!r}: {n} EMPTY text key value(s) '
@@ -272,6 +365,8 @@ def check_project(base, sub):
     if holds and not verdict['end']:
         verdict['problems'].append(
             f'{len(holds)} hold generator(s) but no End event to reach them')
+    verdict['problems'] += _playing_problems(pool, generators, loops, verdict,
+                                             require_variable)
     return verdict
 
 
@@ -405,16 +500,18 @@ def _named_trees(base, files):
     return named
 
 
-def audit(root, quiet=False, named_only=False):
+def audit(root, quiet=False, named_only=False, require_variable=False,
+          legacy=None):
     """Check every project tree, NIF and leftover under `root`; the totals.
 
     `named_only` leaves out, and counts as `unnamed`, any `_behavior` folder
     no NIF beside it names: the build gate must not judge a tree the converter
-    did not generate, or one a mesh no longer uses.
-    Keys: checked, end_graphs, holds, violations, nifs, nifs_with_project,
-    unnamed.
+    did not generate, or one a mesh no longer uses.  `legacy`, a list, is
+    given the label of every graph that does not declare bAnimPlaying.
+    Keys: the `_COUNTS` keys, violations, nifs, nifs_with_project, unnamed.
     """
     totals = collections.Counter()
+    legacy = [] if legacy is None else legacy
     for base, dirs, files in os.walk(root):
         subs = sorted(d for d in dirs if d.lower().endswith(_TREE_SUFFIX))
         named = _named_trees(base, files) if named_only and subs else None
@@ -424,29 +521,38 @@ def audit(root, quiet=False, named_only=False):
                 print(f'  skip {os.path.join(base, sub)}: no NIF beside it '
                       f'names it')
                 continue
-            verdict = check_project(base, sub)
+            verdict = check_project(base, sub, require_variable)
+            label = os.path.join(base, sub[:-len(_TREE_SUFFIX)])
             totals.update(checked=1, end_graphs=int(verdict['end']),
-                          holds=verdict['holds'])
-            _report(os.path.join(base, sub[:-len(_TREE_SUFFIX)]), verdict,
-                    totals, quiet)
+                          holds=verdict['holds'], wrapped=verdict['wrapped'],
+                          anim_var=int(verdict['variable'] is True),
+                          legacy=int(verdict['variable'] is False))
+            legacy += [label] * (verdict['variable'] is False)
+            _report(label, verdict, totals, quiet)
         for label, problems in _loose_problems(base, dirs, files, totals):
             _report(label, {'problems': problems}, totals, quiet)
     return totals
 
 
-def build_gate(root):
+def build_gate(root, require_variable=False):
     """The automatic build gate over a meshes tree: the totals, problems printed.
 
     Passes when `violations` is 0.  Unlike a hand run it judges only projects
     a converted NIF names, and a tree with no animated object at all passes:
-    a texture-only plugin is not a failure.
+    a texture-only plugin is not a failure.  `require_variable` makes a legacy
+    graph a violation; the build itself never asks for that.
     See: docs/commentary/asset_convert_animation.md#build-gate
     """
-    totals = audit(root, quiet=True, named_only=True)
+    legacy = []
+    totals = audit(root, quiet=True, named_only=True,
+                   require_variable=require_variable, legacy=legacy)
     print('  animated objects: '
           + '   '.join(f'{text}: {totals[key]}' for key, text in _COUNTS)
           + f'   not named by a NIF: {totals["unnamed"]}'
           + f'   violations: {totals["violations"]}')
+    if legacy and totals['anim_var']:
+        print(''.join(f'  legacy (no bAnimPlaying, IsAnimPlaying reads 0 '
+                      f'there) {label}\n' for label in legacy), end='')
     return totals
 
 
@@ -460,6 +566,9 @@ def _parser():
     ap.add_argument('--build-gate', action='store_true',
                     help='judge as the build does: only projects a NIF names, '
                          'and no project at all is a pass')
+    ap.add_argument('--require-playing-variable', action='store_true',
+                    help='a legacy graph (no bAnimPlaying) is a violation: '
+                         'for the acceptance run of a full rebuild')
     for key, text in _COUNTS:
         ap.add_argument('--expect-' + key.replace('_', '-'), type=int,
                         metavar='N', help=f'fail unless {text} == N')
@@ -472,10 +581,18 @@ def main(argv=None):
     A run that inspected nothing proves nothing, so `checked == 0` fails, and
     so does any `--expect-*` count the tree does not match.
     """
-    args = _parser().parse_args(argv)
+    parser = _parser()
+    args = parser.parse_args(argv)
     if args.build_gate:
-        return 1 if build_gate(args.root)['violations'] else 0
-    totals = audit(args.root, args.quiet)
+        given = [key for key, _text in _COUNTS
+                 if getattr(args, 'expect_' + key) is not None]
+        if given:
+            parser.error('--build-gate judges violations only; it takes no '
+                         '--expect-* count')
+        totals = build_gate(args.root, args.require_playing_variable)
+        return 1 if totals['violations'] else 0
+    totals = audit(args.root, args.quiet,
+                   require_variable=args.require_playing_variable)
     print('\n' + '   '.join(f'{text}: {totals[key]}' for key, text in _COUNTS)
           + f'   violations: {totals["violations"]}')
     mismatched = [

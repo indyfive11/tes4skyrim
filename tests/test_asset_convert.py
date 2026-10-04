@@ -3797,6 +3797,8 @@ class TestAnimObjectBehaviorGraph:
                 f'{seq} has no Gamebryo generator'
             assert f'<hkparam name="name">{seq}</hkparam>' in xml, \
                 f'{seq} has no state'
+        assert '<hkcstring>bAnimPlaying</hkcstring>' in xml, \
+            'converted IsAnimPlaying reads a variable the graph must declare'
 
         # SERIALIZE_IGNORED in the vanilla template — emitting any of these
         # makes hkxcmd fail the compile SILENTLY (no file, no error text).
@@ -3808,7 +3810,8 @@ class TestAnimObjectBehaviorGraph:
         """A static mesh must not get a BGED pointing at a nonexistent graph."""
         from asset_convert.havok.hkx_animobject import generate_animobject_project
 
-        assert generate_animobject_project(str(tmp_path), 'a/b.nif', []) == ''
+        assert generate_animobject_project(str(tmp_path), 'a/b.nif', [],
+                                           loops=()) == ''
         assert not list(tmp_path.rglob('*.hkx'))
 
     @pytest.mark.skipif(not EXPORT_MESHES.exists(), reason='Export meshes not available')
@@ -3949,7 +3952,7 @@ class TestAnimObjectBehaviorGraph:
         # The generator must pass the dummy name, not the model stem.
         out = tempfile.mkdtemp()
         generate_animobject_project(out, 'tes4/dungeons/chargen/mywall.nif',
-                                    ['Forward'])
+                                    ['Forward'], loops=())
         skel = (Path(out) / 'tes4' / 'dungeons' / 'chargen' /
                 'mywall_behavior' / 'CharacterAssets' / 'Skeleton.hkx')
         raw = skel.read_bytes()

@@ -116,7 +116,10 @@ OnActivate, …). TES5 uses Papyrus, an object-oriented language.
 GetIsCurrentPackage/GetCurrentAIPackage-vs-form),
 `ObjectReference.PushActorAway` and
 `ObjectReference.GetAnimationVariableBool("bAnimPlaying")` (→ IsAnimPlaying) all
-exist and are used by the converter.
+exist and are used by the converter. (`bAnimPlaying` is not a vanilla variable:
+the native exists, the name is ours, and every generated animated-object graph
+declares it — see
+[bAnimPlaying](asset_convert_animation.md#playing-variable).)
 
 ## Paired on/off commands — the asymmetric-map trap
 <a id="paired-onoff-commands-asymmetric-map"></a>
@@ -4328,7 +4331,15 @@ a Papyrus approximation.
 - **`HasVampireFed`** reads `PlayerVampireQuestScript.VampireStatus`, which is 1
   exactly while the vampire has recently fed.
 - **`IsAnimPlaying`** is exposed by the behavior graph as an animation variable,
-  cast to Int because TES4 call sites compare and assign 0/1.
+  cast to Int because TES4 call sites compare and assign 0/1. The variable is
+  `bAnimPlaying`, declared and written by every animated-object graph the
+  converter generates (`asset_convert/havok/hkx_animobject.py`): 1 while a
+  held one-shot or a LOOP sequence state is active, 0 in `Rest`, in a hold
+  and in a hold-less CLAMP state
+  ([bAnimPlaying](asset_convert_animation.md#playing-variable)). It still
+  reads 0, with an error line, on a receiver that has no generated graph
+  (vanilla's shared Autoplay graph, no sequences, 3D not loaded) and on a
+  graph built before the variable existed.
 - **`IsCasting`** (OBSE) asks "is this actor playing a cast animation", which
   the animation graph answers natively — no SKSE dependency.
 - **`GetIsCreature`**: Skyrim marks people with the `ActorTypeNPC` race keyword,

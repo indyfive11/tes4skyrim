@@ -50,6 +50,7 @@ import shutil
 import struct
 import time
 
+from asset_convert.havok.behavior_nodes import BINDING_TMPL, VARIABLE_INFO_TMPL
 from asset_convert.havok.hkx_xml import HkxPackfile, compile_hkx, convert_hkx_to_amd64
 
 # The one-bone reference pose as vanilla SingleBoneSkeleton.hkx stores it:
@@ -137,6 +138,13 @@ SOUND_EVENT = 'SoundPlay'
 
 #: Graph event a NIF `end` text key raises; it moves a finished sequence onto its hold state.
 HOLD_EVENT = 'End'
+
+#: Graph bool that reads 1 while a wrapped state is active: the name every converted `IsAnimPlaying` reads.
+PLAYING_VARIABLE = 'bAnimPlaying'
+
+#: Member of the one BSIsActiveModifier that writes PLAYING_VARIABLE, and the name prefix of a wrapper.
+_ACTIVE_MEMBER = 'bIsActive0'
+_WRAPPER_PREFIX = 'ModifierGenerator'
 
 #: A compiled project awaiting its NIF: the BGED value, where it was built, and where it belongs.
 StagedProject = collections.namedtuple('StagedProject', 'bged stage_dir final_dir')
@@ -365,11 +373,49 @@ def _sequence_rows(sequences, eid, state):
     return rows
 
 
-def _state(pf, fx, name, state_id, generator, sequence, rows):
+def _playing_modifier(pf):
+    """The graph's one BSIsActiveModifier: PLAYING_VARIABLE is 1 while a wrapped state is active.
+
+    One binding, `bIsActive0` to variable 0, no inversion; no modifier list.
+    See: docs/commentary/asset_convert_animation.md#playing-variable
+    """
+    bind = pf.add('hkbVariableBindingSet')
+    bind.param_raw('bindings',
+                   BINDING_TMPL.format(member=_ACTIVE_MEMBER, var_index=0),
+                   numelements=1)
+    bind.param('indexOfBindingToEnable', -1)
+    active = pf.add('BSIsActiveModifier')
+    active.param('variableBindingSet', bind.ref)
+    active.param('userData', 2)
+    active.param('name', 'IsActiveModifier')
+    active.param('enable', True)
+    for i in range(5):
+        active.param(f'bIsActive{i}', False)
+        active.param(f'bInvertActive{i}', False)
+    return active
+
+
+def _wrapped(pf, gen, state_id, modifier):
+    """`gen` under an hkbModifierGenerator naming the shared `modifier`.
+
+    The wrapper is named after its state's id, so the name says which state
+    is wrapped whatever else in the graph is.
+    """
+    wrapper = pf.add('hkbModifierGenerator')
+    wrapper.param('variableBindingSet', 'null')
+    wrapper.param('userData', 1)
+    wrapper.param('name', f'{_WRAPPER_PREFIX}{state_id:02d}')
+    wrapper.param('modifier', modifier.ref)
+    wrapper.param('generator', gen.ref)
+    return wrapper
+
+
+def _state(pf, fx, name, state_id, generator, sequence, rows, modifier=None):
     """One state whose generator plays NIF sequence `sequence`.
 
     The generator takes exactly pSequence, eBlendModeFunction and fPercent;
-    an empty `sequence` plays nothing.
+    an empty `sequence` plays nothing.  With `modifier` the generator sits
+    under a modifier generator, so the state counts as playing.
     See: docs/commentary/asset_convert_animation.md#animated-object-behaviour-graphs
     """
     gen = pf.add('BGSGamebryoSequenceGenerator')
@@ -379,6 +425,8 @@ def _state(pf, fx, name, state_id, generator, sequence, rows):
     gen.param('pSequence', sequence)
     gen.param('eBlendModeFunction', 'BMF_NONE')
     gen.param('fPercent', '1.000000')
+    if modifier is not None:
+        gen = _wrapped(pf, gen, state_id, modifier)
 
     st = pf.add('hkbStateMachineStateInfo')
     st.param('variableBindingSet', 'null')
@@ -394,25 +442,28 @@ def _state(pf, fx, name, state_id, generator, sequence, rows):
     return st
 
 
-def _states(pf, fx, sequences, holds, eid):
+def _states(pf, fx, sequences, holds, eid, loops):
     """Every state in array order: one per sequence, Rest, then one per hold.
 
     Rest plays nothing and reaches every sequence.  A held sequence gains an
     End row to its hold; the hold carries that state's rows minus End.  Every
-    sequence owns one hold id slot, held or not, so no id depends on which
-    other sequences are held.
+    sequence owns one hold id slot, held or not.  A sequence state is wrapped
+    as playing iff it is held or loops; Rest and the holds never are.
     See: docs/commentary/asset_convert_animation.md#end-hold-states
     """
     rest_id = len(sequences)
     held = [i for i, seq in enumerate(sequences) if seq in holds]
     hold_id = {i: rest_id + 1 + i for i in held}
+    playing = playing_states(sequences, holds, loops)
+    modifier = _playing_modifier(pf) if playing else None
     states = []
     for i, seq in enumerate(sequences):
         rows = _sequence_rows(sequences, eid, i)
         if i in hold_id:
             rows = rows + [(eid[HOLD_EVENT], hold_id[i])]
         states.append(_state(pf, fx, seq, i,
-                             f'GamebryoSequenceGenerator{i:02d}', seq, rows))
+                             f'GamebryoSequenceGenerator{i:02d}', seq, rows,
+                             modifier if i in playing else None))
     states.append(_state(pf, fx, 'Rest', rest_id,
                          'GamebryoSequenceGeneratorRest', '',
                          [(eid[seq], j) for j, seq in enumerate(sequences)]))
@@ -456,7 +507,7 @@ def _state_machine(pf, graph_name, states, start_id):
 
 
 def _graph_data(pf, events):
-    """The graph's event table: `events` by id, and no variables at all.
+    """The graph's event table and its one variable, BOOL PLAYING_VARIABLE at 0.
 
     The word min/max arrays must sit between eventInfos and
     variableInitialValues, or hkxcmd fails the compile silently.
@@ -464,17 +515,18 @@ def _graph_data(pf, events):
     strings = pf.add('hkbBehaviorGraphStringData')
     strings.param_strings('eventNames', events)
     strings.param_array('attributeNames', [])
-    strings.param_array('variableNames', [])
+    strings.param_strings('variableNames', [PLAYING_VARIABLE])
     strings.param_array('characterPropertyNames', [])
 
     values = pf.add('hkbVariableValueSet')
-    values.param_array('wordVariableValues', [])
+    values.param_structs('wordVariableValues', [[('value', 0)]])
     values.param_array('quadVariableValues', [])
     values.param_array('variantVariableValues', [])
 
     gdata = pf.add('hkbBehaviorGraphData')
     gdata.param_array('attributeDefaults', [])
-    gdata.param_array('variableInfos', [])
+    gdata.param_raw('variableInfos', VARIABLE_INFO_TMPL.format(vtype='BOOL'),
+                    numelements=1)
     gdata.param_structs('characterPropertyInfos', [])
     gdata.param_structs('eventInfos', [[('flags', 0)] for _ in events])
     gdata.param_array('wordMinVariableValues', [])
@@ -484,7 +536,14 @@ def _graph_data(pf, events):
     return gdata
 
 
-def behavior_xml(graph_name: str, sequences: list, holds: dict = None) -> str:
+def playing_states(sequences, holds, loops) -> set:
+    """Ids of the sequence states that read as playing: held, or a LOOP."""
+    return {i for i, seq in enumerate(sequences)
+            if seq in (holds or {}) or seq in loops}
+
+
+def behavior_xml(graph_name: str, sequences: list, holds: dict = None,
+                 loops=()) -> str:
     """State machine with one BGSGamebryoSequenceGenerator per NIF sequence.
 
     `sequences` are the NiControllerSequence names from the converted NIF.
@@ -492,6 +551,7 @@ def behavior_xml(graph_name: str, sequences: list, holds: dict = None) -> str:
     SOUND_EVENT follows them so the NIF's sound keys reach the engine.
     `holds` maps a sequence to its one-frame hold sequence: HOLD_EVENT is then
     declared last and moves the finished sequence onto the hold's state.
+    `loops` names the LOOP sequences.
     See: docs/commentary/asset_convert_animation.md#end-hold-states
     """
     holds = {seq: hold for seq, hold in (holds or {}).items()
@@ -501,7 +561,8 @@ def behavior_xml(graph_name: str, sequences: list, holds: dict = None) -> str:
 
     pf = HkxPackfile(first_id=100)
     fx = _transition_effect(pf)
-    states = _states(pf, fx, sequences, holds, eid)
+    states = _states(pf, fx, sequences, holds, eid,
+                     set(loops) & set(sequences))
     sm = _state_machine(pf, graph_name, states,
                         _start_state_id(sequences, len(sequences)))
     gdata = _graph_data(pf, events)
@@ -554,28 +615,58 @@ def compiled_generators(hkx_path) -> dict:
     return found
 
 
-def _verify_compiled_graph(hkx_path, sequences, holds):
-    """Raise unless each compiled generator plays exactly what it should.
+def graph_node_names(sequences: list, holds: dict, loops) -> list:
+    """Generator and wrapper names of the graph `behavior_xml` emits, in file order.
+
+    A wrapped state's wrapper comes right before the generator it wraps; then
+    Rest; then the hold generators.
+    """
+    held = {seq: hold for seq, hold in (holds or {}).items()
+            if seq in sequences}
+    playing = playing_states(sequences, held, set(loops) & set(sequences))
+    names = []
+    for i, seq in enumerate(sequences):
+        names += [f'{_WRAPPER_PREFIX}{i:02d}'] * (i in playing)
+        names.append(f'{_GENERATOR_PREFIX}{i:02d}')
+    names.append(f'{_GENERATOR_PREFIX}Rest')
+    return names + [f'{_GENERATOR_PREFIX}Hold{i:02d}'
+                    for i, seq in enumerate(sequences) if seq in held]
+
+
+def _verify_compiled_graph(hkx_path, graph_name, sequences, holds, loops):
+    """Raise unless the compiled graph has the nodes it should, in order.
 
     hkxcmd exits 0 on a dangling reference and writes a smaller graph, so a
-    successful compile is not evidence of structure.  Transition rows are not
-    read: only the generators, what each plays, and the End event.
+    successful compile is not evidence of structure.  Checked, all as STRINGS
+    of the pool minus the graph's own name: what each generator plays, the
+    ordered generator and wrapper names, the variable, one `bIsActive0` iff a
+    state is wrapped, the End event.  Rows and object fields are not read.
     See: docs/commentary/asset_convert_animation.md#graph-and-nif-move-together
     """
     want = graph_generators(sequences, holds)
     got = compiled_generators(hkx_path)
     wrong = sorted(f'{gen} plays {got.get(gen)!r}, expected {seq!r}'
                    for gen, seq in want.items() if got.get(gen) != seq)
-    wrong += sorted(f'unexpected generator {gen}' for gen in set(got) - set(want))
     with open(hkx_path, 'rb') as f:
-        has_end = HOLD_EVENT.encode('ascii') in f.read().split(b'\x00')
-    if len(want) > len(sequences) + 1 and not has_end:
-        wrong.append(f'{HOLD_EVENT} event not declared')
+        pool = [p.decode('latin-1') for p in f.read().split(b'\x00')]
+    for own in (graph_name, graph_name, f'{graph_name}SM'):
+        if own in pool:
+            pool.remove(own)
+    nodes = [p for p in pool if p.startswith((_GENERATOR_PREFIX, _WRAPPER_PREFIX))]
+    expected = graph_node_names(sequences, holds, loops)
+    if nodes != expected:
+        wrong.append(f'nodes are {nodes}, expected {expected}')
+    writers = int(any(n.startswith(_WRAPPER_PREFIX) for n in expected))
+    if pool.count(_ACTIVE_MEMBER) != writers:
+        wrong.append(f'{pool.count(_ACTIVE_MEMBER)} {_ACTIVE_MEMBER} binding(s), '
+                     f'expected {writers}')
+    events = [PLAYING_VARIABLE] + [HOLD_EVENT] * (len(want) > len(sequences) + 1)
+    wrong += [f'{name} not declared' for name in events if name not in pool]
     if wrong:
         raise RuntimeError(f'compiled graph {hkx_path} is wrong: {wrong}')
 
 
-def _compile_tree(proj_dir, stem, sequences, holds):
+def _compile_tree(proj_dir, stem, sequences, holds, loops):
     """Compile the four hkx files of one project into `proj_dir`.
 
     The skeleton bone is always DUMMY_BONE; its pose is repaired while the
@@ -588,7 +679,7 @@ def _compile_tree(proj_dir, stem, sequences, holds):
     targets = [
         (os.path.join(proj_dir, skel_rel), skeleton_xml(DUMMY_BONE), True),
         (os.path.join(proj_dir, behv_rel),
-         behavior_xml(stem, sequences, holds), False),
+         behavior_xml(stem, sequences, holds, loops), False),
         (os.path.join(proj_dir, char_rel),
          _character_xml(stem, behv_rel, skel_rel), False),
         (os.path.join(proj_dir, stem + '.hkx'), _project_xml(char_rel), False),
@@ -604,19 +695,24 @@ def _compile_tree(proj_dir, stem, sequences, holds):
         if is_skeleton:
             fix_identity_quat(path)
         convert_hkx_to_amd64(path)
-    _verify_compiled_graph(os.path.join(proj_dir, behv_rel), sequences, holds)
+    _verify_compiled_graph(os.path.join(proj_dir, behv_rel), stem, sequences,
+                           holds, loops)
 
 
 def stage_animobject_project(out_root: str, model_rel: str, sequences: list,
-                             holds: dict = None) -> StagedProject:
+                             holds: dict = None, *, loops) -> StagedProject:
     """Compile one animated object's hkx tree into a staging folder.
 
     out_root is the output meshes root and model_rel the NIF path under it.
     Nothing reaches the final `<stem>_behavior` folder until
     `commit_animobject_project`.  Ambient-only meshes name vanilla's shared
     graph and stage nothing; no sequences means no graph (empty BGED).
+    `loops`, the LOOP sequences, has no default: forgetting it would ship
+    looping states that never read as playing.
     See: docs/commentary/asset_convert_animation.md#graph-and-nif-move-together
     """
+    if isinstance(loops, str):
+        raise TypeError('loops is a collection of sequence names, not one name')
     if not sequences:
         return StagedProject('', None, None)
     if all(seq in (_AUTOPLAY_SEQUENCE, _AUTOLOOP_SEQUENCE) for seq in sequences):
@@ -628,7 +724,7 @@ def stage_animobject_project(out_root: str, model_rel: str, sequences: list,
     if os.path.lexists(stage_dir):
         raise RuntimeError(f'staging folder cannot be cleared: {stage_dir}')
     try:
-        _compile_tree(stage_dir, stem, sequences, holds)
+        _compile_tree(stage_dir, stem, sequences, holds, loops)
     except BaseException:
         shutil.rmtree(stage_dir, ignore_errors=True)
         raise
@@ -728,7 +824,7 @@ def discard_animobject_project(staged: StagedProject) -> None:
 
 
 def generate_animobject_project(out_root: str, model_rel: str, sequences: list,
-                                holds: dict = None) -> str:
+                                holds: dict = None, *, loops) -> str:
     """Write the 4-file hkx tree for one animated object; return its BGED.
 
     The BGED is the project hkx path relative to meshes\\, backslashed, or ''
@@ -736,6 +832,7 @@ def generate_animobject_project(out_root: str, model_rel: str, sequences: list,
     stages and commits around that write instead.
     See: docs/commentary/asset_convert_animation.md#graph-and-nif-move-together
     """
-    staged = stage_animobject_project(out_root, model_rel, sequences, holds)
+    staged = stage_animobject_project(out_root, model_rel, sequences, holds,
+                                      loops=loops)
     commit_animobject_project(staged)
     return staged.bged

@@ -17,7 +17,8 @@ apply_patches()
 from pyffi.formats.nif import NifFormat
 
 from asset_convert.havok.hkx_animobject import LOAD_SEQUENCES
-from asset_convert.nif.sequences import (CYCLE_CLAMP, SCRIPT_DRIVEN_SEQUENCES,
+from asset_convert.nif.sequences import (CYCLE_CLAMP, CYCLE_LOOP,
+                                         SCRIPT_DRIVEN_SEQUENCES,
                                          clone_sequence_as)
 
 #: A hold sequence is named after the transition whose end pose it freezes.
@@ -250,6 +251,24 @@ def plan_pose_holds(data, seq_names):
             continue
         planned.append(PlannedHold(root, seq, name, hold, interps))
     return planned, refused
+
+
+def loop_sequences(data, seq_names):
+    """The graph sequences `seq_names` that never finish: cycle type LOOP only.
+
+    Judges the first sequence of each name that has controlled blocks, the one
+    the graph plays.  REVERSE finishes like CLAMP, so it is not a loop.  A
+    looping state reads as playing for as long as it is active.
+    See: docs/commentary/asset_convert_animation.md#playing-variable
+    """
+    judged, loops = set(), set()
+    for _root, seq, name in _managed_sequences(data):
+        if name in judged or not seq.num_controlled_blocks:
+            continue
+        judged.add(name)
+        if name in seq_names and int(seq.cycle_type) == CYCLE_LOOP:
+            loops.add(name)
+    return loops
 
 
 def hold_names(planned):

@@ -102,7 +102,8 @@ from asset_convert.havok.hkx_animobject import (VANILLA_AUTOPLAY_BGED,
                                                 stage_animobject_project,
                                                 stale_animobject_project)
 from asset_convert.nif.pose_hold import (apply_pose_holds, hold_names,
-                                         missing_holds, plan_pose_holds)
+                                         loop_sequences, missing_holds,
+                                         plan_pose_holds)
 from asset_convert.nif.addon_nodes_falloutnv import remap_addon_nodes
 from asset_convert.nif.gun_parts_falloutnv import add_gun_part_sequences
 from asset_convert.nif.particles import (convert_particle_system,
@@ -1387,12 +1388,15 @@ def _stage_animobject_graph(data, seq_names, meshes_root, model_rel, result):
     A failure after planning records the error and returns a project that
     only clears a stale tree: the mesh then gets no hold and no BGED, and
     ships unanimated.  Nothing staged outlives a failure or an interrupt.
+    The LOOP set is read here, apart from the hold plan, so a planning
+    failure still leaves the looping states reading as playing.
     See: docs/commentary/asset_convert_animation.md#graph-and-nif-move-together
     """
     planned, staged = _plan_holds_or_none(data, seq_names, result), None
     try:
-        staged = stage_animobject_project(meshes_root, model_rel, seq_names,
-                                          hold_names(planned))
+        staged = stage_animobject_project(
+            meshes_root, model_rel, seq_names, hold_names(planned),
+            loops=loop_sequences(data, seq_names))
         apply_pose_holds(planned)
         if missing_holds(data, planned):
             raise RuntimeError(f'holds not registered: {missing_holds(data, planned)}')

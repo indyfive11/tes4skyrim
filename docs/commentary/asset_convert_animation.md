@@ -500,18 +500,33 @@ model's `Open`/`Close` sequence text keys and `items.load_door_model_sounds`
 lifts those names onto SNAM/ANAM.  The sequence NAME decides the slot, so the
 NIF is parsed rather than byte-scanned.
 
-### PlayGroup chains: NEVER convert to PlayAnimationAndWait (2026-08-02)
+### PlayGroup chains: do not rewrite into PlayAnimationAndWait (2026-08-02, reason corrected 2026-10-03)
 
-`PlayAnimationAndWait("<seq>", "<event>")` waits on a BEHAVIOR-GRAPH event.  A
-BGSGamebryoSequenceGenerator state has no completion event and NIF text keys
-are not delivered as anim events — vanilla proof: every gamebryo-sequence
-object script (norsarcophagustopanim01script, dunsolitudejailopencelldoor, the
-Solitude jail-wall scene) uses plain `PlayAnimation` with a state debounce and
-never waits; the scripts that DO wait (`sarcophagusskulllock01script`
-"alldone", `dunlabyanimateontrig` "done") drive native-hkx objects whose
-events are havok annotations.  The wait blocks its thread forever.  Consecutive
-same-frame PlayGroups therefore stay plain `PlayAnimation` calls (last event
-wins — which also matches Oblivion's own queue-depth-1 PlayGroup semantics).
+Consecutive same-frame PlayGroups stay plain `PlayAnimation` calls (last event
+wins — which also matches Oblivion's own queue-depth-1 PlayGroup semantics),
+and a script that polls `IsAnimPlaying` keeps its poll.
+
+**The reason recorded here until 2026-10-03 was wrong.** It said a
+`BGSGamebryoSequenceGenerator` state has no completion event, that NIF text
+keys are not delivered as anim events, and that `PlayAnimationAndWait`
+therefore "blocks its thread forever". Vanilla contradicts all three: nine
+vanilla object scripts wait on, or register for, events that exist ONLY as
+text keys in the NIF of a pure Gamebryo-sequence graph — including
+`PlayAnimationAndWait("playAnim02", "End")` on
+`GenericBehaviors\IdleTransIdleBack` — and our own graphs now act on the NIF's
+`end` key ([End → hold](#end-hold-states), proven live).
+
+The reasons that do hold:
+- a wait is a control-flow rewrite of every poll-style script (174 converted
+  Oblivion.esm scripts read `IsAnimPlaying`), and Oblivion's poll has no blocking
+  counterpart — the script goes on doing other things between polls;
+- many converted plays are sent by a DIFFERENT script than the one that asks
+  whether the object is still moving, so there is no call to wait on;
+- an event registration dies when the object unloads, and a wait that never
+  returns leaves a "busy" flag stuck in the save.
+
+So the poll is kept and made true instead:
+[`bAnimPlaying`](#playing-variable).
 
 - BSXFlags must have bit 0 set (ANIMATED) → value 139 (0x8B) for animated meshes. Detect via NiControllerManager on root.
 - Animation data: NiControllerSequence StringPalette offsets MUST be resolved BEFORE version upgrade (UV2=11→83). After upgrade, PyFFI switches to direct-string mode and offsets are ignored → empty node_name → crash.
@@ -805,6 +820,125 @@ Known and deliberately left (each is a tripwire, not an oversight):
 Still to be confirmed in-game: that a *restored* hold state applies its pose on
 a fresh 3D with no visible motion, and that a hold → same-name row visibly
 replays. Read both from a save (state name + generator timer), not by eye.
+
+<a id="playing-variable"></a>
+### `bAnimPlaying`: the graph bool that makes converted `IsAnimPlaying` real (2026-10-03)
+
+**Code:** `PLAYING_VARIABLE`, `_playing_modifier`, `_wrapped`, `playing_states`, `graph_node_names`, `_verify_compiled_graph` in `asset_convert/havok/hkx_animobject.py`; `loop_sequences` in `asset_convert/nif/pose_hold.py`; `_playing_problems` in `tools/validate/gamebryo_seq_check.py`
+
+Oblivion's `IsAnimPlaying` converts to
+`GetAnimationVariableBool("bAnimPlaying")`. Until now no graph declared that
+variable: the read logged *cannot fetch variable named bAnimPlaying of type
+bool, returning false* on every poll and every
+"is it still moving" guard was false. A switch could be re-pressed mid-swing,
+and scripts that wait for a clip advanced at once.
+
+**What the value must be.** Oblivion's handler asks "is any sequence of this
+object ACTIVE": a CLAMP sequence goes inactive on the frame it reaches its end
+key, a LOOP never does. In graph terms:
+
+| Active state | Reads | Why |
+|---|---|---|
+| a one-shot sequence state that has an `End` exit (it is HELD) | 1 | the clip is running; `End` will move it on |
+| its `<Seq>Hold` | 0 | the clip finished |
+| `Rest` | 0 | nothing plays |
+| a LOOP sequence state | 1, for as long as it is active | a loop never finishes (pads, wells, `SpecialIdle` swirls) |
+| a CLAMP sequence state with NO hold (a 1–2 frame `SpecialIdle` start state, a refused hold) | 0 | it has no `End` exit, so nothing would ever clear a 1 — and scripts that poll such an object would wait for ever |
+
+So the rule is not "in a sequence state". It is: **1 iff the active state is a
+sequence state that is held or plays a LOOP sequence.**
+
+**How it is written.** Every generated graph declares ONE variable, BOOL
+`bAnimPlaying`, initial word 0. When at least one state qualifies, the graph
+gets ONE shared `BSIsActiveModifier` (`enable` true, no inversion) whose single
+binding ties `bIsActive0` to that variable (`BINDING_TYPE_VARIABLE`,
+`bitIndex -1`), and each qualifying state's `BGSGamebryoSequenceGenerator` sits
+under an `hkbModifierGenerator` that names the modifier directly — no
+`hkbModifierList` (the creature graphs use one; the shape proven here does
+not). The engine sets the bound bool while any generator under the modifier is
+active and clears it when none is. A graph in which NOTHING qualifies gets the
+variable and no modifier, binding set or wrapper at all: `hkxcmd` drops an
+unreferenced object silently anyway, and the read then simply finds 0.
+
+- **A wrapper is named `ModifierGenerator{state id:02d}`**, after the state it
+  wraps, not after a running counter: `[SpecialIdle bare, Equip held, Forward
+  LOOP]` gives `ModifierGenerator01` and `02`. That is what lets the validator
+  compare a SET of state ids instead of a count. Saves store no wrapper name
+  (only the Gamebryo generator's name and the variable's), so the name is free.
+- **LOOP is `cycle_type == 0` and nothing else.** REVERSE finishes like CLAMP;
+  wrapped as a loop it would read 1 for ever. The NIF side reads the set
+  (`loop_sequences`: the first sequence of each name with controlled blocks,
+  the one the graph plays; exact-case names; graph sequences only) and hands it
+  down as a REQUIRED argument — `stage_animobject_project`, `_compile_tree` and
+  `generate_animobject_project` have no default, because a forgotten hand-off
+  yields looping states that read 0 with the compiled check agreeing.
+  `behavior_xml` alone defaults to "no loops": it is the pure XML function, and
+  with no NIF there is nothing to loop.
+- **The LOOP set is read apart from the hold plan**, inside the same guarded
+  step. A hold-planning failure costs the one-shots their holds and their
+  wrappers (they read 0, as before this change) and still leaves every looping
+  state reading 1.
+- **State, event and hold ids, generator names and every NIF byte are
+  unchanged** — only `Behavior00.hkx` differs. Measured on Oblivion.esm:
+  256 projects, 256 of 256 NIFs byte-identical to the build before the
+  variable, 256 graphs declaring it, 424 wrapped states (370 held + 54 LOOP),
+  1 graph with nothing wrapped.
+
+**Proven in game (2026-10-03)**, on a gate and a lever built by this shape and
+read back from saves: the variable is 1 in the sequence state and 0 in the
+hold; it is 1 during a second clip that interrupted the first, and 0 after it;
+a save made before the variable existed, restored into a sequence state, comes
+up 1; the error line is gone; a second press during the swing is ignored. The
+compiled lever graph of that test is pinned by digest in
+`tests/test_pose_hold.py`. Not yet observed: a LOOP past one cycle, a hold-less
+start state, and whether the value is written while the object is off-screen.
+
+**Who checks what.** The build-time check and the validator read NAMES and
+strings of the compiled file, nothing else; the object fields are pinned by
+the tests.
+- `_verify_compiled_graph`, every build: the pool's generator and wrapper
+  names IN ORDER must be exactly the expected interleaving (a wrapper right
+  before the generator it wraps), `bAnimPlaying` present, exactly one
+  `bIsActive0` string when something is wrapped and none — nor any wrapper —
+  when nothing is. Presence alone passed a wrapper on the wrong state, swapped
+  inner generators and two modifiers. It cannot see whether a wrapper really
+  points at the modifier, or any scalar field.
+- the validator: derives the expected wrapped set ITSELF — held from the
+  graph's own hold generators, LOOP from the NIF's cycle types, keyed by state
+  id — so it is the one check that notices a wrong LOOP input. A graph that
+  declares the variable with a different wrapped set is a violation. Wrappers
+  are found by NAME (`ModifierGenerator<digits>`): any other string starting
+  `ModifierGenerator` is reported, and a modifier generator under an unrelated
+  name is not seen.
+- the tests pin the fields: a per-shape XML table (every wrapper, whatever its
+  state id, names the one modifier, has no binding set of its own and
+  `userData` 1; the modifier's and the binding's whole field set on the proven
+  shape) and the digest of the compiled lever graph, the one place the scalar
+  fields are checked in a COMPILED file.
+- Both string checks take the graph's own name out of the pool first (`<stem>`
+  twice and `<stem>SM`): the graph is named after the model, and a model called
+  `ModifierGenerator01`, `bIsActive0`, `bAnimPlaying` or `End` would otherwise
+  be refused when correct or stand in for what is missing.
+
+**Legacy graphs.** A graph that does not declare the variable was built before
+it existed. It is VALID — `IsAnimPlaying` reads 0 there with the old error
+line, nothing crashes — so the build gate counts it (`legacy graphs: N`) and
+passes; otherwise every pack of an existing output tree would be refused the
+moment this shipped. When a tree holds at least one legacy graph AND at least
+one graph that declares the variable, the gate names each legacy graph: that
+is a partial rebuild. `--require-playing-variable` makes a legacy graph a
+violation, in a hand run and with `--build-gate` alike, for the acceptance run
+of a full rebuild (`--build-gate` refuses an `--expect-*` count rather than
+ignore it). A graph with wrappers and no variable is a violation, not a legacy
+graph.
+
+**TRIPWIRE — any change of the wrapped set strands a saved 1.** The variable's
+word is stored in each reference's save. If a later converter stops wrapping a
+state (a LOOP reclassified, a hold refused) while a save holds 1 for an object
+sitting in that state, nothing in the new graph will ever clear it: the object
+reads "still playing" for good and every latch on it sticks. Before changing
+the wrap rule, hold eligibility or the LOOP rule, check what a save restored
+into the affected state reads after its next transition.
 
 <a id="hold-interpolator-forms"></a>
 ### Hold interpolators keep the vanilla form — and never use QUADRATIC keys (2026-10-03)
