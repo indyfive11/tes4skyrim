@@ -19,6 +19,8 @@ sibling module for a three-line path helper.
 import os
 from pathlib import Path
 
+from asset_convert.case_paths import split_rel
+
 __all__ = ["win_join", "DEFAULT_NAMESPACE", "namespace_for",
            "set_namespace", "current_namespace", "owns_namespace"]
 
@@ -122,5 +124,4 @@ def win_join(root, rel: str) -> Path:
     a doubled one) are dropped, so `rel` can never escape `root` the way
     `Path(root) / '\\abs.nif'` would.
     """
-    parts = [p for p in str(rel).replace('/', '\\').split('\\') if p]
-    return Path(root).joinpath(*parts)
+    return Path(root).joinpath(*split_rel(rel))

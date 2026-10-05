@@ -10,6 +10,7 @@ See: docs/commentary/asset_convert_paths.md#case-resolver
 """
 
 import os
+import re
 import time
 from collections import namedtuple
 from pathlib import Path
@@ -26,6 +27,15 @@ _COUNTS = {}
 #: (root, lowercase rel) pairs already logged as a CASE COLLISION.
 _COLLIDED = set()
 
+#: A drive designator opening a segment (`f:`, `f:x`); Windows would follow it off the root.
+_DRIVE = re.compile(r'^(?:[^\\/]:)+')
+
+#: Rels already logged as PATH CLAMPED.
+_CLAMPED = set()
+
+#: Distinct clamped rels a process lists before its log goes quiet.
+_CLAMP_LOG_LIMIT = 50
+
 _FIELDS = ('exact', 'resolved', 'missed', 'collisions')
 
 #: dup_groups: sibling folders differing only by case; file_collisions: files sharing one key.
@@ -38,8 +48,38 @@ Census = namedtuple('Census', 'dup_groups file_collisions files')
 
 
 def split_rel(rel) -> list:
-    """`rel`'s segments; either separator, empty segments dropped."""
-    return [p for p in str(rel).replace('/', '\\').split('\\') if p]
+    """`rel`'s segments, safe to join under a root; either separator.
+
+    Empty and `.` segments are dropped. A `..` steps back but never above the
+    root, and a drive designator is cut from the front of a segment, so no
+    record or NIF string names a path outside the root it is joined to.
+    See: docs/commentary/asset_convert_paths.md#rel-cannot-escape
+    """
+    segs = [p for p in str(rel).replace('/', '\\').split('\\') if p]
+    if ':' not in str(rel) and '.' not in segs and '..' not in segs:
+        return segs
+    parts, clamped = [], False
+    for seg in segs:
+        cut = _DRIVE.sub('', seg)
+        clamped |= cut != seg or (cut == '..' and not parts)
+        if cut == '..':
+            del parts[-1:]
+        elif cut and cut != '.':
+            parts.append(cut)
+    if clamped:
+        _log_clamp(str(rel))
+    return parts
+
+
+def _log_clamp(rel: str) -> None:
+    """Print PATH CLAMPED once per rel, in ASCII, for the first `_CLAMP_LOG_LIMIT` rels."""
+    if rel in _CLAMPED or len(_CLAMPED) > _CLAMP_LOG_LIMIT:
+        return
+    _CLAMPED.add(rel)
+    if len(_CLAMPED) > _CLAMP_LOG_LIMIT:
+        print('  PATH CLAMPED: further paths are not listed')
+    else:
+        print('  PATH CLAMPED: %a kept inside its root' % rel)
 
 
 def _read(path):

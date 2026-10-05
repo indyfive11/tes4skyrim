@@ -6,6 +6,7 @@
 
 - [The case resolver](#case-resolver)
 - [The write rule](#write-rule)
+- [A relative path cannot leave its root](#rel-cannot-escape)
 - [The case census](#census)
 - [The pack gate](#pack-gate)
 - [Plugin names in any case](#plugin-names)
@@ -88,6 +89,51 @@ Mirror copiers (`nif_batch` destination, `asset_pipeline._copy_tree`,
 against an existing Frostcrag Reborn output would create about 930 case
 twins. Tripwire: before
 lowercasing mirror writers, require a clean output tree and a census of 0.
+
+## A relative path cannot leave its root
+<a id="rel-cannot-escape"></a>
+
+**Code:** `split_rel` in `asset_convert/case_paths.py`, which `resolve`,
+`exists`, `variants`, `list_prefix` and `write_path` all split with, and
+`win_join` in `asset_convert/game_paths.py`, which now splits with it too.
+
+A relative path here comes out of a record or a NIF, so a mod author (or a
+broken export) chooses its text. Joined as it stood, two kinds of segment led
+outside the root it was joined to, for a lookup and for a WRITE alike:
+
+- **`..`** on every host. An LTEX icon `..\..\..\..\x.dds` made
+  `ensure_ltex_normals` write `output/x_n.dds`, outside the plugin's own
+  folder.
+- **A drive designator** by Windows' join rules only: `f:\x.dds`,
+  `tes4\f:\x.dds` and `f:x.dds` all join to a path on drive `f:`
+  (`PureWindowsPath('C:/out').joinpath('tes4', 'f:', 'x.dds')` is `f:x.dds`).
+  On POSIX the same text is a folder literally named `f:`. Any one character
+  before the colon counts, since that is what `ntpath.splitroot` takes.
+
+`split_rel` drops empty segments as before and now `.` segments too (it used
+to keep them, so `a\.\b.dds` missed a case-blind lookup), lets a `..` step
+back through what the rel itself has already named but never above the root,
+and cuts a drive designator off the front of a segment. `a\..\b.dds` is
+still `b.dds`, as the filesystem would resolve it. A rel that would have left
+the root is logged as `PATH CLAMPED`: once per rel and process, in ASCII (so
+no console code page can fail on it), for the first 50 distinct rels.
+
+A record path is clamped where `safe_relpath` (`asset_convert/sources/archive.py`)
+refuses an archive member outright: an archive member that escapes is an
+attack, while a bad record string is usually a typo the game itself would
+answer with a missing file, and one of them must not abort a conversion.
+
+Measured on five plugin exports (283 record text files; Oblivion.esm,
+Knights.esp, DLCFrostcrag.esp and the Unofficial Oblivion Patch among them):
+no value holds a `..` segment or a drive designator, so no record of theirs
+changes. NIF texture
+strings pass through `authored_rel` first, which already removes a leading
+drive letter and an authoring prefix; whatever it leaves is clamped here.
+Not handled, because they stay below the root by these rules but are special
+to Windows itself: reserved device names (`con`, `nul`) and stream names
+(`x.dds:name`). Not verified on a Windows host: the drive rule is CPython's
+own (`PureWindowsPath`, `ntpath`), and Windows' handling of trailing dots and
+spaces in a segment was read from its documentation, not run.
 
 ## The case census
 <a id="census"></a>

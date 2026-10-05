@@ -5,10 +5,12 @@ Oblivion's output holds twin folders that differ only by case (an empty
 kept one spelling per folder, so the listing order decided hit or miss.
 """
 import os
+from pathlib import PurePosixPath, PureWindowsPath
 
 import pytest
 
 from asset_convert import case_paths
+from asset_convert.game_paths import win_join
 from asset_convert.nif import nif_batch, shaders
 from asset_convert.ui import book_inam
 
@@ -20,9 +22,10 @@ from asset_convert.ui import book_inam
 
 @pytest.fixture(autouse=True)
 def _fresh_state():
-    """Every test starts with no cached listings and no counts."""
+    """Every test starts with no cached listings, no counts and no clamp log."""
     case_paths.invalidate()
     case_paths.snapshot_counts()
+    case_paths._CLAMPED.clear()
     yield
     case_paths.invalidate()
     case_paths.snapshot_counts()
@@ -313,3 +316,70 @@ def test_census_fails_on_a_file_collision_across_merged_tops(tmp_path):
         str(plugin / 'Textures' / 'landscape' / 'dementia' / 'x.dds'),
         str(plugin / 'textures' / 'landscape' / 'dementia' / 'x.dds')]))]
     assert 'FAIL' in case_paths.census_line('t', c)
+
+
+# ---------------------------------------------------------------------------
+# A rel cannot leave its root
+# ---------------------------------------------------------------------------
+
+
+#: Rels that stay inside on their own, with the segments they split into.
+_INSIDE_RELS = [('tes4\\landscape\\x_n.dds', ['tes4', 'landscape', 'x_n.dds']),
+                ('\\\\lead//double\\x.dds', ['lead', 'double', 'x.dds']),
+                ('a\\..\\b.dds', ['b.dds']),
+                ('a\\.\\name..dds', ['a', 'name..dds'])]
+
+#: Rels that would leave the root by `..` or by a drive designator.
+_HOSTILE_RELS = ['..\\escaped.dds', 'tes4\\..\\..\\..\\escaped.dds', '..',
+                 'f:\\elsewhere\\x.dds', 'tes4\\f:\\x.dds', 'f:x.dds',
+                 'a:b:c.dds', 'f:..\\x.dds', 'f:..\\..\\x.dds', 'z:',
+                 '1:\\x.dds', '::x.dds']
+
+
+@pytest.mark.parametrize('rel, parts', _INSIDE_RELS)
+def test_split_rel_keeps_what_stays_inside(rel, parts, capsys):
+    """Separators of either kind go; an inner `..` steps back; nothing is logged."""
+    assert case_paths.split_rel(rel) == parts
+    assert capsys.readouterr().out == ''
+
+
+@pytest.mark.parametrize('rel', _HOSTILE_RELS)
+@pytest.mark.parametrize('flavour, root', [(PureWindowsPath, 'C:/out/textures'),
+                                           (PurePosixPath, '/out/textures')])
+def test_split_rel_never_leaves_the_root(rel, flavour, root):
+    """By Windows' own join rules and by POSIX's, a hostile rel stays below the root."""
+    parts = case_paths.split_rel(rel)
+    assert '..' not in parts
+    assert flavour(root).joinpath(*parts).is_relative_to(root)
+
+
+def test_a_clamped_rel_is_logged_once(capsys):
+    """The first clamp of a rel prints PATH CLAMPED; a repeat is silent."""
+    for rel in ('..\\..\\up.dds', 'tes4\\f:\\drive.dds'):
+        case_paths.split_rel(rel)
+        assert capsys.readouterr().out.count('PATH CLAMPED') == 1
+        case_paths.split_rel(rel)
+        assert capsys.readouterr().out == ''
+
+
+def test_the_clamp_log_is_ascii_and_bounded(capsys):
+    """A rel no console can encode still logs; past the limit one closing line is all."""
+    case_paths.split_rel('..\\bad\ufffdname\u0142.dds')
+    assert capsys.readouterr().out.isascii()
+    for i in range(case_paths._CLAMP_LOG_LIMIT + 20):
+        case_paths.split_rel('..\\n%d.dds' % i)
+    lines = capsys.readouterr().out.splitlines()
+    assert len(lines) == case_paths._CLAMP_LOG_LIMIT
+    assert lines[-1].endswith('further paths are not listed')
+
+
+def test_a_write_and_a_lookup_stay_below_the_root(tmp_path):
+    """A record path with `..` is written below the root and cannot find a file above it."""
+    root = tmp_path / 'out' / 'Plugin.esp' / 'textures'
+    root.mkdir(parents=True)
+    _put(tmp_path / 'out' / 'above.dds')
+    rel = '..\\..\\above.dds'
+    assert (root / '..' / '..' / 'above.dds').is_file()
+    assert case_paths.resolve([root], rel, 't') is None
+    assert case_paths.write_path(root, rel) == root / 'above.dds'
+    assert win_join(root, rel) == root / 'above.dds'
