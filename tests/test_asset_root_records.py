@@ -158,9 +158,11 @@ def test_flame_nif_comes_from_the_master_when_the_mod_has_none(tmp_path):
     nif_flames = _flames()
     exp, _rec = _export(tmp_path)
     base_fire = _write(exp / 'Base.esm' / 'meshes' / 'Fire' / 'FireA.NIF', 'x')
-    assert nif_flames._flame_source(str(exp / MOD), 'firea.nif') == str(base_fire)
+    assert os.path.samefile(
+        nif_flames._flame_source(str(exp / MOD), 'firea.nif'), base_fire)
     own = _write(exp / MOD / 'meshes' / 'fire' / 'firea.nif', 'y')
-    assert nif_flames._flame_source(str(exp / MOD), 'firea.nif') == str(own)
+    assert os.path.samefile(
+        nif_flames._flame_source(str(exp / MOD), 'firea.nif'), own)
     assert nif_flames._flame_source(str(exp / MOD), 'nothere.nif') is None
 
 

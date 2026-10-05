@@ -14,6 +14,7 @@ no plugin and no header, so the base is recorded at import time.
 """
 
 from asset_convert.nif import shaders
+import os
 import sys
 from pathlib import Path
 
@@ -112,7 +113,8 @@ class TestCaseBlindResolution:
         got = shaders.resolve_source_texture(
             'textures\\tes4\\Architecture\\ARStone02_n.dds',
             str(mod / 'meshes' / 'a.nif'))
-        assert got == str(mod / 'textures' / 'architecture' / 'arstone02_n.dds')
+        assert os.path.samefile(
+            got, mod / 'textures' / 'architecture' / 'arstone02_n.dds')
 
     def test_the_base_is_searched_case_blind_too(self, tmp_path):
         base = _tree(tmp_path, 'Base.esm', textures=['rock/stone.dds'])
@@ -129,7 +131,7 @@ class TestCaseBlindResolution:
         (d / 'Textures' / 'Tower' / 'Wall.dds').write_bytes(b'DDS ')
         got = shaders.resolve_source_texture(
             'textures\\tes4\\tower\\wall.dds', str(d / 'Meshes' / 'a.nif'))
-        assert got == str(d / 'Textures' / 'Tower' / 'Wall.dds')
+        assert os.path.samefile(got, d / 'Textures' / 'Tower' / 'Wall.dds')
 
     def test_a_name_differing_beyond_case_still_misses(self, tmp_path):
         mod = _tree(tmp_path, 'Base.esm', textures=['rock/stone.dds'])

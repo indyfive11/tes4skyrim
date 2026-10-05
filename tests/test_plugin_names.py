@@ -4,6 +4,7 @@ See: docs/commentary/asset_convert_paths.md#plugin-names
 """
 
 import argparse
+import os
 
 import pytest
 
@@ -56,7 +57,7 @@ def test_plugin_binary_is_found_in_any_case(tmp_path):
     data.mkdir()
     (data / 'Oblivion.esm').write_bytes(b'TES4')
     got = source_paths.resolve_plugin_path('oblivion.esm', str(data), str(tmp_path / 'export'))
-    assert got == str(data / 'Oblivion.esm')
+    assert os.path.samefile(got, data / 'Oblivion.esm')
 
 
 def test_lowercase_header_master_still_sorts_first(monkeypatch):

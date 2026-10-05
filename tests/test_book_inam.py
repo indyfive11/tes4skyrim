@@ -195,5 +195,6 @@ def test_mixed_case_book_texture_and_its_normal_are_found(tmp_path):
     (folder / 'Book01.DDS').write_bytes(b'dds')
     (folder / 'Book01_N.DDS').write_bytes(b'dds')
     tex = book_inam._find_source_texture([tmp_path], 'Clutter\\Books\\Book01.dds')
-    assert tex == str(folder / 'Book01.DDS')
-    assert book_inam._normal_sibling(tex) == str(folder / 'Book01_N.DDS')
+    assert os.path.samefile(tex, folder / 'Book01.DDS')
+    assert os.path.samefile(book_inam._normal_sibling(tex),
+                            folder / 'Book01_N.DDS')

@@ -154,7 +154,7 @@ class TestCaseBlindLookups:
         p.write_bytes(b'DDS ')
         assert lod_far_gen.find_texture(
             [tmp_path / 'lod', tmp_path / 'tex'],
-            'tes4\\trees\\billboards\\oak.dds') == p
+            'tes4\\trees\\billboards\\oak.dds').samefile(p)
 
     def test_no_flat_normal_over_a_masters_mixed_case_normal(self, gen,
                                                              tmp_path, capsys):

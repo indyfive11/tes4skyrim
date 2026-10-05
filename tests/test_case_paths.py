@@ -113,7 +113,7 @@ def test_root_order_beats_an_exact_hit_in_a_later_root(tmp_path):
     first = _put(tmp_path / 'a' / 'tex' / 'stone.dds')
     _put(tmp_path / 'b' / 'Tex' / 'Stone.DDS')
     got = case_paths.resolve([tmp_path / 'a', tmp_path / 'b'], 'Tex\\Stone.DDS', 't')
-    assert got == first
+    assert got.samefile(first)
 
 
 def test_file_created_after_the_listing_is_found_in_the_first_root(tmp_path):
@@ -124,13 +124,13 @@ def test_file_created_after_the_listing_is_found_in_the_first_root(tmp_path):
     assert case_paths.resolve([a, b], 'Tex\\Other.dds', 't') is None
     first = _put(a / 'tex' / 'stone.dds')
     _put(b / 'tex' / 'stone.dds')
-    assert case_paths.resolve([a, b], 'Tex\\Stone.DDS', 't') == first
+    assert case_paths.resolve([a, b], 'Tex\\Stone.DDS', 't').samefile(first)
 
 
 def test_deleted_file_is_not_returned(tmp_path):
     """A cached listing never returns a file that has gone."""
     f = _put(tmp_path / 'tex' / 'stone.dds')
-    assert case_paths.resolve([tmp_path], 'TEX\\Stone.dds', 't') == f
+    assert case_paths.resolve([tmp_path], 'TEX\\Stone.dds', 't').samefile(f)
     f.unlink()
     assert case_paths.resolve([tmp_path], 'TEX\\Stone.dds', 't') is None
 
