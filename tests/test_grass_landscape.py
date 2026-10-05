@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+from asset_convert import case_paths
+from asset_convert.game_paths import set_namespace
 from asset_convert.nif import grass_profile
 from asset_convert.texture import landscape_normals
 from asset_convert.nif.flipbook import decode_dxt
@@ -387,6 +389,104 @@ class TestLandscapeNormals:
         landscape_normals.ensure_ltex_normals(export, out / 'Plugin.esp' / 'textures', out)
         assert sorted(os.listdir(land)) == ['oblivion']
         assert (land / 'oblivion' / 'evil01_n.dds').is_file()
+
+    @pytest.mark.parametrize('owner', ['Plugin.esp', 'Master.esm'])
+    @pytest.mark.parametrize('spelling', ['landscape/dirt02_n.dds',
+                                          'Landscape/Dirt02_N.DDS'])
+    def test_a_shipped_normal_survives_backslash_paths(
+            self, tmp_path, monkeypatch, owner, spelling):
+        """Where `str(path)` uses backslashes, a shipped normal keeps its bytes and gains no twin."""
+        set_namespace('tes4')
+        monkeypatch.setattr(landscape_normals, 'Path', _BackslashPath)
+        export = _ltex_export(tmp_path, 'dirt02.dds')
+        out = tmp_path / 'output'
+        real = out / owner / 'textures' / 'tes4' / spelling
+        real.parent.mkdir(parents=True)
+        real.write_bytes(b'DDS shipped')
+        before = _tree_bytes(out)
+        assert landscape_normals.ensure_ltex_normals(
+            export, out / 'Plugin.esp' / 'textures', out) == (1, 0)
+        assert _tree_bytes(out) == before
+
+    def test_the_resolver_alone_decides_which_normals_are_missing(
+            self, tmp_path, monkeypatch):
+        """The disk says the reverse of the resolver, and the resolver's answer is followed."""
+        set_namespace('tes4')
+        export = _ltex_export(tmp_path, 'here.dds', 'gone.dds')
+        out = tmp_path / 'output'
+        mine = out / 'Plugin.esp' / 'textures'
+        shipped = (out / 'Master.esm' / 'textures' / 'tes4' / 'landscape'
+                   / 'gone_n.dds')
+        shipped.parent.mkdir(parents=True)
+        shipped.write_bytes(b'DDS shipped')
+        asked = []
+
+        def scripted(roots, rel, site='?'):
+            """Claim only `here_n.dds` exists, which is the one the disk lacks."""
+            asked.append(rel)
+            return rel.lower().endswith('here_n.dds')
+
+        monkeypatch.setattr(case_paths, 'exists', scripted)
+        assert landscape_normals.ensure_ltex_normals(export, mine, out) == (2, 1)
+        assert sorted(asked) == ['tes4\\landscape\\gone_n.dds',
+                                 'tes4\\landscape\\here_n.dds']
+        assert (mine / 'tes4' / 'landscape' / 'gone_n.dds').is_file()
+        assert not (mine / 'tes4' / 'landscape' / 'here_n.dds').exists()
+        assert shipped.read_bytes() == b'DDS shipped'
+
+    def test_the_lookup_counts_match_what_was_written(self, tmp_path):
+        """Every flat normal written is one `missed` lookup; the rest are found, exactly or by case."""
+        set_namespace('tes4')
+        export = _ltex_export(tmp_path, 'has.dds', 'Mixed.dds', 'none.dds')
+        out = tmp_path / 'output'
+        land = out / 'Master.esm' / 'textures' / 'tes4' / 'landscape'
+        land.mkdir(parents=True)
+        (land / 'has_n.dds').write_bytes(b'DDS ')
+        (land / 'mixed_n.dds').write_bytes(b'DDS ')
+        case_paths.snapshot_counts()
+        checked, written = landscape_normals.ensure_ltex_normals(
+            export, out / 'Plugin.esp' / 'textures', out)
+        counts = case_paths.snapshot_counts()['landscape_normal']
+        assert (checked, written) == (3, 1)
+        assert counts['missed'] == written and counts['collisions'] == 0
+        assert counts['exact'] + counts['resolved'] == checked - written
+
+
+class _BackslashPath(type(Path())):
+    """A real path whose `str()` uses backslashes, as it does on Windows.
+
+    `as_posix` still answers with forward slashes, as it does there. Nothing
+    built with `os.path` or `os.sep` is affected by this class: it catches a
+    `str(path)` comparison coming back, and no more than that.
+    """
+
+    def __str__(self):
+        return super().__str__().replace('/', '\\')
+
+    def __fspath__(self):
+        return super().__str__()
+
+    def as_posix(self):
+        return super().__str__().replace('\\', '/')
+
+    def iterdir(self):
+        return (self / name for name in os.listdir(self))
+
+
+def _tree_bytes(root):
+    """{relative path: bytes} for every file under `root`."""
+    return {os.path.relpath(os.path.join(r, f), root): Path(r, f).read_bytes()
+            for r, _, fs in os.walk(root) for f in fs}
+
+
+def _ltex_export(tmp_path, *icons):
+    """An export folder whose LTEX.txt names one land texture per icon."""
+    export = tmp_path / 'export'
+    export.mkdir()
+    (export / 'LTEX.txt').write_text(''.join(
+        f'---RECORD_BEGIN---\nICON={icon}\n---RECORD_END---\n'
+        for icon in icons))
+    return export
 
 
 def _make_dds(fourcc, width, height, mip_count, blocks_per_mip):
