@@ -29,6 +29,7 @@ from script_convert.poll_interval import (QUEST_DELAY_CALL, active_interval,
                                           float_literal, interval_literal,
                                           quest_delay_helper)
 from script_convert.poll_motion import relative_sets
+from script_convert import start_pose
 from script_convert.emit import script as _script
 from script_convert.tes4 import nodes as N
 
@@ -54,6 +55,7 @@ def build(conv, name: str, source: str, extends: str, editor_id: str) -> str:
     body += trap_hit(conv, tree, extends)
     body += door_relock(conv, tree, extends)
     body += lifecycle(conv, tree, extends)
+    body = start_pose.open_load(conv.sc, body)
     body = block_activation(conv, tree, extends, body)
     body = fall_damage(conv, extends, body)
     body += helpers(conv)
@@ -921,6 +923,7 @@ def helpers(conv) -> list:
     out = []
     out += conv.get_cell_family_helpers()
     out += conv._emit_button_helpers()
+    out += start_pose.helpers(conv.sc, _HOLDER_VAR if _carried(conv) else '')
     return out
 
 
@@ -1320,13 +1323,13 @@ def _elapsed_prologue(conv, interval: str) -> list:
 
 
 def lifecycle(conv, tree, extends: str) -> list:
-    """The events that START the poll loop, the sleep listener and the menu
-    listeners.
+    """The events that START the poll loop, the sleep and menu listeners, and take a placed pose.
 
     All arm identically from one `start`.  An object or actor arms on
     OnCellAttach and OnLoad unconditionally and on OnInit behind the poll
     gate; nothing unregisters on OnCellDetach.  A script with only menu blocks
-    still needs this, since `OnMenuClose` is inert until registered for.
+    still needs this, since `OnMenuClose` is inert until registered for.  Each
+    first takes the pose a script reads (`start_pose`).
 
     See: docs/commentary/script_convert.md#poll-lifecycle
     """
@@ -1336,7 +1339,8 @@ def lifecycle(conv, tree, extends: str) -> list:
     menus = sorted({menu_name(b) for b in (tree.blocks if tree else ())
                     if b.btype.lower() == 'menumode'
                     and _menumode_kind(b) == 'menu' and menu_name(b)})
-    if not (sc.has_gamemode or sc.has_scripteffectupdate or sleeps or menus):
+    if not (sc.has_gamemode or sc.has_scripteffectupdate or sleeps or menus
+            or sc.start_pose):
         return []
     interval = conv._get_update_interval()
     declared = {b.btype.lower() for b in (tree.blocks if tree else ())}
@@ -1350,7 +1354,8 @@ def lifecycle(conv, tree, extends: str) -> list:
         return [] if 'oninit' in declared else (
             ['Event OnInit()'] + start + ['EndEvent', ''])
 
-    out = ['Event OnCellAttach()'] + start + ['EndEvent', '']
+    capture = start_pose.capture_call(sc)
+    out = ['Event OnCellAttach()'] + capture + start + ['EndEvent', '']
     if sleeps:
         out += ['Event OnCellDetach()', '  UnregisterForSleep()',
                 'EndEvent', '']
@@ -1365,10 +1370,15 @@ def lifecycle(conv, tree, extends: str) -> list:
     # OnCellAttach cover the world-placed case (Self bound), and a RegisterForSleep
     # taken there persists through pickup, so the worn instance still listens.
     if 'oninit' not in declared and not getattr(sc, 'carriable_only', False):
-        out += (['Event OnInit()', f'  If ({_gate(conv)})']
-                + [f'  {line}' for line in start]
-                + ['  EndIf', 'EndEvent', ''])
+        out += ['Event OnInit()'] + capture + _gated(conv, start) + ['EndEvent', '']
     return out
+
+
+def _gated(conv, lines: list) -> list:
+    """`lines` behind the poll gate; nothing when there are none."""
+    if not lines:
+        return []
+    return [f'  If ({_gate(conv)})'] + [f'  {line}' for line in lines] + ['  EndIf']
 
 
 # ---------------------------------------------------------------------------

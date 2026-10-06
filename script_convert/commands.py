@@ -20,7 +20,7 @@ from script_convert import resolve_name as _resolve_name
 from script_convert.constants import (
     ACTOR_SIGS, ANIM_GROUP_EVENTS, ATTRIBUTE_STUB_VALUE, AV_ARGUMENT_NAMES,
     CASTABLE, FORCE_GREET_QUEST, PLACED_REF_SIGS, PRIMARY_STATS,
-    SEQUENCE_OBJECT_SIGS, TES4_ASSAULT_BOUNTY,
+    SELF_NAMES, SEQUENCE_OBJECT_SIGS, TES4_ASSAULT_BOUNTY,
     TES4_MISC_STAT_NAMES, TES4_MURDER_BOUNTY,
     TES4_STEAL_BOUNTY, is_generated_script_type, mgef_family_keyword_name,
     safe_property_name, papyrus_script_name
@@ -33,6 +33,7 @@ from script_convert.emit.commands import emit_row
 from script_convert.commands_falloutnv import FALLOUT_HANDLERS
 from script_convert.message_menus import PAGE_OPTIONS
 from script_convert.poll_motion import axis_key, rate_scale
+from script_convert import start_pose
 from script_convert.emit import expr as _expr
 from script_convert.constants import typed_already
 from script_convert.constants_falloutnv import (FALLOUT_COMMAND_ALIASES,
@@ -545,6 +546,24 @@ def rotate(ctx, call):
     value = f'{ref}.GetAngle{axis}() + ({rate}) * {ctx.sc.glide_secs}'
     return (f'TES4Polyfill.SpinAxis({ref}, {3 + "XYZ".index(axis)}, {value}, {rate}, '
             f'TES4_GlideRefs, TES4_GlideGoals, {ctx.sc.glide_secs})')
+
+
+@command('getstartingpos', 'getstartingangle')
+def starting_pose(ctx, call):
+    """GetStartingPos / GetStartingAngle <axis> on the script's own reference: the pose it took once.
+
+    Declines for any other subject, a user function and a script that is not
+    a reference, which leaves those to the command rows as before.
+
+    See: docs/commentary/script_convert.md#starting-pose
+    """
+    axis = call.source(0).strip().upper()
+    own = not call.ref or call.ref.lower() in SELF_NAMES
+    if not own or ctx.sc.in_udf or axis not in ('X', 'Y', 'Z'):
+        return None
+    if call.extends not in ('ObjectReference', 'Actor'):
+        return None
+    return start_pose.read(ctx.sc, call.name, axis)
 
 
 def _step_rate(ctx, call) -> str:

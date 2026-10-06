@@ -1586,6 +1586,73 @@ Morroblivion 29, Oblivion 9, including MQ09's bridge and the SEXedPuzStatue
 puzzle). Inside a GameMode poll it is now `SpinAxis` at its authored rate; the
 Papyrus fallback turns one pass's worth.
 
+## The placed pose: `GetStartingPos` / `GetStartingAngle`
+<a id="starting-pose"></a>
+
+**Code:** `script_convert/start_pose.py`, `commands.py:starting_pose`,
+`assemble.py:lifecycle`/`helpers`. **Tests:** `tests/test_starting_pose.py`.
+
+TES4 answers both from the reference's record: the position and rotation it was
+placed at, constant for its life. Scripts use them to bound a motion
+(`if GetAngle z < GetStartingAngle z + 60`), to bob around a height, or to put
+an object back where it belongs. Papyrus has no such read. The position read
+converted to an inert `0` and the angle read to the LIVE angle, so a door that
+opens "60 degrees from where it started" compared its angle with itself and
+never stopped, and an object that snaps home went to the cell origin.
+Oblivion.esm's `SEBruscusDannusItemSCRIPT` (49 placed clutter items, twelve
+reads) is the shipped case: its `OnLoad` moved every item to 0, 0, 0.
+
+A script that reads either on its OWN reference now takes its pose once:
+
+- **Each read is a getter.** `GetStartingPos z` is `TES4_StartPosZ()`, which
+  calls `TES4_CaptureStart()` and returns the stored value, so a read can sit in
+  any event and still take the pose first. That matters after a save is loaded:
+  `OnCellAttach` does not fire for the cell the save loads into and `OnLoad` is
+  unreliable there (CK wiki), so a pending `OnUpdate` can be the first event the
+  script gets.
+- **The start events take it before they arm anything.** `OnCellAttach`,
+  `OnLoad` (the converter's, or the script's own) and `OnInit` call the capture
+  -- in `OnInit` ahead of the poll gate, which only passes in an attached cell.
+  On a new game that is before the script's own statements run; another script
+  or the physics can still move an object first. A script with no poll gets
+  `OnCellAttach`, `OnLoad` and `OnInit` for this alone.
+- **Only the axes read are stored,** as plain script variables saved with the
+  instance, declared in sorted order (the reads are collected in a set, and the
+  scripts convert in a process pool).
+- **No parent cell, no pose.** The capture returns while `GetParentCell()` is
+  `None`, which covers an item with no reference of its own. A script that
+  tracks its holder (an object script with a poll) tests `TES4_Holder` first: a
+  held item whose reference is still bound answers its old cell (see
+  [carried items](#carried-items-and-read-books)), and the test also spares the
+  logged error a native call on an unbound `Self` raises. A refused capture
+  leaves the read at 0.0.
+- **Every other subject is unchanged.** A read on another reference, in a
+  quest, effect or topic script, or in a user function declines to the command
+  rows: there is no pose of the script's own to take, and a live read standing
+  in for the start is the defect this section removes. Only
+  `assemble.build` declares the getters; a fragment is never converted as an
+  object script.
+
+🛑 **What it does not do.**
+
+- **The pose is the one the object had when the script first saw it.** In a
+  save made with an earlier conversion, an object that conversion already moved
+  is taken where it stands, and stays wrong for that save. Measured in one: four
+  swinging curtains 85 to 128 degrees off their placed angle, a statue 106
+  units low. The export holds every placed pose; handing it to the script per
+  reference is the follow-up that would repair those.
+- **A cell reset takes the pose again.** It clears a reference script's
+  variables and runs `OnInit` again (CK wiki: Cell Reset, OnReset, OnInit). That
+  is right only if the engine has put the object back by then, which was not
+  established.
+- **Angles are not kept inside 0-360.** On a non-actor `GetAngleZ()` returns the
+  stored value: a reference the poll had turned was saved at 471.00 degrees and
+  the script's own read of it was 470.99997, across two reloads. A comparison of
+  the live angle against start plus an offset therefore works on a continuous
+  scale; a TES4 script that counts on a wrap at 360 does not get one.
+- Not yet seen in game. The tests pin the emitted text; the eleven scripts that
+  read a start pose in five exports convert and compile.
+
 ## Event / timer conversion
 <a id="event-timer-conversion"></a>
 

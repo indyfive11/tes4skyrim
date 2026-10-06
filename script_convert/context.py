@@ -60,6 +60,8 @@ class ScriptContext:
     moves_in_poll: bool = False
     #: Poll SetPos/SetAngle calls stepping from their own axis read -> (axis, step, sign) (poll_motion.relative_sets).
     relative_sets: dict = field(default_factory=dict)
+    #: (command, axis) of each placed-pose read on the script's own reference (start_pose.read).
+    start_pose: set = field(default_factory=set)
     #: Authored quest-script delay in seconds (FO3/FNV DATA.Delay); 0 = none.
     quest_delay: float = 0.0
     #: The script declares TES4's `fQuestDelayTime`, its own poll cadence.
