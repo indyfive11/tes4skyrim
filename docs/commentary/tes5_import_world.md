@@ -17,6 +17,7 @@ owns it, and what it is linked to. Region decoration (REGN, LSCR, WATR) lives in
 - [Nested interiors inherit a location](#nested-interiors-inherit-location)
 - [LAND DATA flags pass through VERBATIM](#land-data-flags-verbatim)
 - [WRLD land and water defaults](#wrld-land-and-water-defaults)
+- [Interior range census](#interior-range-census)
 
 ## <a id="xlkr-enable-parent-becomes-linked-ref"></a>XLKR — the enable parent becomes the linked ref
 
@@ -269,3 +270,65 @@ inherit flags `0x9F`. An earlier constant was a different block that only 2
 vanilla cells use, with pale blue `B0DCF7` fog from 340 to 14,000 units; it
 did not match this description. An authored source still overrides every field it
 states; the block only fills in what TES3/TES4 never authored.
+
+## <a id="interior-range-census"></a>Interior range census
+
+**Code:** `tes5_import/record_types/interior_range.py`, called last in
+`_run_prescans`
+
+Skyrim holds an interior to a square that reaches 30,000 units from the
+origin on X and on Y. The
+function that adds a reference to an interior cell's physics world loads the
+float `30000.0` once and compares `|x|` and then `|y|` against it (`ja`, so
+strictly greater; Z is not compared). A reference beyond it is put back on its
+recorded start position when it has one in range, and otherwise moved onto the
+cell's default spot. Three base types leave the function before the test:
+`LIGH`, `NPC_` and `LVLN`. Exteriors never reach it.
+
+Skyrim's own data never trips the rule: no interior reference in Skyrim.esm,
+Dawnguard, Dragonborn or HearthFires lies beyond 30,000 on X or Y, although
+some interiors are nearly as wide as the square (`DLC2Book01Dungeon` spans
+52,388 by 49,534 units, from -25,028 to 27,360 on X).
+
+Oblivion has no such rule, so an interior that is wider than the square, or
+was simply built far from its origin, converts into one whose out-of-range
+references all arrive on a single point: rooms missing, and every trigger in
+the pile overlapping everything else in it.
+
+The importer does not move anything. `census` counts, per interior cell, the
+references whose written X or Y is beyond the limit and whose base is not a
+light, an actor or a levelled actor list, and `report` prints one warning with
+the five largest cells. A plugin with none prints nothing.
+
+- **Which references.** One pass over the plugin's own `REFR` export records
+  covers all three ways a reference reaches the output: in the plugin's own
+  cell, as a new reference in a master's cell, and as an override of a
+  master's reference. A reference is exterior when it names a worldspace
+  (`ParentWRLD`) or its cell does. Both are read because the exporters
+  differ: the TES4 and Fallout exporter writes the field on every exterior
+  reference, the Morrowind exporter only on the cell. The cell is looked up
+  among the plugin's own `CELL` records and then the masters'.
+- **Which bases are exempt.** A base is matched by its raw FormID against the
+  `LIGH`, `NPC_`, `CREA`, `LVLC` and `LVLN` records of the plugin and of its
+  masters. It is not resolved through the master index: a plugin can inject a
+  record into a master's id space, and a lookup by index would call every
+  reference to such a base untyped.
+- **When.** After the pre-scans, because `shifted_position` reads the
+  origin-shift table `load_furniture_models` fills, and because
+  `build_leveled_actor_shells` has by then moved the plugin's placed levelled
+  creatures out of the `REFR` list.
+- **Which position.** `shifted_position`, the value written for a reference in
+  the plugin's own cell and for a new one in a master's cell. An override
+  keeps the raw exported value, which differs only for a tilted reference
+  whose base model was re-origined.
+
+Oblivion.esm has 38 such references in 12 interior cells: `UnderpallCave03`
+19, `TestMattInterior` 7, `HornCave` and `LeyawiinAlvalUvanisHouse` 2 each,
+and eight cells with one.
+
+**Not modelled.** The same function has a second test, on the distance from
+the running centre of the references it has accepted so far. No converted
+interior measured so far trips it without also tripping the first, and its
+result depends on the order the engine meets the references in. If a cell is
+ever reported with its contents stacked while this census is silent about it,
+that test is the place to look.

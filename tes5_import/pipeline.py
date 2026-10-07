@@ -42,7 +42,7 @@ from .navmesh.pool import collision_cache_chain
 from .overrides.adoption import MasterAdoption
 from .overrides.nested import (DELETED_FLAG as OVERRIDE_DELETED_FLAG,
                         OverrideContext, detect_injected_records)
-from .record_types import magic_art
+from .record_types import interior_range, magic_art
 from .record_types.crime import plan_crime
 from .record_types.spell_tomes import create_spell_tomes
 from .record_types.spell_tomes_morrowind import chain_tables
@@ -1209,6 +1209,7 @@ def _run_prescans(st: ImportState, all_records: list, num_new_masters: int,
         by_type, ctx, writer, st.fid_to_edid, _step_done)
     _prescan_leveled_actors(by_type, ctx, writer, _step_done)
     _prescan_outfits_hair_skin(by_type, ctx, export_dir, writer)
+    interior_range.report(by_type, ctx.master_export if ctx else None)
 
 
 def import_plugin(export_dir: str, output_path: str, masters: list = None,
