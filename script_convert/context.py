@@ -72,6 +72,8 @@ class ScriptContext:
     #: (so a held instance has no bound world Self). Narrows the carried-item poll
     #: so it never arms/gates on an unbound Self -- see assemble._true_carried.
     carriable_only: bool = False
+    #: A non-actor record carries the script, so its bare Actor-only calls do nothing (assemble._self_type).
+    inert_actor_calls: bool = False
 
     # --- Emission bookkeeping ----------------------------------------------
     #: Quest -> latch variable, for stage timers.  Per-script: a latch

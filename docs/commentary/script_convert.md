@@ -687,6 +687,61 @@ Rules that follow:
   `grep -c "Unable to bind script"` is a one-line health check that no amount
   of compiling or record inspection replaces.
 
+### <a id="carried-script-keeps-its-record-type"></a>A script a non-actor carries keeps the record's type (2026-10-07)
+
+The narrowing above left one case: a **genuinely** Actor-only call, bare, in a
+script whose carriers are known and are not actors. `ND10GarlasBarrierSCRIPT`
+(Knights) sits on an ACTI and calls `setGhost 1` in `OnLoad`. In TES4 that call
+does nothing on an activator and the rest of the script runs. `_infer_extends`
+turned the script into `extends Actor`, which an activator can never bind (the
+error quoted above): **everything else in the script dies with the one dead
+call**. (That activator is not placed anywhere in Knights, so the game never
+logs it; on a placed one the error comes for every copy, at every load.)
+
+`assemble._self_type` now asks the graph before it accepts the upgrade
+(`CrossRefGraph.carried_by_non_actor`). When a record that is no actor carries
+the script, the graph's `ObjectReference` stands and the bare call is emitted
+as `(Self as Actor).X()`: it acts on an actor copy and does nothing on any
+other, which is what TES4 did.
+
+| Carriers | Before | Now |
+|---|---|---|
+| a non-actor only (ACTI, DOOR, ...) | `Actor`, never binds | `ObjectReference` |
+| an actor and a non-actor | `Actor`, dead on the non-actor copies | `ObjectReference` |
+| a levelled list only (`LVLC` / `LVLN`) | `Actor` | `Actor` (it runs on the spawned actor) |
+| none | `Actor` | `Actor` (no record contradicts the scan) |
+
+Oblivion.esm has no such script (28 uncarried ones still upgrade); Knights has
+the one above, on its unplaced activator.
+
+What it costs and what it does not cover:
+
+* **One log line per dead call.** `(Self as Actor)` is `None` on a non-actor,
+  so each run of the call logs *"Cannot call X() on a None object"*, a
+  value-returning one reads 0 (the cast section above), and in a polled block
+  that is a line per tick. The script stage therefore names every script it
+  held back (a subset build with `tools/script/convert_scripts_subset.py` does
+  not print it):
+  `N script(s) on a non-actor keep bare Actor-only calls that do nothing there`.
+  The line lists the scripts this rule kept from being retyped, not every
+  script that casts Self: a call typed as an actor command by its row (a bare
+  `SetAlert` on an activator) is cast the same way and was never part of the
+  scan.
+* **The carrier must be in the graph of the build that compiles the script.** A
+  master's uncarried script that a DEPENDENT plugin puts on an activator is
+  still compiled `Actor` by the master and will not bind there.
+* **`OnDeath` / `OnStartCombat` / `OnAlarm` are about Self.** A bare Actor-only
+  call in a non-`Actor` script is redirected to the event's Actor parameter,
+  which is right for `OnEquip`-style events (the wearer) and wrong here (the
+  killer, the combat target). A script shared by an actor and a non-actor used
+  to be `Actor` and never met that redirect; held at `ObjectReference` it
+  would have ghosted its killer. `blocks.ACTOR_SELF_EVENTS` exempts the two
+  events, so the call goes to `Self as Actor`.
+
+The importer needs no mirror for this one: `_resolve_props` runs the same
+`_prepare`, and its hand-built graph fills the three tables the question reads
+(`script_formid_to_edid`, `record_scri`, `record_type`).
+
 ### GameHour is FLOAT — never truncate a global read (2026-07-28)
 
 `GameHour` is FormID `0x00000038` in **both** games, and Skyrim declares it

@@ -15,6 +15,7 @@ import re
 
 from script_convert.stage_latch import guard_stage_timer
 from script_convert import commands as _commands
+from script_convert.blocks import ACTOR_SELF_EVENTS
 from script_convert.commands import Call
 from script_convert.constants import (PLAYER_ALIAS_EXTENDS,
                                       is_generated_script_type)
@@ -230,6 +231,8 @@ def _bare(conv, call, papyrus_func: str, args: str, needs_self: bool,
             # reference (the player) is the subject.
             return f'GetActorReference().{papyrus_func}({args})'
         event_actor = conv._current_event_actor_param()
+        if conv._current_event in ACTOR_SELF_EVENTS:
+            event_actor = ''
         if extends != 'Actor' and event_actor:
             # Inside an event that hands us the actor it is about
             # (`OnEquipped(Actor akActor)`), TES4's implicit subject for an

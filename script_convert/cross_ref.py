@@ -6,8 +6,8 @@ import re
 from pathlib import Path
 
 from script_convert.constants import (
-    PLACED_REF_SIGS, PLAYER_ALIAS_EXTENDS, SCHOOL_ENCHANT_SHADER, TYPE_MAP,
-    papyrus_script_name
+    ACTOR_SIGS, PLACED_REF_SIGS, PLAYER_ALIAS_EXTENDS, SCHOOL_ENCHANT_SHADER,
+    TYPE_MAP, papyrus_script_name
 )
 from script_convert.command_rows import (
     ACTOR_ONLY_FUNCTIONS, OBJREF_SHARED_FUNCTIONS
@@ -905,6 +905,11 @@ class CrossRefGraph:
         fids = [fid for fid, edid in self.script_formid_to_edid.items()
                 if want and edid.lower() == want]
         return self.attached_records(fids[0]) if fids else []
+
+    def carried_by_non_actor(self, script_edid: str) -> bool:
+        """True when a record that is no actor carries the script named `script_edid`."""
+        return any(self.record_type.get(fid, '') not in ACTOR_SIGS
+                   for fid in self._script_owners(script_edid))
 
     def placed_refs(self, base_fid: str) -> list:
         """Every placed reference of a base record; the index is built on first use."""

@@ -72,6 +72,7 @@ def _new_stats() -> dict:
         # a lookup rather than a second read of every generated .psc.
         'udf_sigs': {},
         'udf_callers': {},
+        'inert_actor_calls': [],
     }
 
 
@@ -378,6 +379,7 @@ def convert_all_scripts(export_dir: str, output_dir: str, workers: int = None) -
     print(f'    INFO: {stats["info_ok"]}/{stats["info_total"]} fragments')
     print(f'    QUST: {stats["qust_ok"]}/{stats["qust_total"]} stage scripts')
     print(f'    Total: {total} converted, {errs} errors, {stats["todo_count"]} TODOs')
+    _report_inert_actor_calls(stats['inert_actor_calls'])
     if stats['errors']:
         # One line per DISTINCT failure, with a count and an example: 2,393
         # identical messages say no more than one does, and hiding them
@@ -390,6 +392,13 @@ def convert_all_scripts(export_dir: str, output_dir: str, workers: int = None) -
             print(f'      [{len(msgs):5d}] {text}   e.g. {msgs[0].split(":")[0]}')
 
     return stats
+
+
+def _report_inert_actor_calls(names: list) -> None:
+    """Name the scripts whose bare Actor-only calls are dead on a non-actor."""
+    if names:
+        print(f'    {len(names)} script(s) on a non-actor keep bare Actor-only calls '
+              f'that do nothing there: {", ".join(sorted(names))}')
 
 
 def write_psc(output_dir: str, script_name: str, text: str) -> None:
@@ -559,6 +568,8 @@ def _scpt_batch(records: list, output_dir: str, xref: CrossRefGraph, stats: dict
                          for k, v in conv.get_property_refs().items()}
                 types.update(conv.sc.var_types)
                 stats['udf_callers'][script_name] = (conv.sc.udf_calls, types)
+            if conv.sc.inert_actor_calls:
+                stats['inert_actor_calls'].append(name)
             stats['scpt_ok'] += 1
             stats['todo_count'] += papyrus.count(';TODO')
         except Exception as e:

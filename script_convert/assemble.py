@@ -77,10 +77,8 @@ def build(conv, name: str, source: str, extends: str, editor_id: str) -> str:
 def _prepare(conv, name: str, source: str, extends: str, editor_id: str):
     """Parse the script and load the context: symbols, then facts."""
     conv.sc.edid = editor_id or name
-    # A script calling Actor-only functions on a bare Self is an ACTOR script,
-    # whatever the record said.
     if extends == 'ObjectReference':
-        extends = conv._infer_extends(source, extends)
+        extends = _self_type(conv, source, editor_id)
     conv._script_extends = extends
 
     conv._parse_source(source)
@@ -91,6 +89,25 @@ def _prepare(conv, name: str, source: str, extends: str, editor_id: str):
     _promote_assigned_actors(conv, tree)
     _preresolve_owners(conv, tree)
     return tree
+
+
+def _self_type(conv, source: str, editor_id: str) -> str:
+    """The base type of a script the record graph typed `ObjectReference`.
+
+    A bare Actor-only call on Self makes it an ACTOR script -- unless a
+    non-actor record carries it.  That record can never bind an `Actor`
+    script, so the graph's type stands and the call is emitted against
+    `Self as Actor`, which does nothing there, as the call did in TES4.
+
+    See: docs/commentary/script_convert.md#carried-script-keeps-its-record-type
+    """
+    inferred = conv._infer_extends(source, 'ObjectReference')
+    if inferred == 'ObjectReference':
+        return inferred
+    if conv.xref and conv.xref.carried_by_non_actor(editor_id):
+        conv.sc.inert_actor_calls = True
+        return 'ObjectReference'
+    return inferred
 
 
 def _preresolve_owners(conv, tree) -> None:

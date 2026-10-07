@@ -4134,6 +4134,197 @@ class TestSharedScriptUsesTheCommonBaseType:
         assert g.get_extends_class('00000001') == 'ObjectReference'
 
 
+class TestCarriedScriptKeepsItsRecordType:
+    """A bare Actor-only call must not retype a script a non-actor record carries.
+
+    `ND10GarlasBarrierSCRIPT` (Knights) calls a bare `setghost` and rides on an
+    ACTI.  Upgraded to `extends Actor` it cannot bind to the activator, so the
+    whole script is dead; kept as `ObjectReference` it runs and that one call
+    does nothing, as it did in TES4.
+    """
+
+    SRC = 'scn T\n\nbegin gamemode\n\tif gamehour > 5\n\t\tsetghost 1\n\tendif\nend\n'
+    PLAIN = 'scn T\n\nbegin gamemode\n\tif gamehour > 5\n\t\tdisable\n\tendif\nend\n'
+
+    @staticmethod
+    def _graph(carriers, edid='T'):
+        """A graph in which one type-0 script named `edid` rides on `carriers`."""
+        g = CrossRefGraph()
+        g.script_formid_to_type['00000001'] = 0
+        g.script_formid_to_edid['00000001'] = edid
+        for i, sig in enumerate(carriers):
+            g.record_type[f'0000A{i:03d}'] = sig
+            g.record_scri[f'0000A{i:03d}'] = '00000001'
+        return g
+
+    def _convert(self, carriers, src=None):
+        """(converter, header line, text) of the script as the script stage builds it."""
+        g = self._graph(carriers)
+        conv = ScriptConverter(g)
+        out = conv.convert_standalone('T', src or self.SRC,
+                                      g.get_extends_class('00000001'), 'T')
+        return conv, out.split('\n')[0], out
+
+    def test_activator_script_stays_bindable(self):
+        """The script that was dead: it binds, and the one call is cast."""
+        conv, header, out = self._convert(['ACTI'])
+        assert ' extends ObjectReference' in header
+        assert '(Self as Actor).SetGhost(' in out
+        assert conv.sc.inert_actor_calls
+
+    def test_actor_and_door_stay_bindable(self):
+        """A door copy must bind too; the cast still acts on the actor copy."""
+        conv, header, out = self._convert(['NPC_', 'DOOR'])
+        assert ' extends ObjectReference' in header
+        assert '(Self as Actor).SetGhost(' in out
+        assert conv.sc.inert_actor_calls
+
+    def test_shared_script_acts_on_self_in_actor_only_events(self):
+        """On the actor copy `OnDeath` is about Self; its parameter is the killer."""
+        src = (self.SRC + '\nbegin ondeath\n\tsetghost 1\nend\n'
+               '\nbegin onstartcombat\n\tstopcombat\nend\n')
+        _conv, _header, out = self._convert(['NPC_', 'DOOR'], src)
+        assert 'akKiller.' not in out and 'akTarget.' not in out
+        assert '(Self as Actor).StopCombat()' in out
+        assert out.count('(Self as Actor).SetGhost(1)') == 2
+
+    def test_actor_only_event_is_about_self_in_any_script(self):
+        """No hold needed: the source scan skips event bodies, the subject is Self all the same."""
+        src = self.PLAIN + '\nbegin ondeath\n\tsetghost 1\nend\n'
+        conv, header, out = self._convert(['NPC_', 'DOOR'], src)
+        assert ' extends ObjectReference' in header and not conv.sc.inert_actor_calls
+        assert '(Self as Actor).SetGhost(1)' in out and 'akKiller.' not in out
+
+    def test_item_event_still_names_its_actor(self):
+        """`OnEquipped` hands over the wearer; a held-back script keeps that subject."""
+        src = self.SRC + '\nbegin onequip\n\tsetghost 1\nend\n'
+        _conv, _header, out = self._convert(['ARMO'], src)
+        assert 'akActor.SetGhost(1)' in out
+
+    def test_levelled_list_script_is_still_an_actor_script(self):
+        """It runs on the spawned actor, and `OnDeath` must act on Self, not on the killer."""
+        src = self.SRC + '\nbegin ondeath\n\tsetghost 1\nend\n'
+        conv, header, out = self._convert(['LVLC'], src)
+        assert ' extends Actor' in header
+        assert 'akKiller.SetGhost' not in out and '(Self as Actor)' not in out
+        assert not conv.sc.inert_actor_calls
+
+    def test_uncarried_script_still_upgrades(self):
+        """With no record to contradict it, the source scan decides as before."""
+        conv, header, _out = self._convert([])
+        assert ' extends Actor' in header
+        assert not conv.sc.inert_actor_calls
+
+    def test_actor_carriers_are_untouched(self):
+        """The graph already says Actor; nothing is held back."""
+        conv, header, out = self._convert(['NPC_', 'CREA'])
+        assert ' extends Actor' in header
+        assert '(Self as Actor)' not in out
+        assert not conv.sc.inert_actor_calls
+
+    def test_script_without_an_actor_only_call_sets_no_flag(self):
+        """The flag names a dead call, not every script on an activator."""
+        conv, header, _out = self._convert(['ACTI'], self.PLAIN)
+        assert ' extends ObjectReference' in header
+        assert not conv.sc.inert_actor_calls
+
+    def test_converter_without_a_graph_upgrades_as_before(self):
+        out = ScriptConverter(None).convert_standalone('T', self.SRC, 'ObjectReference', 'T')
+        assert ' extends Actor' in out.split('\n')[0]
+
+    def test_editor_id_case_does_not_matter(self):
+        """TES4 names are case-insensitive; the graph may spell one differently."""
+        g = self._graph(['ACTI'], edid='MyScript')
+        out = ScriptConverter(g).convert_standalone(
+            'myscript', self.SRC, 'ObjectReference', 'myscript')
+        assert ' extends ObjectReference' in out.split('\n')[0]
+
+    def test_lookup_uses_the_editor_id_not_the_file_name(self):
+        """The output name may be a sanitised spelling; the graph knows the EditorID."""
+        out = ScriptConverter(self._graph(['ACTI'])).convert_standalone(
+            'Renamed', self.SRC, 'ObjectReference', 'T')
+        assert ' extends ObjectReference' in out.split('\n')[0]
+
+    def test_flag_does_not_leak_into_the_next_script(self):
+        """One converter converts many scripts; each starts with a fresh context."""
+        conv, _header, _out = self._convert(['ACTI'])
+        conv.convert_standalone('Other', self.PLAIN, 'ObjectReference', 'Other')
+        assert not conv.sc.inert_actor_calls
+
+    @pytest.mark.parametrize('carriers, expected', [
+        (['ACTI'], True), (['NPC_', 'DOOR'], True), (['NPC_'], False),
+        (['CREA', 'LVLC'], False), (['LVLN'], False), ([], False)])
+    def test_graph_names_a_non_actor_carrier(self, carriers, expected):
+        assert self._graph(carriers).carried_by_non_actor('T') is expected
+
+    def test_unknown_or_empty_name_has_no_carrier(self):
+        """A name the graph does not know is not a reason to hold a type back."""
+        g = self._graph(['ACTI'])
+        assert not g.carried_by_non_actor('Other')
+        assert not g.carried_by_non_actor('')
+
+    def test_carrier_of_unknown_type_counts_as_a_non_actor(self):
+        """Unknown type: `ObjectReference` is the answer, it binds everywhere."""
+        g = self._graph(['ACTI'])
+        g.record_type.clear()
+        assert g.carried_by_non_actor('T')
+
+    def test_script_stage_names_the_script(self, tmp_path, capsys):
+        """The build log is the one place the dead call shows before the game runs."""
+        from script_convert import pipeline
+        stats = pipeline._new_stats()
+        rec = {'FormID': '00000001', 'EditorID': 'T', 'SCTX': self.SRC}
+        pipeline._scpt_batch([rec], str(tmp_path), self._graph(['ACTI']), stats)
+        assert not stats['errors'], stats['errors']
+        assert stats['inert_actor_calls'] == ['T']
+        pipeline._report_inert_actor_calls(stats['inert_actor_calls'])
+        assert '1 script(s) on a non-actor' in capsys.readouterr().out
+
+    def test_report_names_every_script_and_is_silent_without_one(self, capsys):
+        """No line when there is nothing to name; otherwise the count and every name, sorted."""
+        from script_convert import pipeline
+        pipeline._report_inert_actor_calls([])
+        assert capsys.readouterr().out == ''
+        pipeline._report_inert_actor_calls(list('gfedcba'))
+        assert capsys.readouterr().out.strip() == (
+            '7 script(s) on a non-actor keep bare Actor-only calls '
+            'that do nothing there: a, b, c, d, e, f, g')
+
+    def test_whole_stage_prints_the_line(self, tmp_path, capsys):
+        """End to end: the stat crosses the batch boundary and the stage reports it."""
+        export_dir = tmp_path / 'export'
+        export_dir.mkdir()
+        sctx = self.SRC.replace('\n', '\\n').replace('\t', '\\t')
+        (export_dir / 'SCPT.txt').write_text(
+            '---RECORD_BEGIN---\nSignature=SCPT\nFormID=00001234\nEditorID=T\n'
+            f'SCHR.Type=0\nSCTX={sctx}\n---RECORD_END---\n', encoding='utf-8')
+        (export_dir / 'ACTI.txt').write_text(
+            '---RECORD_BEGIN---\nSignature=ACTI\nFormID=00001235\nEditorID=TBase\n'
+            'SCRI=00001234\n---RECORD_END---\n', encoding='utf-8')
+        stats = convert_all_scripts(str(export_dir), str(tmp_path / 'output'))
+        assert stats['scpt_err'] == 0 and stats['inert_actor_calls'] == ['T']
+        assert '1 script(s) on a non-actor' in capsys.readouterr().out
+        header = (tmp_path / 'output' / 'TES4_T.psc').read_text().split('\n')[0]
+        assert ' extends ObjectReference' in header
+
+    def test_importer_resolves_properties_on_the_same_branch(self, monkeypatch):
+        """`_resolve_props` re-runs the converter; another branch there binds another property set."""
+        from tes5_import.base.object_scripts import _resolve_props
+        seen = []
+        real = ScriptConverter.convert_standalone
+
+        def spy(conv, *args, **kwargs):
+            """Record the base type the importer's own conversion settled on."""
+            out = real(conv, *args, **kwargs)
+            seen.append(conv._script_extends)
+            return out
+        monkeypatch.setattr(ScriptConverter, 'convert_standalone', spy)
+        props = _resolve_props(self.SRC, 'T', 'ObjectReference',
+                               self._graph(['ACTI']), {}, 0)
+        assert seen == ['ObjectReference']
+        assert 'GameHour' in props
+
+
 class TestGetCurrentAIPackageNumeric:
     """R9-1: `GetCurrentAIPackage == <n>` compared a package TYPE code.
 
