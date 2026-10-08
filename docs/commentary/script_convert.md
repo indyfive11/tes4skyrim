@@ -390,9 +390,13 @@ engine events in SkyrimSE.exe): `OnTrigger` is sent repeatedly while inside,
 the Erothin bell latch stuck and re-ringing.
 
 **`OnTriggerActor` / `OnTriggerMob`** differ from `OnTrigger` only in WHAT trips
-them (any actor / any creature), not in edge-vs-repeat, so they take the
-repeating event too. Skyrim has no actor-vs-creature split, so the filter is
-left to the block body.
+them, not in edge-vs-repeat, so they take the repeating event too.
+`OnTriggerActor` means an actor, and the block TYPE is that filter: the bodies
+never test for it, so the converter does (`blocks.BLOCK_TYPE_TESTS`, see
+[one trigger at a time](#one-trigger-at-a-time)). `OnTriggerMob` means any
+MOBILE object — actors, arrows, spell projectiles (the game's own comment on
+`SE03GnarlRoomDefenseTriggerSCRIPT`: "whenever an arrow or spell passes
+through") — so it gets no test, like plain `OnTrigger`.
 
 **`OnAlarm`** (actor noticed a crime/attack) has no Papyrus event; entering
 combat/search via `OnCombatStateChanged` is the closest trigger. The block loop
@@ -844,8 +848,8 @@ ran and the alarm re-fired on every re-evaluation.
   `OnTrigger` as "a trigger is tripped" versus "volume is entered/left".
 - `TES4_BLOCK_MAP` now sends `ontrigger`, `ontriggeractor` and `ontriggermob`
   to `Event OnTrigger`. The latter two differ only in *what* trips them, not in
-  edge-vs-repeat; Skyrim has no actor/creature split, so that filter stays in
-  the body.
+  edge-vs-repeat. (This note first said "that filter stays in the body". No
+  body holds one: see [one trigger at a time](#one-trigger-at-a-time).)
 - Scope: **504 blocks** (Nehrim 317, Oblivion 187); 79 of them keep a
   per-execution counter and were therefore hard-frozen. Verified no script
   declares two blocks that would now collide into a duplicate `Event OnTrigger`
@@ -900,6 +904,51 @@ was a multi-second stutter as the lift started. The body now lives in
 `Function TES4_OnTriggerBody`, and the event skips while a `TES4_TriggerBusy`
 flag is set. It is a function so that a TES4 `return` inside the body still
 clears the flag. After the fix, the same run made one autosave.
+
+**The block's own test comes before the latch (2026-10-07).** A converted
+trigger keeps its mesh phantom on layer 12, and Skyrim's `L_TRIGGER` reports far
+more than actors: clutter, weapons, projectiles, spells, trap bodies, dead
+bodies and layer-0 bodies (the `COLL` records of Skyrim.esm). Two things went
+wrong with that:
+
+* **`OnTriggerActor` had no test at all.** In TES4 the block type is the
+  filter, so none of the 30 Oblivion.esm scripts that use it bare checks that
+  what came is an actor (13 go on to test WHICH actor: a faction, a named
+  reference, not-the-player). `KillBox01SCRIPT` called `Kill()` on None for
+  whatever else the layer reported — one game log holds 4,025 of those errors.
+  The trap zones (`TrigZoneACTORRESET01SCRIPT`, `…RESET02SCRIPT`: "Activates
+  linked Parent object", re-armed by a timer) would fire for the trap they
+  control: by placed origin, 52 such zones hold a body the layer reports,
+  nearly all of them trap parts on layer 14 (dart traps `RFTrapDarts01`, the
+  citadel spike traps, blade traps). Counted from placements, not seen in
+  game. The block now gets
+  `akActionRef as Actor` (`blocks.BLOCK_TYPE_TESTS`), also when its filter
+  names something that resolves to no test.
+* **A test behind the latch lets strays take the latch.** `begin OnTrigger
+  player` became `If akActionRef == Game.GetPlayer()` inside the body function,
+  so a loose item's event set the flag before the test ran. If that game call
+  yields — the premise of the latch itself — an event arriving meanwhile, the
+  player's included, is skipped. (A mechanism, not an observation.) When ONE
+  block makes up the handler, its test is now the event's first statement:
+
+  ```
+  If !(akActionRef == Game.GetPlayer()) || TES4_TriggerBusy
+    Return
+  EndIf
+  ```
+
+  **The order is load-bearing.** The test may wait on a game call, the flag
+  read may not: with the flag read last, nothing sits between reading it and
+  setting it. Swapped, two events that both pass would both read "free" and
+  both run the body — the autosave bug above.
+
+Two blocks merged into one event keep their tests around their own arms, as
+before; a filter that cannot be a test still leaves its body as comments.
+`OnTrigger` and `OnTriggerMob` without a filter are unchanged: a pressure plate
+listens for anything. What this does not do is stop the events themselves — a
+stray body in a zone still starts one short script run per `OnTrigger` tick
+(the Creation Kit wiki gives about two a second; not measured here). That
+needs an actor-only layer per placed trigger, which nothing writes yet.
 
 ### Physical-trap damage: TES4's ENGINE read the script's variables (2026-08-09, in-game confirmed)
 

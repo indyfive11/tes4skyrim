@@ -594,7 +594,7 @@ The PHP uses `tTimer.getSecondsPassed(localTimer)` for proper delta time. We con
 The PHP wraps OnObjectEquipped body in `if akBaseObject == specificItem`. We produce the event but may not add the filtering branch.
 
 #### 10. **OnTriggerActor → Actor Cast + Null Check** ⚠️ LOW
-The PHP casts the reference to Actor and null-checks. We convert the block type but may not add the cast.
+The PHP casts the reference to Actor and null-checks. Done 2026-10-07: a bare `OnTriggerActor` block is gated on `akActionRef as Actor` (`blocks.BLOCK_TYPE_TESTS`).
 
 #### 11. **Type-Safe Property Declarations** ⚠️ LOW
 The PHP reads the ESM to determine that a `ref` variable pointing to an NPC_ should be typed `Actor Property`, not `ObjectReference Property`. Our heuristic approach may produce wrong types.
@@ -675,7 +675,7 @@ The `TypeMapper` maps record type signatures to Papyrus types:
 ### Nice-to-Have (edge cases)
 9. Say/SayTo helper quest routing
 10. OnActorEquip item filtering branch
-11. OnTriggerActor actor cast
+11. ~~OnTriggerActor actor cast~~ (done 2026-10-07)
 12. Expression-level GetWeaponAnimType multi-comparison
 13. Type-safe property declarations from ESM data
 14. GetInCell string prefix matching

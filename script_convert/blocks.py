@@ -91,6 +91,9 @@ COMBAT_STATE_GUARDS = {'onalarm': 'aeCombatState != 0',
                        'onstartcombat': 'aeCombatState == 1',
                        **FALLOUT_COMBAT_STATE_GUARDS}
 
+#: TES4 block type -> the test its NAME stands for when the filter supplies none (`onTriggerActor`: an actor).
+BLOCK_TYPE_TESTS = {'ontriggeractor': 'akActionRef as Actor'}
+
 #: The merged event both combat blocks become; used to hang a combat-END arm.
 COMBAT_EVENT_HEADER = BLOCK_MAP['onstartcombat']
 

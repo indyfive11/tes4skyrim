@@ -13,8 +13,9 @@ later phase's state.
 import re
 from dataclasses import replace
 
-from script_convert.blocks import (BLOCK_MAP, COMBAT_EVENT_HEADER,
-                                   COMBAT_STATE_GUARDS, block_filter_guard)
+from script_convert.blocks import (BLOCK_MAP, BLOCK_TYPE_TESTS,
+                                   COMBAT_EVENT_HEADER, COMBAT_STATE_GUARDS,
+                                   block_filter_guard)
 from script_convert.constants import (
     LAST_ACTIVATOR_VAR, MENU_ID_NAMES, SLEEP_WAIT_MENU_ID,
     UDF_CALLER_PARAM, UDF_RESULT_VAR,
@@ -738,7 +739,7 @@ def events(conv, tree, extends: str, skip_poll: bool = False) -> list:
     with different filters), so same-typed blocks merge into one event whose
     body is the guarded arms in source order.
     """
-    merged, order = {}, []
+    merged, order, arms = {}, [], {}
     for block in (tree.blocks if tree else ()):
         header = BLOCK_MAP.get(block.btype.lower())
         if header is None or (skip_poll and header[0] == 'Event OnUpdate()'):
@@ -759,7 +760,7 @@ def events(conv, tree, extends: str, skip_poll: bool = False) -> list:
                     and _consumes_activation(conv, tree))
         if not body and not consumes:
             continue
-        body = _guarded(conv, block, body)
+        body = _guarded(conv, block, body, arms)
         if consumes:
             body = door_preamble(conv, extends) + body
         if block.btype.lower() == 'onactivate':
@@ -777,7 +778,8 @@ def events(conv, tree, extends: str, skip_poll: bool = False) -> list:
     for header in order:
         opener, closer = header
         if opener == BLOCK_MAP['ontrigger'][0]:
-            out += _one_trigger_at_a_time(opener, closer, merged[header])
+            out += _one_trigger_at_a_time(opener, closer, merged[header],
+                                          arms.get(header))
         else:
             out += [opener] + merged[header] + [closer, '']
         # TES4's `begin OnTrigger` runs EVERY FRAME an object is inside the
@@ -799,23 +801,29 @@ def events(conv, tree, extends: str, skip_poll: bool = False) -> list:
     return out
 
 
-def _one_trigger_at_a_time(opener: str, closer: str, body: list) -> list:
+def _one_trigger_at_a_time(opener: str, closer: str, body: list,
+                           arms: list = None) -> list:
     """OnTrigger that skips an event while the previous one still runs.
 
-    TES4 finished each frame's OnTrigger before the next began.  Papyrus runs
-    every event on its own thread, and a thread waiting on a game call lets
-    the next one in, so a one-time block that sets its flag at the end ran
-    once per overlapping event.  The body is a function so a TES4 `return`
-    inside it still clears the busy flag.
+    Papyrus runs every event on its own thread, and a thread waiting on a
+    game call lets the next one in, so a one-time block ran once per
+    overlapping event.  The body is a function so a TES4 `return` still
+    clears the flag.  A lone block's own test is asked FIRST and the flag
+    read LAST: a stray event never takes the latch, and no game call sits
+    between reading the flag and setting it.
 
     See: docs/commentary/script_convert.md#one-trigger-at-a-time
     """
+    test, bare = arms[0] if arms else ('', body)
+    if not test or body != _under_test(test, bare):
+        test, bare = '', body
+    gate = f'  If !({test}) || TES4_TriggerBusy' if test else '  If TES4_TriggerBusy'
     return (['Bool TES4_TriggerBusy = False', '', opener,
-             '  If TES4_TriggerBusy', '    Return', '  EndIf',
+             gate, '    Return', '  EndIf',
              '  TES4_TriggerBusy = True', '  TES4_OnTriggerBody(akActionRef)',
              '  TES4_TriggerBusy = False', closer, '',
              'Function TES4_OnTriggerBody(ObjectReference akActionRef)']
-            + body + ['EndFunction', ''])
+            + bare + ['EndFunction', ''])
 
 
 def _record_last_activator(conv, merged: dict, order: list) -> list:
@@ -1572,20 +1580,24 @@ def block_activation(conv, tree, extends: str, body: list) -> list:
 
 
 
-def _guarded(conv, block, body: list) -> list:
+def _guarded(conv, block, body: list, arms: dict = None) -> list:
     """Wrap a block body in the condition its TES4 FILTER stood for.
 
     `begin OnEquip player` fires ONLY when the player equips the item;
     `begin OnPackageDone SomePkg` only when that package ends.  Papyrus events
-    carry no filter, so the restriction becomes an `If` around the body --
-    without it an item's "you cannot equip this" message fired for every NPC
-    the moment they loaded in.
+    carry no filter, so the restriction becomes an `If` around the body.  A
+    filter that gives no test leaves the one the block TYPE names.  `arms`
+    collects each block's (test, bare body) under its event header.
     """
     btype = block.btype.lower()
     guard = block_filter_guard(conv, btype, block.filter or '')
     state = COMBAT_STATE_GUARDS.get(btype)
     if state and guard is not None:
         guard = f'{state} && {guard}' if guard else state
+    if guard == '':
+        guard = BLOCK_TYPE_TESTS.get(btype, '')
+    if arms is not None:
+        arms.setdefault(BLOCK_MAP.get(btype), []).append((guard, body))
 
     if guard is None:
         # The filter EXISTS but cannot be expressed, and running the body for
@@ -1593,9 +1605,14 @@ def _guarded(conv, block, body: list) -> list:
         return (['  ; TES4 block filter could not be converted; '
                  'body preserved but NOT executed:']
                 + [f'  ;{line.strip()}' for line in body])
-    if not guard:
+    return _under_test(guard, body)
+
+
+def _under_test(test: str, body: list) -> list:
+    """`body` inside `If <test>`; the body itself when there is no test."""
+    if not test:
         return body
-    return ([f'  If {guard}']
+    return ([f'  If {test}']
             + [f'  {line}' for line in body]
             + ['  EndIf'])
 

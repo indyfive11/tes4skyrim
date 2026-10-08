@@ -4784,12 +4784,12 @@ end
         assert 'OnTrigger(akActionRef)' in entry
 
     def test_block_filter_survives_the_delegation(self, converter):
-        """The filter guard lives in the OnTrigger body, so the entry path
-        inherits it rather than running unfiltered."""
+        """The filter is OnTrigger's first statement, so the entry path, which
+        calls OnTrigger, inherits it rather than running unfiltered."""
         src = "scn T\nshort x\nbegin onTrigger player\n  set x to 1\nend\n"
         out = converter.convert_standalone('T', src, 'ObjectReference', 'T')
-        body = out.split('Function TES4_OnTriggerBody(')[1].split('EndFunction')[0]
-        assert 'Game.GetPlayer()' in body
+        event = out.split('Event OnTrigger(')[1].split('EndEvent')[0]
+        assert 'Game.GetPlayer()' in event
 
     def test_actor_and_mob_variants_also_get_entry(self, converter):
         for block in ('onTriggerActor', 'onTriggerMob'):
@@ -4804,6 +4804,167 @@ end
                "begin onTriggerEnter\n  set x to 2\nend\n")
         out = converter.convert_standalone('T', src, 'ObjectReference', 'T')
         assert out.count('Event OnTriggerEnter(') == 1
+
+
+class TestTriggerBlockTests:
+    """A trigger block's test is asked before the one-at-a-time latch.
+
+    `begin onTriggerActor` names its own filter: an actor.  Skyrim's trigger
+    layer also reports clutter, projectiles and trap bodies, and with no test
+    `KillBox01SCRIPT` called `Kill()` on None for each of them while
+    `TrigZoneACTOR01SCRIPT` fired its trap for the trap's own body.  And a
+    test that sat behind the latch let a stray body's event take it, so the
+    player's event, arriving meanwhile, was dropped.
+
+    See: docs/commentary/script_convert.md#one-trigger-at-a-time
+    """
+
+    @staticmethod
+    def _parts(src, xref=None):
+        """(first statement of OnTrigger, lines of the body function, whole text)."""
+        out = ScriptConverter(xref or CrossRefGraph()).convert_standalone(
+            'T', src, 'ObjectReference', 'T')
+        gate = out.split('Event OnTrigger(')[1].split('\n')[1]
+        body = out.split('Function TES4_OnTriggerBody(')[1].split('EndFunction')[0]
+        return gate, [line for line in body.split('\n')[1:] if line.strip()], out
+
+    def test_whole_event_with_a_test(self):
+        """Every line counts: the `Return` is the filter, and nothing may sit between read and set."""
+        _gate, _body, out = self._parts("scn T\nshort x\nbegin onTriggerActor\n  set x to 1\nend\n")
+        event = out.split('Bool TES4_TriggerBusy = False\n')[1].split('Function TES4_OnTriggerBody')[0]
+        assert event == ('\nEvent OnTrigger(ObjectReference akActionRef)\n'
+                         '  If !(akActionRef as Actor) || TES4_TriggerBusy\n'
+                         '    Return\n'
+                         '  EndIf\n'
+                         '  TES4_TriggerBusy = True\n'
+                         '  TES4_OnTriggerBody(akActionRef)\n'
+                         '  TES4_TriggerBusy = False\n'
+                         'EndEvent\n\n')
+
+    def test_whole_event_without_a_test(self):
+        """The plain latch, line for line, as it was before any test moved in front of it."""
+        _gate, _body, out = self._parts("scn T\nshort x\nbegin onTrigger\n  set x to 1\nend\n")
+        event = out.split('Bool TES4_TriggerBusy = False\n')[1].split('Function TES4_OnTriggerBody')[0]
+        assert event == ('\nEvent OnTrigger(ObjectReference akActionRef)\n'
+                         '  If TES4_TriggerBusy\n'
+                         '    Return\n'
+                         '  EndIf\n'
+                         '  TES4_TriggerBusy = True\n'
+                         '  TES4_OnTriggerBody(akActionRef)\n'
+                         '  TES4_TriggerBusy = False\n'
+                         'EndEvent\n\n')
+
+    def test_actor_block_tests_for_an_actor_first(self):
+        """The test comes first and the flag is read last."""
+        gate, body, _out = self._parts("scn T\nshort x\nbegin onTriggerActor\n  set x to 1\nend\n")
+        assert gate == '  If !(akActionRef as Actor) || TES4_TriggerBusy'
+        assert body == ['  x = 1']
+
+    def test_player_filter_is_asked_before_the_latch(self):
+        """The wrap leaves the body; the test is the gate's first operand."""
+        gate, body, _out = self._parts("scn T\nshort x\nbegin onTrigger player\n  set x to 1\nend\n")
+        assert gate == '  If !(akActionRef == Game.GetPlayer()) || TES4_TriggerBusy'
+        assert body == ['  x = 1']
+
+    def test_actor_block_with_the_player_filter_asks_only_for_the_player(self):
+        """The filter already implies an actor; the type's test is not stacked on it."""
+        gate, body, _out = self._parts("scn T\nshort x\nbegin onTriggerActor player\n  set x to 1\nend\n")
+        assert gate == '  If !(akActionRef == Game.GetPlayer()) || TES4_TriggerBusy'
+        assert body == ['  x = 1']
+
+    def test_only_the_actor_block_names_a_test(self):
+        from script_convert.blocks import BLOCK_TYPE_TESTS
+        assert BLOCK_TYPE_TESTS == {'ontriggeractor': 'akActionRef as Actor'}
+
+    @pytest.mark.parametrize('block', ['onTrigger', 'onTriggerMob'])
+    def test_block_that_listens_for_anything_keeps_the_plain_latch(self, block):
+        """A pressure plate reacts to whatever lands on it; a Mob block to arrows and spells too."""
+        gate, body, out = self._parts(f"scn T\nshort x\nbegin {block}\n  set x to 1\nend\n")
+        assert gate == '  If TES4_TriggerBusy'
+        assert body == ['  x = 1']
+        assert ' as Actor' not in out
+
+    def test_two_blocks_keep_their_tests_in_the_body(self):
+        """One event, two arms: neither test can speak for the whole handler."""
+        gate, body, _out = self._parts(
+            "scn T\nshort x\nbegin onTriggerActor\n  set x to 1\nend\n"
+            "begin onTrigger player\n  set x to 2\nend\n")
+        assert gate == '  If TES4_TriggerBusy'
+        assert body == ['  If akActionRef as Actor', '    x = 1', '  EndIf',
+                        '  If akActionRef == Game.GetPlayer()', '    x = 2', '  EndIf']
+
+    def test_named_reference_is_asked_first_and_still_bound(self, xref):
+        """The property the filter names must still be declared once the wrap is gone."""
+        xref.edid_to_formid['someref'] = '00012345'
+        xref.record_type['00012345'] = 'ACHR'
+        gate, body, out = self._parts(
+            "scn T\nshort x\nbegin onTrigger SomeRef\n  set x to 1\nend\n", xref)
+        assert gate == '  If !(akActionRef == SomeRef) || TES4_TriggerBusy'
+        assert body == ['  x = 1']
+        assert ' Property SomeRef Auto' in out
+
+    def test_filter_that_names_no_reference_leaves_the_actor_test(self):
+        """A local as the filter resolves to nothing; the type still says actor."""
+        gate, _body, _out = self._parts(
+            "scn T\nshort x\nref myRef\nbegin onTriggerActor myRef\n  set x to 1\nend\n")
+        assert gate == '  If !(akActionRef as Actor) || TES4_TriggerBusy'
+
+    def test_filter_that_cannot_be_a_test_stays_inert(self, xref):
+        """Converted after the body, as before: a faction filter keeps the body as comments."""
+        xref.edid_to_formid['somefaction'] = '00000013'
+        xref.record_type['00000013'] = 'FACT'
+        gate, body, _out = self._parts(
+            "scn T\nshort x\nbegin onTrigger SomeFaction\n"
+            "  if player.getInFaction SomeFaction\n    set x to 1\n  endif\nend\n", xref)
+        assert gate == '  If TES4_TriggerBusy'
+        assert 'NOT executed' in body[0]
+        assert all(line.lstrip().startswith(';') for line in body)
+
+    def test_actor_block_with_a_filter_that_cannot_be_a_test_stays_inert(self, xref):
+        """"Cannot be converted" is not "no filter": the type's test must not revive the body."""
+        xref.edid_to_formid['somefaction'] = '00000013'
+        xref.record_type['00000013'] = 'FACT'
+        gate, body, _out = self._parts(
+            "scn T\nshort x\nbegin onTriggerActor SomeFaction\n"
+            "  if player.getInFaction SomeFaction\n    set x to 1\n  endif\nend\n", xref)
+        assert gate == '  If TES4_TriggerBusy'
+        assert all(line.lstrip().startswith(';') for line in body)
+
+    def test_handler_that_is_more_than_the_one_arm_keeps_its_wrap(self):
+        """A pass that adds to the handler after the wrap must not be dropped by the latch."""
+        from script_convert import assemble
+        arm = (['  x = 1'], 'akActionRef as Actor')
+        wrapped = assemble._under_test(arm[1], arm[0])
+        out = assemble._one_trigger_at_a_time('Event E()', 'EndEvent', ['  Extra()'] + wrapped,
+                                              [(arm[1], arm[0])])
+        assert out[3] == '  If TES4_TriggerBusy'
+        assert '  Extra()' in out and '  If akActionRef as Actor' in out
+        lone = assemble._one_trigger_at_a_time('Event E()', 'EndEvent', wrapped, [(arm[1], arm[0])])
+        assert lone[3] == '  If !(akActionRef as Actor) || TES4_TriggerBusy'
+
+    def test_authored_entry_block_gets_no_second_definition(self):
+        """The author's own entry event stands; the repeating one keeps its test."""
+        gate, _body, out = self._parts(
+            "scn T\nshort x\nbegin onTriggerEnter player\n  set x to 2\nend\n"
+            "begin onTriggerActor\n  set x to 1\nend\n")
+        assert gate == '  If !(akActionRef as Actor) || TES4_TriggerBusy'
+        assert out.count('Event OnTriggerEnter(') == 1
+
+    def test_return_in_the_body_still_clears_the_latch(self):
+        """The body stays a function: `Return` leaves it, and the event clears the flag."""
+        gate, body, out = self._parts(
+            "scn T\nshort x\nbegin onTrigger player\n  if x == 1\n    return\n  endif\n"
+            "  set x to 1\nend\n")
+        assert gate.startswith('  If !(akActionRef == Game.GetPlayer())')
+        assert '    Return' in body
+        event = out.split('Event OnTrigger(')[1].split('EndEvent')[0]
+        assert event.rstrip().endswith('TES4_TriggerBusy = False')
+
+    def test_leave_block_gets_no_test_from_its_name(self):
+        """Only a block type that names a filter has one; `onTriggerLeave` does not."""
+        out = ScriptConverter(CrossRefGraph()).convert_standalone(
+            'T', "scn T\nshort x\nbegin onTriggerLeave\n  set x to 1\nend\n", 'ObjectReference', 'T')
+        assert out.split('Event OnTriggerLeave(')[1].split('EndEvent')[0].split('\n')[1] == '  x = 1'
 
 
 class TestPhysicalTrapDamage:
