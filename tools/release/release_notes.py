@@ -61,8 +61,8 @@ safety net: a new module added there reads as a GUI change (which costs the
 user no re-runs) instead of falling through to the unmatched bucket, which asks
 for every step.
 
-tes_runtime/ (TESRuntime, CreatureRuntime, FalloutRuntime, HavokWorldSize and
-MorrowindRuntime, each its own folder, all built into dist/) is the same shape
+tes_runtime/ (TESRuntime, CreatureRuntime, FalloutRuntime, HavokWorldSize,
+InteriorBounds and MorrowindRuntime, each its own folder, all built into dist/) is the same shape
 as TESGameSelect/: committed, prebuilt SKSE plugins no conversion phase reads,
 packaged on their own by package_runtime_dll.py.  A change anywhere under it re-runs only "Package SKSE
 Mod", never a per-plugin step.

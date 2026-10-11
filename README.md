@@ -233,7 +233,7 @@ cow tes4tamriel 20 20
 `TESRuntime.zip` holds the converter's own SKSE plugins, one DLL each. They need
 [SKSE](https://skse.silverlock.org/) and the
 [Address Library for SKSE Plugins](https://www.nexusmods.com/skyrimspecialedition/mods/32444);
-HavokWorldSize alone needs only SKSE.
+HavokWorldSize and InteriorBounds need only SKSE.
 
 - **TESRuntime.dll**, needed by every converted game: sends an arrested player to
   the nearest jail as the source games do, and lets a clicked quest objective
@@ -243,6 +243,7 @@ HavokWorldSize alone needs only SKSE.
 - **FalloutRuntime.dll**: the Fallout 3 / New Vegas gun handling Skyrim has no
   equivalent for.
 - **HavokWorldSize.dll** (below).
+- **InteriorBounds.dll** (below).
 - **MorrowindRuntime.dll**: runs Morrowind's dialogue and scripts.
 
 Each logs to `Documents\My Games\Skyrim Special Edition\SKSE\<name>.log`.
@@ -258,6 +259,18 @@ in and out of the ground and you can't open doors or hit anything. Big
 worldspaces like Tamriel Rebuilt go well beyond that, so this widens the limit.
 Edit `Data\SKSE\Plugins\HavokWorldSize.ini` to change it (128 by default; use the
 smallest that fits your worldspace).
+
+#### InteriorBounds
+
+`InteriorBounds.dll` stands on its own too. Skyrim holds every object of an interior
+to a square 30,000 units either side of the cell's origin: on entering, anything
+outside it is put on its start position or moved onto one default spot. Skyrim's
+own interiors all fit. Oblivion has no such rule, so a converted interior that is
+larger, or was built far from its origin, arrives with its walls, traps and
+triggers stacked on one point. This leaves them where they were placed. It has to
+be active before you first enter such a cell (Skyrim stores the move in the save).
+`Data\SKSE\Plugins\InteriorBounds.ini` switches it to a count-only or a look-only
+mode; see [its README](tes_runtime/interior_bounds/README.md).
 
 #### Changing the gun reload key
 

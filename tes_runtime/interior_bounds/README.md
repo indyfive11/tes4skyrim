@@ -35,11 +35,11 @@ first visit.
 
 `Data\SKSE\Plugins\InteriorBounds.ini`, read once when the game starts:
 
-- `iMode=0` — **look** (the default): find the place in the game's code and
-  log it. Changes nothing.
+- `iMode=0` — **look**: find the place in the game's code and log it. Changes
+  nothing. This is what the plugin does when the ini is missing.
 - `iMode=1` — **count**: also log how often the game moves such an object. The
   game still moves it.
-- `iMode=2` — **keep**: the objects stay where they were placed.
+- `iMode=2` — **keep** (as shipped): the objects stay where they were placed.
 
 It needs only SKSE (not the Address Library). On a game build it does not
 recognise it changes nothing and says why in its log.
@@ -102,8 +102,8 @@ Shares no code with the other runtimes. Log:
 
 ### Building and testing
 
-`build.bat` → `build\InteriorBounds.dll` and `build\look\InteriorBounds.dll`
-(MSVC, `/MT`). The same sources build on Linux with `clang-cl` and `lld-link`
+`build.bat` → `..\dist\InteriorBounds.dll` (the plugin that ships) and
+`build\look\InteriorBounds.dll` (look-only, without the write path) (MSVC, `/MT`). The same sources build on Linux with `clang-cl` and `lld-link`
 against an [xwin](https://github.com/Jake-Shadle/xwin) copy of the CRT and SDK.
 
 [test/locate_test.cpp](test/locate_test.cpp) compiles `locate.cpp` and

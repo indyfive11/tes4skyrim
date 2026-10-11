@@ -578,7 +578,7 @@ TESConversion/
 
   native/                 # C++ extensions (grow.cpp -> _navgrow_native)
   tes_runtime/            # the shipped SKSE plugins, one folder each (tes, creature, fallout,
-                         #   havok_world_size, morrowind) + common/; built DLLs in dist/
+                         #   havok_world_size, interior_bounds, morrowind) + common/; built DLLs in dist/
   external/               # third-party binaries (see README license table)
   tests/ tools/ docs/ references/ temp/
   export/                 # cached exports (gitignored)

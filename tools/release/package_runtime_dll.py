@@ -22,6 +22,7 @@ Usage:
   python tools/release/package_runtime_dll.py --output-dir PATH
   python tools/release/package_runtime_dll.py --mod HavokWorldSize   # standalone
   python tools/release/package_runtime_dll.py --mod CreatureRuntime  # standalone
+  python tools/release/package_runtime_dll.py --mod InteriorBounds   # standalone
 """
 
 import argparse
@@ -58,6 +59,12 @@ HAVOK_WORLD_SIZE = (
      PLUGINS / "HavokWorldSize.ini"),
 )
 
+INTERIOR_BOUNDS = (
+    (DIST_DIR / "InteriorBounds.dll", PLUGINS / "InteriorBounds.dll"),
+    (SRC_DIR / "interior_bounds" / "InteriorBounds.ini",
+     PLUGINS / "InteriorBounds.ini"),
+)
+
 #: Mod name -> (required files, optional files), each file a (source, archive path) pair.
 MODS = {
     MOD_NAME: (
@@ -65,10 +72,12 @@ MODS = {
         (*CREATURE_RUNTIME,
          (DIST_DIR / "FalloutRuntime.dll", PLUGINS / "FalloutRuntime.dll"),
          *HAVOK_WORLD_SIZE,
+         *INTERIOR_BOUNDS,
          (DIST_DIR / "MorrowindRuntime.dll", PLUGINS / "MorrowindRuntime.dll")),
     ),
     "CreatureRuntime": (CREATURE_RUNTIME, ()),
     "HavokWorldSize": (HAVOK_WORLD_SIZE, ()),
+    "InteriorBounds": (INTERIOR_BOUNDS, ()),
 }
 
 

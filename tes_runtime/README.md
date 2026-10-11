@@ -7,7 +7,7 @@ animation sets, Fallout's guns. These small SKSE plugins fill those gaps. They
 run quietly in the background, touch nothing in your save that removing them
 would break, and only do anything when the plugin they serve is installed.
 
-All five come in one download, `TESRuntime.zip`. Install it like any other
+All six come in one download, `TESRuntime.zip`. Install it like any other
 mod (it needs [SKSE](https://skse.silverlock.org/) and the
 [Address Library](https://www.nexusmods.com/skyrimspecialedition/mods/32444)),
 and keep it enabled for as long as you play any converted game.
@@ -18,6 +18,7 @@ and keep it enabled for as long as you play any converted game.
 | [CreatureRuntime](creature/README.md) | Lets converted creatures move and fight with their own animations | anything with converted creatures (Oblivion, Nehrim, Morrowind, Fallout) |
 | [FalloutRuntime](fallout/README.md) | Makes Fallout 3 / New Vegas guns shoot, reload and aim like guns | Fallout 3 or New Vegas |
 | [HavokWorldSize](havok_world_size/README.md) | Keeps physics working in huge worldspaces | big worlds such as Tamriel Rebuilt — or any large mod world |
+| [InteriorBounds](interior_bounds/README.md) | Keeps the contents of a very large interior where its author put them | a mod with an interior larger than Skyrim allows, or built far from its origin |
 | [MorrowindRuntime](morrowind/README.md) | Brings back Morrowind's own dialogue, scripts and services | Morrowind or Tamriel Rebuilt |
 
 Each plugin is independent: if one ever misbehaves it cannot take the others
@@ -64,7 +65,8 @@ Address Library id against every installed build with
 ### Packaging
 
 `python tools/release/package_runtime_dll.py` (GUI: Build > Package SKSE Mod)
-zips every DLL in `dist/` and `havok_world_size/HavokWorldSize.ini` into one
+zips every DLL in `dist/`, `havok_world_size/HavokWorldSize.ini` and
+`interior_bounds/InteriorBounds.ini` into one
 `output/Finished Mods/TESRuntime.zip`, rooted at the Data folder. It also
 composes MorrowindRuntime's dialogue menu (`Interface/morrowind_dialogue.swf`)
 from the Morrowind install registered on this machine and adds it to the

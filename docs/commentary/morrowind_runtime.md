@@ -3525,7 +3525,7 @@ MorrowindRuntime is **its own DLL**, like every runtime under `tes_runtime/`:
 its own source folder, built by `tes_runtime/build.bat` into `tes_runtime/dist/`
 and shipped in the same `TESRuntime.zip`. That boundary is what keeps the
 license contained. `CreatureRuntime.dll`, `FalloutRuntime.dll`,
-`HavokWorldSize.dll` and `TESGameBridge.dll` never link OpenMW code, so they
+`HavokWorldSize.dll`, `InteriorBounds.dll` and `TESGameBridge.dll` never link OpenMW code, so they
 stay MIT; linking OpenMW into any of them would make that whole binary
 GPL-3.0. `TESRuntime.dll` links none of the vendored tree, but its
 `tes/alchemy.cpp` ports OpenMW's `Alchemy::applyTools` line for line, so
