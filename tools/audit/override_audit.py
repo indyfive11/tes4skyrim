@@ -22,6 +22,7 @@ from collections import Counter, defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
+from core.plugin_masters import masters_from_export_header
 from tes5_import.overrides.diff import diff_records
 from tes5_import.overrides.manifest import load_master_manifests
 from tes5_import.overrides.master_index import load_master_index
@@ -44,12 +45,7 @@ def main():
                     help='Per-key unmapped detail with example records')
     args = ap.parse_args()
 
-    header = os.path.join(args.export_dir, '_HEADER.txt')
-    masters = []
-    with open(header, 'r', encoding='utf-8') as f:
-        for line in f:
-            if line.startswith('Master['):
-                masters.append(line.partition('=')[2].strip())
+    masters = masters_from_export_header(args.export_dir)
     if not masters:
         print('Plugin has no TES4 masters; nothing to audit.')
         return

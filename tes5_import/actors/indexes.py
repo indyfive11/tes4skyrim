@@ -12,6 +12,7 @@ See: docs/commentary/tes5_import_falloutnv_actors.md
 
 from output_layout import assets_for
 
+from ..base.master_export import values_of
 from .creature_races import build_creature_death_piles, build_creature_races
 from .starts_dead import index_starts_dead
 from ..record_types.actors_falloutnv import flatten_actor_templates
@@ -36,9 +37,7 @@ def _load_sound_identity(by_type: dict, master_export: dict) -> None:
     """Reset the per-run sound state and index every SOUN in scope."""
     reset_sound_descriptors()
     reset_soun_identity()
-    if master_export:
-        load_soun_identity([r for r in master_export.values()
-                            if r.get('Signature') == 'SOUN'])
+    load_soun_identity(values_of(master_export, 'SOUN'))
     load_soun_identity(by_type.get('SOUN', []))
 
 

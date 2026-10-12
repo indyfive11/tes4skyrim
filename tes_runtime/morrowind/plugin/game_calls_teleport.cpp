@@ -2,6 +2,9 @@
 // archetype for. Each converts as a script-less Script effect, and the Papyrus
 // VM's own OnMagicEffectApply sink says when one lands. OpenMW applies all four
 // to the PLAYER only, and only while teleporting is enabled.
+//
+// This file also owns the table of every runtime-carried effect record, which
+// game_calls_flight.cpp reads, and tells it which actors a Sanctuary lands on.
 // See: docs/commentary/morrowind_runtime.md#teleport-effects
 
 #include "game_calls_internal.h"
@@ -223,8 +226,11 @@ void OnTeleportEffect(int index, bool castByPlayer) {
     }
 }
 
-// The VM's own sink, which sees every effect applied to anything. Ours only
-// notes a teleport landing on the player and moves it on the next frame.
+bool IsTeleport(int index) { return index >= kMark && index <= kAlmsivi; }
+
+// The VM's own sink, which sees every effect applied to anything. Ours notes
+// a teleport landing on the player, and moves it on the next frame, and any
+// actor a Sanctuary lands on, for the tick to rank.
 int ApplyHook(void* sink, const void* event, void* source) {
     const char* e = static_cast<const char*>(event);
     const auto found = e ? g_effectIds.find(*reinterpret_cast<const std::uint32_t*>(
@@ -232,8 +238,12 @@ int ApplyHook(void* sink, const void* event, void* source) {
                          : g_effectIds.end();
     void* target = e ? *reinterpret_cast<void* const*>(e + ids::kOffApplyTarget)
                      : nullptr;
-    if (found != g_effectIds.end() && target && target == PlayerRef()) {
-        const int index = found->second;
+    const int index = found != g_effectIds.end() ? found->second : -1;
+    if (target && index == kSanctuaryEffect) {
+        const std::uint32_t actor = FormIdOf(target);
+        PostToMainThread([actor]() { WatchSanctuary(actor); });
+    }
+    if (target && IsTeleport(index) && target == PlayerRef()) {
         const bool byPlayer =
             *reinterpret_cast<void* const*>(e + ids::kOffApplyCaster) == target;
         PostToMainThread([index, byPlayer]() { OnTeleportEffect(index, byPlayer); });
@@ -242,6 +252,11 @@ int ApplyHook(void* sink, const void* event, void* source) {
 }
 
 }  // namespace
+
+int RuntimeEffectIndex(std::uint32_t effectId) {
+    const auto found = g_effectIds.find(effectId);
+    return found != g_effectIds.end() ? found->second : -1;
+}
 
 void InstallTeleportCalls() {
     g_worldSpace = Native<RefFormFn>("ObjectReference.GetWorldSpace",

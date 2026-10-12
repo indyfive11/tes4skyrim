@@ -141,5 +141,8 @@ def test_selected_steps():
     """The default run leaves out zip packing; an --*-only flag runs just that step."""
     assert 'pack_zip' not in selected_steps(build_parser().parse_args([]))
     assert selected_steps(build_parser().parse_args(['--meshes-only'])) == ['meshes']
+    assert selected_steps(build_parser().parse_args(
+        ['--build-morrowind-patch', 'D:/MW/Data Files'])) == [
+            'export', 'meshes', 'creatures', 'import', 'sounds', 'scripts']
     args = build_parser().parse_args(['--data-dir', 'D:/X/Data', '-f', 'A.esm'])
     assert args.data_dir == 'D:/X/Data'

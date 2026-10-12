@@ -14,13 +14,12 @@ import os
 from collections import Counter, namedtuple
 from functools import lru_cache
 
+from core.plugin_masters import master_dirs
 from asset_convert.character.head_fit import OB_HEAD_MESH, fit_race_for_hair
 from asset_convert.game_paths import current_namespace
 from output_layout import assets_for
 from tes5_import.base.equivalents import TES4_RACE_FID_TO_EDID
 from tes5_import.base.race_lookup import stand_ins
-from tes5_import.overrides.nested import (export_master_names, export_root,
-                                          master_export_dir)
 
 #: Steps an authored LNAM is quantized to; changing it renumbers every non-zero variant (FormID drift).
 LENGTH_BUCKETS = 4
@@ -233,13 +232,6 @@ def _int(rec: dict, key: str) -> int:
         return int((rec.get(key) or '0').split()[0])
     except (ValueError, IndexError):
         return 0
-
-
-def master_dirs(export_dir) -> list:
-    """Export folders of a plugin's masters, in load order, that exist."""
-    root = export_root(str(export_dir))
-    dirs = [master_export_dir(root, n) for n in export_master_names(str(export_dir))]
-    return [d for d in dirs if os.path.isdir(d)]
 
 
 # ---------------------------------------------------------------------------

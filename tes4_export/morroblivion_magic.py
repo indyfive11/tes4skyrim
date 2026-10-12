@@ -42,6 +42,7 @@ _SET = re.compile(rf'\b(?:set|let)\s+({_WORD}(?:\s*\.\s*{_WORD})?)\s*(?:to\b|:=)
 _MOVE = re.compile(rf'\b({_WORD})\s*\.\s*(?:moveto|movetomarker|positioncell|'
                    rf'positionworld|setpos|enable|disable)\b', re.I)
 _QUEST_EVENT = re.compile(r'\b(?:setstage|startquest|stopquest)\b', re.I)
+_CALL = re.compile(rf'\bcall\s+({_WORD})', re.I)
 _PLAYER_MOVE = re.compile(rf'\bplayer\s*\.\s*moveto\s+({_WORD})', re.I)
 _TOKEN = re.compile(rf'"([^"]*)"|({_WORD})')
 #: What names no record in MWScript source: comments, GetPCCell's cell NAME argument, and the keywords.
@@ -81,6 +82,15 @@ def _mentions(name: str, text: str) -> bool:
     return re.search(rf'\b{pattern}\b', text, re.I) is not None
 
 
+def _callers(texts: list) -> dict:
+    """{function script: every owning script that `Call`s it} over `(owner, source)` texts."""
+    out = {}
+    for owner, text in texts:
+        for name in _CALL.findall(text):
+            out.setdefault(name.lower(), set()).add(owner)
+    return out
+
+
 class _Corpus:
     """Every script source the Morroblivion exports hold, by owning script (`''` for a result script)."""
 
@@ -95,6 +105,27 @@ class _Corpus:
                 for rec in parse_export_file(os.path.join(folder, f'{sig}.txt')):
                     self._take(sig, rec)
         self._written = {}
+        self.callers = _callers(self.texts)
+
+    def with_callees(self, dropped: set) -> set:
+        """`dropped` grown by every function script only scripts in it call."""
+        while True:
+            grown = dropped | {name for name, owners in self.callers.items() if owners <= dropped}
+            if grown == dropped:
+                return dropped
+            dropped = grown
+
+    def reach(self, texts: list, dropped: set) -> list:
+        """`texts` plus every function script in `dropped` they call, directly or not."""
+        by_name = {owner: text for owner, text in self.scripts.values()}
+        out, todo, seen = list(texts), list(texts), set()
+        while todo:
+            for name in {n.lower() for n in _CALL.findall(todo.pop())} & dropped - seen:
+                seen.add(name)
+                if name in by_name:
+                    out.append(by_name[name])
+                    todo.append(by_name[name])
+        return out
 
     def _take(self, sig: str, rec: dict) -> None:
         """Keep one record's source text, conditions and name; a script's FormID -> (EditorID, text)."""
@@ -172,13 +203,15 @@ def _candidates(vanilla: dict, ctx, export_record) -> tuple:
     found, folders = {}, set()
     for sig, fid, rec, path in master_records(ctx, MAGIC_TYPES):
         key = (sig, fid.upper())
-        scripts = _script_effects(rec)
-        if key not in vanilla or scripts is None:
+        if key not in vanilla:
             continue
         lines = export_record(vanilla[key], ctx)
         effects = _effects(lines or [])
+        scripts = _script_effects(rec)
+        if scripts is None and not any(mw_needs_runtime(index) for index, _av in effects):
+            continue
         if effects and all(mw_converts(index, av) for index, av in effects):
-            found[key] = (rec, lines, scripts)
+            found[key] = (rec, lines, scripts or set())
             folders.add(path)
     return found, folders
 
@@ -201,9 +234,10 @@ def _independent(found: dict, corpus: _Corpus) -> set:
     keys = {key for key, (_r, lines, scripts) in found.items()
             if all(s in corpus.scripts for s in scripts) and _replaceable(lines, scripts, corpus)}
     while True:
-        names = {corpus.scripts[s][0] for key in keys for s in found[key][2]}
-        bad = {key for key in keys
-               if not all(corpus.unobserved(corpus.scripts[s][1], names) for s in found[key][2])}
+        names = corpus.with_callees({corpus.scripts[s][0] for key in keys for s in found[key][2]})
+        bad = {key for key in keys if not all(
+            corpus.unobserved(text, names)
+            for text in corpus.reach([corpus.scripts[s][1] for s in found[key][2]], names))}
         if not bad:
             return keys
         keys -= bad
@@ -223,7 +257,8 @@ def restored_magic(esms, ctx, export_record) -> list:
     overridden with its vanilla original's effects.
 
     A record qualifies when it pairs to vanilla by id and type, stands a script
-    effect in, and every vanilla effect converts; its Morroblivion EditorID is
+    effect in or approximates an effect only the runtime carries, and every
+    vanilla effect converts; its Morroblivion EditorID is
     kept. `export_record` is the TES3 exporter's, which imports the patch module.
     See: docs/commentary/tes4_export_morrowind.md#restored-magic
     """

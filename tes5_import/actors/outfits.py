@@ -46,6 +46,7 @@ Nothing is dropped: every source item still reaches the actor, through exactly
 one of the two channels.
 """
 
+from ..base.master_export import values_of
 from ..base.text_reader import get_int
 from ..record_types.equipment import armo_slots
 
@@ -129,22 +130,15 @@ def load_item_index(by_type: dict, master_export: dict = None) -> None:
     _LVLI_WEARABLE.clear()
 
     n_master = 0
-    if master_export:
-        # Filter by signature rather than walking every master record into the
-        # index: the masters' export is ~1.17M records and only the item types
-        # can ever appear in an inventory (same reasoning as `by_type` above,
-        # and here it is the difference between ~30k dicts and all of them).
-        for rec in master_export.values():
-            sig = rec.get('Signature')
-            if sig not in _INVENTORY_SIGS:
-                continue
-            fid = _low(rec.get('FormID', ''))
-            if fid is None:
-                continue
-            _ITEM_SIG[fid] = sig
-            if sig in _INSPECTED_SIGS:
-                _ITEM_REC[fid] = rec
-            n_master += 1
+    for rec in values_of(master_export, *_INVENTORY_SIGS):
+        fid = _low(rec.get('FormID', ''))
+        if fid is None:
+            continue
+        sig = rec['Signature']
+        _ITEM_SIG[fid] = sig
+        if sig in _INSPECTED_SIGS:
+            _ITEM_REC[fid] = rec
+        n_master += 1
 
     for sig in _INVENTORY_SIGS:
         for rec in by_type.get(sig, []):

@@ -33,9 +33,7 @@ from tes5_import.navmesh.pool import navmesh_land_at
 from tes5_import.record_types.items import load_furniture_models
 from tools.navmesh.audit import cell_index, master_dirs
 from tools.navmesh.cell_index import index_map, shift_fid
-from tes5_import.overrides.nested import (
-    export_master_names, export_root, master_export_dir,
-)
+from core.plugin_masters import master_dir, masters_from_export_header
 from output_layout import assets_for
 
 DEFAULT_EXPORT = 'export/Oblivion.esm'
@@ -46,8 +44,7 @@ _PERSISTENT_FLAG = 0x400
 
 def master_export_dirs_of(export):
     """Each TES4 master's export directory, in _HEADER.txt order."""
-    root = export_root(export)
-    return [master_export_dir(root, n) for n in export_master_names(export)]
+    return [master_dir(export, n) for n in masters_from_export_header(export)]
 
 
 def load_origin_shifts(export, quiet=True):

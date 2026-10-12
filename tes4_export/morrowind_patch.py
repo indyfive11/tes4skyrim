@@ -17,9 +17,9 @@ any other missing master.
 Only the assets those records name are extracted, so the patch ships the ~10%
 of Morrowind's tree Morroblivion is missing rather than all of it.
 
-`build_patch` runs that whole pass when the user asks for a build -- export,
-assets AND the plugin itself, because one user action has to leave something
-installable -- and the rest answers where the patch is and what it supplies.
+`export_patch` is the patch's Export step: its records and raw assets. Every
+later step is the ordinary pipeline stage run with `-f <patch>`, so
+`--build-morrowind-patch` is those stages in order, and each also runs alone.
 
 See: docs/commentary/tes4_export_morrowind.md#morroblivion-gap-patch
 """
@@ -27,17 +27,18 @@ See: docs/commentary/tes4_export_morrowind.md#morroblivion-gap-patch
 import hashlib
 import os
 import re
+import shutil
 import time
+from pathlib import Path
 
 from asset_convert import case_paths
 from asset_convert.sources.bsa_extract_morrowind import (is_morrowind_bsa,
                                                          read_index,
                                                          iter_bsa)
-from asset_convert.sources.source_registry import add_directory, asset_root
+from asset_convert.sources.source_registry import (add_directory, asset_root,
+                                                   directory_for)
 from core.plugin_masters import masters_from_export_header
-from papyrus_compile import phase_compile
-from output_layout import (DEFAULT_OUTPUT, plugin_esm, plugin_out_root,
-                           record_dir)
+from output_layout import plugin_out_root, record_dir
 from tes5_import.base.text_reader import parse_export_file
 
 from .morroblivion import (MORROBLIVION_CREATURES, MorroblivionModels,
@@ -79,6 +80,9 @@ BARK_TYPES = frozenset({'DIAL', 'INFO', 'NPC_', 'CREA', 'SNDG'})
 
 #: The vanilla start scripts the runtime runs, one `EditorID` record each; never imported.
 START_SCRIPTS_SIG = 'MWSS'
+
+#: Export subfolder holding the split pairs' child scripts until the Scripts step stages them.
+PAIR_SCRIPTS_DIR = 'pair_scripts'
 
 #: TES3 allocates this many magic effect indices.
 _MAGIC_EFFECT_COUNT = 143
@@ -319,24 +323,53 @@ def _add_asset(wanted: set, rec, sig: str, subtree: str,
     wanted.add('%s%s%s' % (subtree, chr(92), path.lstrip(chr(92))))
 
 
-def build_patch(data_dir: str, export_dir: str, morroblivion_exports,
-                progress=print, out_root=None) -> dict:
-    """Build the shared patch from a Morrowind Data folder; report what it made.
+def register_source(export_dir: str, data_dir: str) -> str:
+    """Register the Morrowind Data Files folder the patch exports from; '' or the refusal.
+
+    Registered so the Export step finds it and later conversions find vanilla meshes.
+    """
+    missing = source_paths(data_dir, PATCH_SOURCES)[1]
+    if missing:
+        return _missing_message(data_dir, missing)
+    add_directory(export_dir, data_dir)
+    return ''
+
+
+def source_dir(export_dir: str) -> str:
+    """The registered Morrowind Data Files folder, or ''."""
+    return directory_for(export_dir, PATCH_SOURCES[0]) or ''
+
+
+def run_patch_export(export_dir: str, progress=print) -> bool:
+    """The patch's Export step, against the registered folder and converted Morroblivion.
+
+    See: docs/commentary/tes4_export_morrowind.md#the-patch-builds-its-own-plugin
+
+    Imported inside the function to break the cycle with `export_morrowind`,
+    which needs PATCH_NAME from this module at its own import time.
+    """
+    from .export_morrowind import morroblivion_exports
+    result = export_patch(source_dir(export_dir), export_dir,
+                          morroblivion_exports(export_dir), progress)
+    if not result['ok']:
+        progress(f"[{PATCH_NAME}] ERROR: {result['error']}")
+        return False
+    progress(f"[{PATCH_NAME}] Export complete in {result['seconds']:.1f}s -- "
+             f"{result['records']} records, {result['assets']} assets")
+    return True
+
+
+def export_patch(data_dir: str, export_dir: str, morroblivion_exports,
+                 progress=print) -> dict:
+    """Export the patch's records and raw assets from a Morrowind Data folder; report what it wrote.
 
     `morroblivion_exports` are the converted Morroblivion plugins whose records
-    define the gap: anything they already supply is not filled. `out_root` is
-    the output directory the finished plugin and its assets land in.
-    `data_dir` is registered so later conversions find vanilla meshes.
-
-    `ok` means the plugin FILE exists: a build that wrote records and assets
-    but no plugin is a failure.
+    define the gap: anything they already supply is not filled.
     """
     start = time.time()
-    out_root = out_root or DEFAULT_OUTPUT
     esms, missing = source_paths(data_dir, PATCH_SOURCES)
     if missing:
         return {'ok': False, 'error': _missing_message(data_dir, missing)}
-    add_directory(export_dir, data_dir)
     if not morroblivion_exports:
         return {'ok': False, 'error': _no_morroblivion_message()}
 
@@ -352,8 +385,8 @@ def build_patch(data_dir: str, export_dir: str, morroblivion_exports,
     gaps = collect_gap_records(esms, index, refused)
     progress(f'  {len(gaps)} base records Morroblivion does not supply')
     if not gaps:
-        return {'ok': True, 'records': 0, 'assets': 0, 'output': '',
-                'plugin': '', 'seconds': time.time() - start}
+        return {'ok': True, 'records': 0, 'assets': 0,
+                'seconds': time.time() - start}
 
     assets = _extract_assets(gaps.values(), esms, data_dir, export_dir,
                              progress)
@@ -362,17 +395,12 @@ def build_patch(data_dir: str, export_dir: str, morroblivion_exports,
                          progress)
     progress('Collecting vanilla voiced barks...')
     barks = collect_bark_records(esms)
-    out_dir, scripts = _write_records(gaps, export_dir, progress, barks,
-                                      morroblivion_exports, esms, pairs)
+    _out_dir, scripts = _write_records(gaps, export_dir, progress, barks,
+                                       morroblivion_exports, esms, pairs)
+    _save_pair_scripts(scripts, export_dir, progress)
     assets += _stage_bark_voices(data_dir, export_dir, progress)
-    _convert_assets(export_dir, out_root, progress)
-    _convert_creatures(export_dir, out_root, progress)
-    _compile_pair_scripts(scripts, export_dir, out_root, progress)
-    plugin, error = _import_records(export_dir, out_root, progress)
-    return {'ok': bool(plugin), 'records': len(gaps), 'assets': assets,
-            'output': out_dir, 'plugin': plugin, 'error': error,
+    return {'ok': True, 'records': len(gaps), 'assets': assets,
             'seconds': time.time() - start}
-
 
 
 def _split_pairs(esms, index, export_dir: str, morroblivion, gaps,
@@ -388,19 +416,30 @@ def _split_pairs(esms, index, export_dir: str, morroblivion, gaps,
     return pairs
 
 
-def _compile_pair_scripts(scripts: dict, export_dir: str, out_root,
-                          progress) -> None:
-    """Write the split pairs' child scripts into the patch's output and compile them.
+def _save_pair_scripts(scripts: dict, export_dir: str, progress) -> None:
+    """Keep the split pairs' child scripts in the export, replacing the last build's.
 
     See: docs/commentary/tes4_export_morrowind.md#split-pair-scripts
     """
-    source = plugin_out_root(out_root, PATCH_NAME, export_dir) / 'scripts' / 'source'
-    source.mkdir(parents=True, exist_ok=True)
+    folder = Path(patch_dir(export_dir)) / PAIR_SCRIPTS_DIR
+    shutil.rmtree(folder, ignore_errors=True)
+    folder.mkdir(parents=True)
     for name, text in sorted(scripts.items()):
-        (source / f'{name}.psc').write_text(text + chr(10), encoding='utf-8')
+        (folder / f'{name}.psc').write_text(text + chr(10), encoding='utf-8')
     progress(f'  {len(scripts)} split-pair child script(s)')
-    if scripts:
-        phase_compile(PATCH_NAME, {}, str(out_root))
+
+
+def stage_pair_scripts(export_dir: str, out_root) -> int:
+    """The patch's Scripts step: copy the saved child scripts to its script source; how many.
+
+    See: docs/commentary/tes4_export_morrowind.md#split-pair-scripts
+    """
+    saved = sorted((Path(patch_dir(export_dir)) / PAIR_SCRIPTS_DIR).glob('*.psc'))
+    dest = plugin_out_root(out_root, PATCH_NAME, export_dir) / 'scripts' / 'source'
+    dest.mkdir(parents=True, exist_ok=True)
+    for path in saved:
+        shutil.copyfile(path, dest / path.name)
+    return len(saved)
 
 
 def _stage_bark_voices(data_dir: str, export_dir: str, progress) -> int:
@@ -444,70 +483,6 @@ def _copy_gap_sounds(records, data_dir: str, export_dir: str,
                                owned)
     progress(f'  Copied {copied} of {len(owned)} gap sound file(s)')
     return copied
-
-
-def _convert_creatures(export_dir: str, out_root, progress) -> None:
-    """Convert the patch's creatures, so dependent plugins inherit their projects.
-
-    See: docs/commentary/tes4_export_morrowind.md#morroblivion-creatures
-    """
-    from asset_convert.havok.creature_pipeline import convert_creatures
-    rec_dir = str(record_dir(export_dir, PATCH_NAME))
-    out_meshes = str(plugin_out_root(out_root, PATCH_NAME, export_dir) / 'meshes')
-    progress('  Converting patch creatures')
-    result = convert_creatures(rec_dir, out_meshes, log=progress)
-    progress(f"  {len(result['projects'])} creature projects, "
-             f"{len(result['errors'])} errors")
-
-
-def _import_records(export_dir: str, out_root, progress) -> tuple:
-    """Build the patch plugin itself from the records just exported.
-
-    Returns (path, '') on success and ('', refusal) otherwise. ESM-flagged
-    under its `.esp` extension.
-    See: docs/commentary/tes4_export_morrowind.md#the-patch-builds-its-own-plugin
-
-    Imported inside the function to keep the export package from loading the
-    whole import stage just to answer where the patch lives.
-    """
-    from tes5_import.pipeline import import_plugin
-
-    dest = plugin_esm(out_root, PATCH_NAME)
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    progress(f'  Building {PATCH_NAME}')
-    try:
-        _converted, errors = import_plugin(
-            export_dir=patch_dir(export_dir), output_path=str(dest),
-            masters=['Skyrim.esm'], is_esm=True, output_root=str(out_root))
-    except Exception as exc:
-        return '', _import_failed_message(f'{type(exc).__name__}: {exc}')
-    if not dest.is_file():
-        return '', _import_failed_message('the importer wrote no plugin file')
-    if errors:
-        return '', _import_failed_message(f'{errors} record error(s)')
-    progress(f'  Wrote {dest}')
-    return str(dest), ''
-
-
-def _convert_assets(export_dir: str, out_root, progress) -> None:
-    """Convert the extracted patch assets into `out_root`.
-
-    Building the patch is ONE user action, so it has to leave installable
-    files behind. Extraction alone populates `export/` only, and every texture
-    it pulled stayed invisible to the game until an unrelated stage happened
-    to run.
-    """
-    from asset_convert.asset_pipeline import convert_meshes
-    progress('  Converting patch assets to output')
-    try:
-        stats = convert_meshes(PATCH_NAME, extract_dir=export_dir,
-                               output_dir=out_root)
-    except Exception as exc:
-        progress(f'  Asset conversion FAILED: {exc}')
-        return
-    mesh = stats.get('mesh_conversion') or {}
-    progress(f"  Converted {mesh.get('converted', 0)} meshes, "
-             f"{stats.get('textures_copied', 0)} textures")
 
 
 def _patch_ownership(export_dir: str) -> MorroblivionModels:
@@ -750,17 +725,6 @@ def _missing_message(data_dir: str, missing: list) -> str:
              f'Looked in: {data_dir or "(nothing chosen)"}', '', 'Missing:']
     lines += [f'  {name}' for name in missing]
     return '\n'.join(lines)
-
-
-def _import_failed_message(reason: str) -> str:
-    """The refusal when the records exported but the plugin did not build."""
-    lines = [f'{PATCH_NAME} did not build: {reason}', '',
-             'The records and assets are in export/, so nothing is lost -- '
-             'but no plugin was written, and a Morroblivion-mode conversion '
-             'will still refuse until one is.', '',
-             'Re-run the build; if it fails again the log above names the '
-             'record that stopped it.']
-    return chr(10).join(lines)
 
 
 def _no_morroblivion_message() -> str:

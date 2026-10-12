@@ -66,6 +66,9 @@ from output_layout import (BODY_SLOTS_PATCH, PACK_FAILED_SUFFIX, asset_root,
                            record_dir, tree_members, write_mod_zip)
 from papyrus_compile import phase_compile
 from tes4_export.tes3_reader import is_tes3
+from tes4_export.morrowind_patch import (
+    PATCH_NAME, register_source as register_patch_source, run_patch_export,
+    stage_pair_scripts)
 from core.plugin_masters import (get_masters_from_binary, is_master_export,
                                  topological_order)
 import core.run_log as run_log
@@ -414,41 +417,6 @@ def _missing_master_exports(results, export_dir: str, tes4_data: str) -> dict:
 
 
 # ===========================================================================
-# Morroblivion compatibility patch
-# ===========================================================================
-
-def _build_morrowind_patch(data_dir: str, export_dir: str,
-                           output_dir: str) -> int:
-    """Build the Morroblivion compatibility patch, then exit.
-
-    The same one action the GUI menu runs. It is the ONLY way to produce a
-    plugin every Morroblivion-mode conversion declares as a master, so a
-    GUI-only door left CLI users with a refusal naming a menu they never open.
-    See: docs/commentary/tes4_export_morrowind.md#the-patch-builds-its-own-plugin
-    """
-    from tes4_export.export_morrowind import morroblivion_exports
-    from tes4_export.morrowind_patch import build_patch
-
-    exports = morroblivion_exports(export_dir)
-    hold_heavy_lock(" ".join(["convert.py"] + sys.argv[1:]),
-                    {'plugins': ['Morrowind-Morroblivion-Compatibility.esp'],
-                     'steps': ['build_patch'], 'scope': {},
-                     'same': [data_dir, export_dir, output_dir]})
-    print("Building the Morroblivion compatibility patch")
-    print(f"  Source : {data_dir}")
-    if exports:
-        print(f"  Against: {', '.join(exports)}")
-    result = build_patch(data_dir, export_dir, exports, out_root=output_dir)
-    if not result["ok"]:
-        print(f"ERROR: {result['error']}")
-        return 1
-    print(f"Done in {result['seconds']:.1f}s -- {result['records']} records, "
-          f"{result['assets']} assets.")
-    print(f"  {result['plugin']}")
-    return 0
-
-
-# ===========================================================================
 # Phase 1: Export TES4 RECORDS
 # ===========================================================================
 
@@ -462,7 +430,8 @@ def _plugins_to_convert(args, config: dict, tes4_data: str,
 
     See: docs/reference/pipeline.md#-f-takes-the-plugin
     """
-    files = args.files or config.get("files", [])
+    files = ([PATCH_NAME] if args.build_morrowind_patch
+             else args.files or config.get("files", []))
     for name in files:
         shipped = source_registry.mod_plugins(export_dir, name)
         if shipped:
@@ -479,6 +448,8 @@ def phase_export(file_name: str, tes4_data: str, export_dir: str,
     from tes4_export.tes4_reader import read_file
     from tes4_export.export import export_file, export_header
 
+    if file_name == PATCH_NAME:
+        return run_patch_export(export_dir)
     out_dir = str(record_dir(export_dir, file_name))
 
     # Find the source file -- the Oblivion Data directory, or an imported mod's
@@ -557,6 +528,9 @@ def phase_extract(file_name: str, tes4_data: str, config: dict,
         whichever registered Data directory holds it.
     """
     extract_dir = str(SCRIPT_DIR / "export")
+    if file_name == PATCH_NAME:
+        print(f"[{file_name}] Its Export step extracts the assets it ships")
+        return True
 
     if source_registry.get(extract_dir, file_name):
         from asset_convert.sources import mod_ingest
@@ -876,6 +850,10 @@ def phase_scripts(file_name: str, config: dict, output_dir: str = None):
         return False
 
     out_root = Path(output_dir) if output_dir else SCRIPT_DIR / "output"
+    if file_name == PATCH_NAME:
+        staged = stage_pair_scripts(export_root, out_root)
+        print(f"[{file_name}] Staged {staged} split-pair child script(s)")
+        return True
     script_dir = (plugin_out_root(out_root, file_name, export_root)
                   / "scripts" / "source")
 
@@ -1074,9 +1052,11 @@ def _run_pipeline():
     os.makedirs(export_dir, exist_ok=True)
     os.makedirs(output_dir, exist_ok=True)
 
-    if args.build_morrowind_patch:
-        return _build_morrowind_patch(args.build_morrowind_patch,
-                                      export_dir, output_dir)
+    refusal = (register_patch_source(export_dir, args.build_morrowind_patch)
+               if args.build_morrowind_patch else '')
+    if refusal:
+        print(f"ERROR: {refusal}")
+        return 1
     if args.list_mods:
         return _list_sources(export_dir)
     if args.import_mod or args.remove_mod:

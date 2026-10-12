@@ -56,6 +56,7 @@ from .navmesh import pool as navm_pool
 from .navmesh.lattice.build import set_activators
 from .actors.lava_placement import LavaPlanner
 from .base.locations import build_marker_locations
+from .base.master_export import records_of, values_of
 from .record_types.world import (
     convert_ACHR,
     convert_CELL,
@@ -135,10 +136,8 @@ def _phase1_simple_records(st, export_dir: str, phase_done, skip_types) -> None:
 
     from .record_types.weather import record_sunless_climate, reset_sunless_climates
     reset_sunless_climates()
-    if st.ctx and getattr(st.ctx, 'master_export', None):
-        for mrec in st.ctx.master_export.values():
-            if (mrec.get('Signature') or '') == 'CLMT':
-                record_sunless_climate(mrec)
+    for mrec in values_of(getattr(st.ctx, 'master_export', None), 'CLMT'):
+        record_sunless_climate(mrec)
     for rec in st.by_type.get('CLMT', []):
         record_sunless_climate(rec)
 
@@ -412,7 +411,7 @@ def _phase4a_navmesh(st, export_dir: str, phase_done, skip_types) -> None:
         st.navm_cache, master_index=_mi,
         master_navms=navm_pool.master_navm_grid(
             getattr(st.ctx, 'master_export', None) if st.ctx else None,
-            _mi),
+            _mi) if st.navm_cache else {},
         relinked_masters=_relinked)
     if st.ctx is not None:
         st.ctx.relinked_master_navms = _relinked
@@ -421,8 +420,7 @@ def _phase4a_navmesh(st, export_dir: str, phase_done, skip_types) -> None:
     from .navmesh.split import split_disconnected_interiors
     _t_sp = time.time()
     door_xtel_target = {}
-    _xtel_sources = [st.ctx.master_export.items()] if (
-        st.ctx and getattr(st.ctx, 'master_export', None)) else []
+    _xtel_sources = [records_of(getattr(st.ctx, 'master_export', None), 'REFR')]
     _xtel_sources.append((r.get('FormID', ''), r) for r in st.by_type.get('REFR', []))
     for fid_str, rec in (p for src in _xtel_sources for p in src):
         if 'XTEL.Door' not in rec:
@@ -490,21 +488,31 @@ def run_record_phases(st, export_dir: str, phase_done,
                   f"({sum(len(v) for v in own.values())} records: "
                   + ', '.join(f'{len(own[s])} {s}' for s in world_sigs
                               if own.get(s)) + ")")
-            _build_cell_groups(own, st.writer, st.navm_metas, st.base_model_by_fid,
-                               st.door_fids, st.navm_cache, land_cache)
-            phase_done('own CELL groups')
-            _build_world_groups(own, st.writer, st.navm_metas, st.base_model_by_fid,
-                                st.door_fids, st.navm_cache, land_cache, ctx=st.ctx,
-                                lod_bases=getattr(st.ctx, 'full_lod_bases', None))
-            phase_done('own WRLD groups')
+            _build_groups(st, own, land_cache, phase_done, 'own ',
+                          lod_bases=getattr(st.ctx, 'full_lod_bases', None))
     else:
-        _build_cell_groups(st.by_type, st.writer, st.navm_metas, st.base_model_by_fid,
-                           st.door_fids, st.navm_cache, land_cache)
-        phase_done('CELL groups')
-        _build_world_groups(st.by_type, st.writer, st.navm_metas, st.base_model_by_fid,
-                            st.door_fids, st.navm_cache, land_cache)
-        phase_done('WRLD groups')
+        _build_groups(st, st.by_type, land_cache, phase_done, '')
+    _build_navi(st)
 
+
+def _build_groups(st, by_type: dict, land_cache: dict, phase_done, label: str,
+                  lod_bases=None) -> None:
+    """The CELL then WRLD groups of `by_type`, sharing one index of each cell's children.
+
+    `lod_bases` goes to `_build_world_groups`.
+    """
+    children = _children_by_cell(by_type)
+    _build_cell_groups(by_type, st.writer, st.navm_metas, st.base_model_by_fid,
+                       st.door_fids, st.navm_cache, land_cache, children)
+    phase_done(f'{label}CELL groups')
+    _build_world_groups(by_type, st.writer, st.navm_metas, st.base_model_by_fid,
+                        st.door_fids, st.navm_cache, land_cache, ctx=st.ctx,
+                        lod_bases=lod_bases, children=children)
+    phase_done(f'{label}WRLD groups')
+
+
+def _build_navi(st) -> None:
+    """The NAVI record over every navmesh the groups registered, when there are any."""
     if st.navm_metas:
         n_edge = sum(len(m.get('edge_link_fids') or ()) for m in st.navm_metas)
         n_door = sum(len(m.get('door_refs') or ()) for m in st.navm_metas)
@@ -548,6 +556,14 @@ def _refr_bytes(rec, full_lod) -> bytes:
     if get_formid(rec, 'FormID') in full_lod:
         out = set_flags(out, full_lod_flags(record_flags(out)))
     return out
+
+
+def _children_by_cell(by_type: dict) -> tuple:
+    """(REFR, ACHR+ACRE, LAND, PGRD) of `by_type`, each grouped by parent CELL."""
+    return (_index_by_parent_cell(by_type.get('REFR', [])),
+            _index_by_parent_cell(by_type.get('ACHR', []) + by_type.get('ACRE', [])),
+            _index_by_parent_cell(by_type.get('LAND', [])),
+            _index_by_parent_cell(by_type.get('PGRD', [])))
 
 
 def _pack_cell_children(cell_fid, refr_by_cell, achr_by_cell,
@@ -630,8 +646,11 @@ def _cell_temporaries(cell_rec, cell_fid, lava, land_cache, land_by_cell,
 def _build_cell_groups(by_type: dict, writer: PluginWriter,
                        navm_metas: list = None, base_model_by_fid: dict = None,
                        door_fids: set = None, navm_cache: dict = None,
-                       land_cache: dict = None):
-    """Build CELL group hierarchy (interior cells only — exterior in WRLD)."""
+                       land_cache: dict = None, children: tuple = None):
+    """Build CELL group hierarchy (interior cells only — exterior in WRLD).
+
+    `children` is `_children_by_cell(by_type)` when the caller already has it.
+    """
     if navm_metas is None:
         navm_metas = []
     if base_model_by_fid is None:
@@ -640,15 +659,8 @@ def _build_cell_groups(by_type: dict, writer: PluginWriter,
         navm_cache = {}
     lava = LavaPlanner(by_type, writer)
     cells = by_type.get('CELL', [])
-    refrs = by_type.get('REFR', [])
-    achrs = by_type.get('ACHR', []) + by_type.get('ACRE', [])
-    lands = by_type.get('LAND', [])
-    pgrds = by_type.get('PGRD', [])
-
-    refr_by_cell = _index_by_parent_cell(refrs)
-    achr_by_cell = _index_by_parent_cell(achrs)
-    land_by_cell = _index_by_parent_cell(lands)
-    pgrd_by_cell = _index_by_parent_cell(pgrds)
+    refr_by_cell, achr_by_cell, land_by_cell, pgrd_by_cell = (
+        children or _children_by_cell(by_type))
 
     interior_cells = [c for c in cells if not get_formid(c, 'ParentWRLD')]
 
@@ -941,11 +953,14 @@ def _place_full_lod(refr_by_cell, ext_cells_by_wrld, bases) -> frozenset:
 def _build_world_groups(by_type: dict, writer: PluginWriter,
                         navm_metas: list = None, base_model_by_fid: dict = None,
                         door_fids: set = None, navm_cache: dict = None,
-                        land_cache: dict = None, ctx=None, lod_bases=None):
+                        land_cache: dict = None, ctx=None, lod_bases=None,
+                        children: tuple = None):
     """Build WRLD group hierarchy (worldspaces + exterior cells).
 
     `lod_bases` is `full_lod_bases` over the whole plugin; without it the
     STATs in `by_type` and the masters' export on `ctx` are used.
+    `children` is `_children_by_cell(by_type)` when the caller already has it;
+    misplaced refs are re-homed inside it.
     """
     if navm_metas is None:
         navm_metas = []
@@ -958,10 +973,6 @@ def _build_world_groups(by_type: dict, writer: PluginWriter,
     lava = LavaPlanner(by_type, writer)
     worlds = by_type.get('WRLD', [])
     cells = by_type.get('CELL', [])
-    refrs = by_type.get('REFR', [])
-    achrs = by_type.get('ACHR', []) + by_type.get('ACRE', [])
-    lands = by_type.get('LAND', [])
-    pgrds = by_type.get('PGRD', [])
 
     anchor_wrld = _anchor_worldspaces(worlds, cells, ctx)
 
@@ -976,8 +987,8 @@ def _build_world_groups(by_type: dict, writer: PluginWriter,
 
     set_world_land_extents(_land_extents_by_wrld(ext_cells_by_wrld))
 
-    refr_by_cell = _index_by_parent_cell(refrs)
-    achr_by_cell = _index_by_parent_cell(achrs)
+    refr_by_cell, achr_by_cell, land_by_cell, pgrd_by_cell = (
+        children or _children_by_cell(by_type))
 
     rehomed = _rehome_misplaced_refs(
         (refr_by_cell, achr_by_cell), *_grid_index(cells))
@@ -987,9 +998,6 @@ def _build_world_groups(by_type: dict, writer: PluginWriter,
         lod_bases = full_lod_bases(by_type.get('STAT', ()),
                                    getattr(ctx, 'master_export', None))
     full_lod = _place_full_lod(refr_by_cell, ext_cells_by_wrld, lod_bases)
-
-    land_by_cell = _index_by_parent_cell(lands)
-    pgrd_by_cell = _index_by_parent_cell(pgrds)
 
     if anchor_wrld and worlds:
         print(f"  Building WRLD hierarchy ({len(worlds)} own worldspace(s) "

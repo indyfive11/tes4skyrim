@@ -1,8 +1,9 @@
 """
 Restage a plugin's MorrowindRuntime sidecar without re-running import.
 
-The sidecar -- dialogue, the actor index, and the result-script compiler's
-tables -- is built from the EXPORT alone, so when only the sidecar's contents
+The sidecar -- dialogue, the actor index, the sound table and the
+result-script compiler's tables -- is built from the EXPORT and the converted
+plugins, so when only the sidecar's contents
 change there is no reason to pay for a full `--import-only`. A TES4-format
 plugin stages its apparatus table and nothing else.
 
@@ -17,6 +18,7 @@ import sys
 
 from asset_convert.sources import source_registry
 from tes5_import.dialogue.morrowind_sidecar import (SIDECAR_DIR, plugin_stem,
+                                                    stage_sound_table,
                                                     write_morrowind_sidecar)
 
 
@@ -36,6 +38,7 @@ def main() -> int:
     group = source_registry.asset_root_name(args.export_root, args.plugin)
     output_path = os.path.join(args.output_root, group, args.plugin)
     staged = write_morrowind_sidecar(record_dir, output_path, args.plugin)
+    stage_sound_table(record_dir, output_path, args.plugin)
     out_dir = os.path.join(os.path.dirname(output_path), SIDECAR_DIR,
                            plugin_stem(args.plugin))
     print(f'staged {staged} file(s) -> {out_dir}')

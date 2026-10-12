@@ -4,19 +4,13 @@
 
 #include "menu.h"
 #include "menu_layout.h"
+#include "menu_widgets.h"
 #include "persuasion.h"
 #include "script_tables.h"
 
 namespace tesruntime::mw {
 
 namespace {
-
-struct Rect {
-    int x, y, w, h;
-    bool Contains(double px, double py) const {
-        return px >= x && py >= y && px < x + w && py < y + h;
-    }
-};
 
 constexpr Rect kModal{layout::kModalX, layout::kModalY, layout::kModalW,
                       layout::kModalH};

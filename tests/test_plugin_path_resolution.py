@@ -88,9 +88,7 @@ ALLOWED = {
     ('asset_convert/ui/book_inam.py', '_asset_root'): 'resolver fallback',
     ('asset_convert/ui/book_inam.py', '_out_root'): 'resolver fallback',
     ('asset_convert/sources/bsa_pack.py', '_out_root'): 'resolver fallback',
-    ('asset_convert/lod/terrain_lod.py', '_master_record_dir'): 'resolver fallback',
-    ('tes5_import/overrides/nested.py', 'master_export_dir'): 'resolver fallback',
-    ('tes5_import/overrides/manifest.py', 'master_export_dir'): 'resolver fallback',
+    ('core/plugin_masters.py', 'master_export_dir'): 'resolver fallback',
     ('convert.py', 'record_dir'): 'resolver fallback',
     ('convert.py', 'plugin_out_root'): 'resolver fallback',
     ('asset_convert/sources/mod_ingest.py', 'ingest'): 'builds the group folder',
@@ -140,22 +138,31 @@ def _enclosing_functions(tree):
     return owner
 
 
+#: What `_root_name` answers for `x.parent` / `os.path.dirname(x)`: a folder's parent.
+PARENT = '<parent>'
+
+
 def _root_name(node):
     """The ROOT variable `node` denotes, if any.
 
-    `Path(export_dir)` counts -- it is still the root. A CALL to a resolver
-    (`out_root(...) / name`) does NOT: that has already resolved the group
-    folder, and joining the plugin file onto it is exactly right.
+    `Path(export_dir)` counts -- it is still the root. So does any folder's
+    PARENT (`d.parent`, `os.path.dirname(d)`): for `export/<Mod>/<plugin>/` it
+    is the mod folder, and a master joined onto it reads as missing. A CALL to
+    a resolver (`out_root(...) / name`) does NOT count.
+    See: docs/reference/pipeline.md#master-resolution
     """
     if isinstance(node, ast.Name):
         return node.id
+    if isinstance(node, ast.Attribute) and node.attr == 'parent':
+        return PARENT
     if isinstance(node, ast.Call):
         fn = node.func
         fname = getattr(fn, 'id', None) or getattr(fn, 'attr', None) or ''
+        if fname == 'dirname':
+            return PARENT
         if fname in ('Path', 'str'):
             inner = node.args[0] if node.args else None
             return getattr(inner, 'id', None)
-        return None          # a resolver's result, not a root
     return None
 
 
@@ -336,7 +343,7 @@ def _violations_in(path, consts):
         # ROOT / name
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
             r = _root_name(node.left)
-            if r in ROOT_NAMES and r not in walked:
+            if (r in ROOT_NAMES or r == PARENT) and r not in walked:
                 flag(node, node.right)
         # os.path.join(ROOT, name)
         if (isinstance(node, ast.Call)
@@ -344,7 +351,7 @@ def _violations_in(path, consts):
                 and node.func.attr == 'join'
                 and len(node.args) >= 2):
             r = _root_name(node.args[0])
-            if r in ROOT_NAMES and r not in walked:
+            if (r in ROOT_NAMES or r == PARENT) and r not in walked:
                 flag(node, node.args[1])
     return out
 
@@ -382,6 +389,20 @@ def test_a_loop_over_record_files_is_not_a_plugin_join(tmp_path):
         encoding='utf-8')
     consts = _string_constants([_parsed(src)])
     assert [v[2] for v in _violations_in(str(src), consts)] == ['plugins']
+
+
+def test_a_plugin_name_joined_onto_a_parent_is_flagged(tmp_path):
+    """`d.parent / name` resolved Oblivion.esm inside the MOD folder: 939 compile errors."""
+    src = tmp_path / 'probe.py'
+    src.write_text(
+        "import os\n"
+        "def by_attr(d, name):\n"
+        "    return d.parent / name\n"
+        "def by_dirname(d, name):\n"
+        "    return os.path.join(os.path.dirname(d), name)\n",
+        encoding='utf-8')
+    found = _violations_in(str(src), {})
+    assert sorted(v[2] for v in found) == ['by_attr', 'by_dirname']
 
 
 def test_the_resolvers_agree_on_a_plugin_with_no_registry_entry(tmp_path):

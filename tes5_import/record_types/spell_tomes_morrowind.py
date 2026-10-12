@@ -14,14 +14,15 @@ import struct
 
 import numpy as np
 
+from core.plugin_masters import export_root
 from tes4_export.tes3_reader import (get_all_subrecords, get_string,
-                                       get_subrecord, read_file)
+                                       get_subrecord)
 
 from ..dialogue.morrowind_autocalc import parse_class, parse_race, parse_skill
-from ..dialogue.morrowind_sidecar import export_root, is_tes3_export
-from ..dialogue.morrowind_sidecar_source import (aidt_services, npc_is_autocalc,
-                                                 npc_services, npc_stats,
-                                                 plugin_chain)
+from ..dialogue.morrowind_sidecar import is_tes3_export
+from ..dialogue.morrowind_sidecar_source import (aidt_services, gather,
+                                                 npc_is_autocalc, npc_services,
+                                                 npc_stats, plugin_chain)
 
 #: SPDT: type, cost, flags.
 _SPDT = '<iiI'
@@ -194,14 +195,13 @@ def _take(tables: dict, rec) -> None:
         take(tables, key, rec)
 
 
-def read_tables(chain: list) -> dict:
-    """The chain's spells in store order, effects, races, classes, skills,
-    GMSTs and actors, each plugin read once and a later one winning."""
+def read_tables(records: list) -> dict:
+    """The spells in store order, effects, races, classes, skills, GMSTs and
+    actors of `records` (load order), a later plugin's winning."""
     tables = {'spells': {}, 'effects': {}, 'races': {}, 'powers': {},
               'classes': {}, 'skills': {}, 'gmsts': {}, 'actors': {}}
-    for _name, path in chain:
-        for rec in read_file(path)[1]:
-            _take(tables, rec)
+    for rec in records:
+        _take(tables, rec)
     tables['spells'] = {key: spell for key, spell in tables['spells'].items()
                         if spell is not None}
     tables['gmsts'] = {**_GMST_DEFAULTS, **tables['gmsts']}
@@ -214,7 +214,7 @@ def chain_tables(export_dir: str, plugin: str):
     if not is_tes3_export(export_dir):
         return None
     chain = plugin_chain(export_root(export_dir), plugin)
-    return read_tables(chain) if chain else None
+    return read_tables(gather(chain)['table_records']) if chain else None
 
 
 # ---------------------------------------------------------------------------

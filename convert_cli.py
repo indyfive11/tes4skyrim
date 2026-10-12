@@ -29,6 +29,9 @@ STEP_FLAGS = (
 #: Steps the default run (no `--*-only`) leaves out.
 NOT_DEFAULT = frozenset({'pack_zip'})
 
+#: What `--build-morrowind-patch` runs over the patch: the steps it has content for.
+PATCH_STEPS = ('export', 'meshes', 'creatures', 'import', 'sounds', 'scripts')
+
 #: Steps that honor `--only`; any other step with it would silently rebuild everything.
 SCOPED_STEPS = frozenset({'creatures'})
 
@@ -52,6 +55,8 @@ _ONLY_FLAGS = (
 
 def selected_steps(args) -> list:
     """The steps this run executes, in run order."""
+    if args.build_morrowind_patch:
+        return list(PATCH_STEPS)
     only = [step for step, flag in STEP_FLAGS if getattr(args, flag)]
     return only or [step for step, _flag in STEP_FLAGS if step not in NOT_DEFAULT]
 
@@ -160,8 +165,13 @@ def _add_mod_args(parser) -> None:
                         help="List Data folders, same-named plugin copies and "
                              "imported mod archives, then exit")
     parser.add_argument("--build-morrowind-patch", metavar="DATA_FILES",
-                        help="Build the Morroblivion compatibility patch from "
-                             "a Morrowind 'Data Files' folder, then exit")
+                        help="Register a Morrowind 'Data Files' folder and "
+                             "build the Morroblivion compatibility patch from "
+                             "it (export, meshes, creatures, import, sounds, "
+                             "scripts). "
+                             "Each step also runs alone: -f "
+                             "Morrowind-Morroblivion-Compatibility.esp "
+                             "--<step>-only")
     parser.add_argument("--remove-mod", metavar="PLUGIN",
                         help="Remove an imported mod (deletes its export "
                              "folder and registry entry), then exit")

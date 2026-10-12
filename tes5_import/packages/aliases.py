@@ -32,6 +32,7 @@ This is exactly the gate Oblivion used, so reading it back gives us the same
 import re
 import struct
 
+from ..base.master_export import records_of
 from ..base.text_reader import (get_formid, get_int, get_str, remap_formid,
                           get_formid_index_offset)
 from .actor_wiring import authored_packages
@@ -46,17 +47,19 @@ def master_records(master_export, *sigs):
     names the master by, so the KEY is the correct source id; shift it the same
     way get_formid would and every id this module produces stays in one space.
     """
-    if not master_export:
-        return
-    want = frozenset(sigs)
     offset = get_formid_index_offset()
-    for key, rec in master_export.items():
-        if rec.get('Signature') not in want:
-            continue
+    for key, rec in records_of(master_export, *sigs):
         try:
             yield remap_formid(int(key, 16), offset), rec
         except (TypeError, ValueError):
             continue
+
+
+def masters_then_own(by_type: dict, master_export, sig: str):
+    """Yield the masters' records of `sig`, then the plugin's own."""
+    yield from (rec for _key, rec in records_of(master_export, sig))
+    yield from by_type.get(sig, [])
+
 
 # TES4 condition functions whose first parameter is a quest FormID.
 QUEST_PARAM_FUNCS = frozenset({
@@ -143,11 +146,8 @@ def build_script_var_map(by_type: dict, master_export: dict = None) -> dict:
     started at game load and its followers packaged onto the player.)
     """
     def _recs(sig):
-        if master_export:
-            for r in master_export.values():
-                if r.get('Signature') == sig:
-                    yield r
-        yield from by_type.get(sig, [])
+        """The masters' records of `sig`, then the plugin's own."""
+        return masters_then_own(by_type, master_export, sig)
 
     # 1. SCPT fid -> {index: name}
     script_vars = {}
@@ -466,11 +466,8 @@ def build_script_assigned_packages(by_type: dict, fid_to_edid: dict,
                         remap_formid(ref, offset))
 
     def _recs(sig):
-        if master_export:
-            for r in master_export.values():
-                if r.get('Signature') == sig:
-                    yield r
-        yield from by_type.get(sig, [])
+        """The masters' records of `sig`, then the plugin's own."""
+        return masters_then_own(by_type, master_export, sig)
 
     _scan_scpt_packages(_recs, _scan)
     _scan_info_packages(_recs, _scan)

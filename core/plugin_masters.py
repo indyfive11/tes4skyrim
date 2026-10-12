@@ -12,6 +12,7 @@ See: docs/commentary/tes4_export_morrowind.md#the-tes3-container
 import os
 import struct
 
+import output_layout
 from tes4_export.tes3_reader import read_masters as _tes3_masters
 
 #: Where the TES4 header record ends; FO3/FNV push HEDR four bytes later.
@@ -40,6 +41,81 @@ def masters_from_export_header(record_dir: str) -> list:
     """The `Master[N]=` names an export's `_HEADER.txt` declares, in order."""
     return [value for key, value in _export_header(record_dir)
             if key.startswith('Master[') and value]
+
+
+# ---------------------------------------------------------------------------
+#  Where a master's export lives -- the ONE resolver
+# ---------------------------------------------------------------------------
+
+def export_root(record_dir) -> str:
+    """The `export/` root, given any plugin's record folder.
+
+    `export/<plugin>/` for a game-Data plugin, `export/<Mod>/<plugin>/` for an
+    imported mod, so the parent is not reliably the root; `sources.json` marks it.
+    See: docs/reference/pipeline.md#master-resolution
+    """
+    d = os.path.dirname(os.path.normpath(str(record_dir)))
+    for cand in (d, os.path.dirname(d)):
+        if cand and os.path.isfile(
+                os.path.join(cand, output_layout.REGISTRY_FILENAME)):
+            return cand
+    return d
+
+
+def master_export_dir(root, name: str) -> str:
+    """Where master `name`'s records live under the export `root`."""
+    got = str(output_layout.record_dir(root, name))
+    return got if os.path.isdir(got) else os.path.join(str(root), name)
+
+
+def master_dir(record_dir, name: str) -> str:
+    """Where master `name`'s records live, given a dependent's record folder."""
+    return master_export_dir(export_root(record_dir), name)
+
+
+def master_dirs(record_dir) -> list:
+    """The record folder of each direct master that was exported, in header order."""
+    dirs = [master_dir(record_dir, n)
+            for n in masters_from_export_header(str(record_dir))]
+    return [d for d in dirs if os.path.isdir(d)]
+
+
+def master_index_map(master_folder, slot: int, header: list) -> dict:
+    """{index byte in a master's own FormIDs -> the dependent's index byte}.
+
+    `header` is the dependent's master list and `slot` this master's place in
+    it. The master's own records sit at its master count; each of ITS masters
+    is matched by name.
+    See: docs/commentary/tes5_import_override.md#re-keying-the-masters-ids
+    """
+    own = masters_from_export_header(str(master_folder))
+    slot_of = {n.lower(): i for i, n in enumerate(header)}
+    remap = {k: slot_of[s.lower()] for k, s in enumerate(own)
+             if s.lower() in slot_of}
+    remap[len(own)] = slot
+    return remap
+
+
+def master_chain(record_dir) -> list:
+    """Every master `record_dir` inherits from, transitively, each after its own masters.
+
+    Cycle-safe. A master that was never exported is still named (its own masters
+    are unknown), so a caller can report it rather than silently lose it.
+    """
+    root = export_root(record_dir)
+    seen = {os.path.basename(os.path.normpath(str(record_dir))).lower()}
+    ordered = []
+
+    def visit(folder):
+        """Append `folder`'s unseen masters to `ordered`, deepest first."""
+        for name in masters_from_export_header(folder):
+            if name.lower() not in seen:
+                seen.add(name.lower())
+                visit(master_export_dir(root, name))
+                ordered.append(name)
+
+    visit(str(record_dir))
+    return ordered
 
 
 def is_master_export(record_dir: str) -> bool:

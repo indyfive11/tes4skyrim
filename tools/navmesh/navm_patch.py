@@ -26,6 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
 
 from scipy.spatial import cKDTree
 
+from core.plugin_masters import masters_from_export_header
 from output_layout import plugin_esm
 from tes5_import.base.tes5_reader import (
     FLAG_COMPRESSED, GRP_HDR, REC_HDR, SUB_HDR, masters, walk,
@@ -48,11 +49,7 @@ SEAM_NEIGHBOURS = ((1, 0, 0), (-1, 0, 0), (0, 1, 1), (0, -1, 1))
 
 def export_master_count(export):
     """How many TES4 masters `export`'s plugin declares."""
-    path = os.path.join(export, '_HEADER.txt')
-    if not os.path.isfile(path):
-        return 0
-    with open(path, encoding='utf-8') as fh:
-        return sum(1 for line in fh if line.startswith('Master['))
+    return len(masters_from_export_header(export))
 
 
 def index_offset(raw, export):

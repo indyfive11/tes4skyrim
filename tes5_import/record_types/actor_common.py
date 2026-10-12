@@ -12,6 +12,7 @@ See: docs/commentary/tes5_import_actors.md
 import re
 import struct
 
+from ..base.master_export import records_of, values_of
 from ..actors.confidence import confidence_tier
 from ..base.constants import (DEFAULT_RACE, RACE_MAP, TES4_SKILL_TO_TES5,
                          TES5_SKILL_ORDER)
@@ -135,8 +136,7 @@ def _load_evil_factions(by_type: dict, master_export: dict) -> None:
     """Index the raw FormIDs of every Evil FACT, this plugin's and its masters'."""
     _EVIL_FACTIONS.clear()
     rows = [(r.get('FormID', ''), r) for r in by_type.get('FACT', [])]
-    rows += [(k, r) for k, r in (master_export or {}).items()
-             if r.get('Signature') == 'FACT']
+    rows += records_of(master_export, 'FACT')
     for key, rec in rows:
         if get_int(rec, 'DATA.Flags') & _FACT_EVIL:
             _EVIL_FACTIONS.add(int(key, 16))
@@ -741,7 +741,7 @@ def create_service_records(by_type: dict, writer, ctx, export_dir: str,
     master_export = getattr(ctx, 'master_export', None) or {}
     index = None if is_support_root() else getattr(ctx, 'master_index', None)
     classes = ([] if index is None else
-               [r for r in master_export.values() if r.get('Signature') == 'CLAS'])
+               values_of(master_export, 'CLAS'))
     create_vendor_factions(by_type, writer, index,
                            owned_stock(by_type, master_export, export_dir))
     params_of = (_tes3_trainer_params(by_type, tes3_tables)

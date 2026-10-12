@@ -24,7 +24,7 @@ from script_convert.constants import (
     TES4_ASSAULT_BOUNTY, TES4_MISC_STAT_NAMES, TES4_MURDER_BOUNTY,
     TES4_SCRIPT_OWNED_MISC_STATS,
     TES4_STEAL_BOUNTY, is_generated_script_type, mgef_family_keyword_name,
-    safe_property_name, papyrus_script_name
+    record_type_to_papyrus, safe_property_name, papyrus_script_name
 )
 from script_convert.command_rows import (
     ACTOR, COMMAND_ROWS, GMST_TO_ACTOR_VALUE, ACTOR_VALUE_FUNCTIONS,
@@ -1311,6 +1311,14 @@ def _record_type(ctx, name: str) -> str:
     return ctx.xref.record_type.get(fid, '') if fid else ''
 
 
+def _base_form_type(rtype: str) -> str:
+    """The Papyrus type a property bound to a BASE record of `rtype` can take."""
+    if rtype in ('NPC_', 'CREA'):
+        return 'ActorBase'
+    ptype = record_type_to_papyrus(rtype)
+    return 'Form' if ptype == 'ObjectReference' else ptype
+
+
 def _is_faction(ctx, call, arg: str) -> bool:
     """Does this operand name a FACTION rather than an actor?"""
     src = call.source(0).strip()
@@ -1357,9 +1365,14 @@ def move_to(ctx, call) -> str:
 def place_at_me(ctx, call) -> str:
     """PlaceAtMe -- spawn a base form at this reference.
 
-    Declared on ObjectReference, so the subject is NOT promoted to Actor.
+    Declared on ObjectReference, so the subject is NOT promoted to Actor.  The
+    argument is a BASE form, so its property is typed as one.
+    See: docs/commentary/script_convert.md#property-type-merge
     """
     base = call.arg(0, 'None')
+    rtype = _record_type(ctx, call.source(0))
+    if rtype and rtype not in PLACED_REF_SIGS:
+        ctx.sc.property_refs[base] = _base_form_type(rtype)
     count = call.source(1, '1')
     ref = ctx._resolve_self_ref(call.ref, call.extends, actor_func=False)
     if ref == 'Self':

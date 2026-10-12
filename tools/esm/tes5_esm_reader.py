@@ -33,6 +33,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
+from output_layout import DEFAULT_EXPORT, plugin_esm
 from tes5_import.base.tes5_reader import REC_HDR, subrecords, walk
 
 # ---------------------------------------------------------------------------
@@ -186,20 +187,15 @@ def master_edids(esm_path, header, sig: str) -> dict:
     """{FormID in THIS plugin's index space -> EditorID} for one record type,
     read from every converted master in the plugin's own MAST list.
 
-    A dependent plugin's records freely reference its masters (Morroblivion's
-    topics name Oblivion.esm quests; its actors use Oblivion.esm voice types),
-    so any tool that resolves a FormID to an EditorID from THIS plugin's
-    records alone silently reports the reference as missing — and then agrees
-    with whatever bug it was written to catch. Masters are enumerated in MAST
-    order, which is exactly the load-order index their records carry here.
+    A dependent's records freely reference its masters, so resolving a FormID
+    from THIS plugin alone reports the reference as missing. Masters go in
+    MAST order, the load-order index their records carry here; one with no
+    converted build (Skyrim.esm) is skipped.
     """
-    from pathlib import Path as _Path
     out = {}
     masters = [_zstring(s.data) for s in header.subrecords if s.type == 'MAST']
     for idx, name in enumerate(masters):
-        # Only converted TES4 masters have a build beside ours; Skyrim.esm is
-        # vanilla and owns nothing we convert.
-        path = _Path(esm_path).parent.parent / name / name
+        path = plugin_esm(Path(esm_path).parent.parent, name, DEFAULT_EXPORT)
         if not path.is_file():
             continue
         try:

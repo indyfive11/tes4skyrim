@@ -172,7 +172,7 @@ backwards:
 
 | Rule | Behaviour |
 |---|---|
-| order | **First match wins**, never best match. `Ordinal` is precedence. |
+| order | **First match wins**, never best match. OpenMW's `InfoOrder` over PNAM is precedence. |
 | creature | Answers only topics naming it directly; a generic topic is rejected. |
 | gender | `mGender` is `0` male / `1` female and the test is for the **opposite**. |
 | cell | Matches as a **prefix**: `Balmora` catches `Balmora, Guild of Fighters`. |
@@ -1125,12 +1125,12 @@ Reach of the commands the content calls most: `AddItem` 4,492, `RemoveItem`
 
 ### 🛑 Dialogue is cumulative, and the filter compares NAMES
 
-`tes5_import/dialogue/morrowind_sidecar_source.py` builds the sidecar's
-dialogue and actor table from the TES3 BINARIES of the plugin and every master
-it can find, merged as OpenMW's `InfoOrder` merges them (replace in place, else
-after `PNAM`, else before `NNAM`, else first when it names no predecessor).
+`tes5_import/dialogue/morrowind_sidecar_source.py` builds each sidecar's
+dialogue and actor table from the plugin's own TES3 BINARY; the runtime merges
+every loaded plugin's responses with the vendored OpenMW `InfoOrder`
+([per-owner staging](../plans/morrowind_object_scripts.md#cumulative-gather-must-go)).
 Measured on TR_Mainland: 69,270 responses alone, **106,958** merged over
-Morrowind, Tribunal, Bloodmoon and Tamriel_Data, in 15 s. "join the Fighters
+Morrowind, Tribunal, Bloodmoon and Tamriel_Data. "join the Fighters
 Guild" went from 2 responses to 29 — and still needed the speaker's faction,
 which the text export holds only as a minted FormID. `NPC_.txt` carries each
 NPC's race, class, faction, rank, base disposition, gender and name as authored.
@@ -2409,6 +2409,11 @@ Vanilla does this at scale — measured over `references/Skyrim.esm`: **365 of
 1,811 quests carry alias packages, 4,125 `ALPC` entries in total**, and **585
 of 6,838 `PLDT` locations are alias-typed** (type 8).
 
+A plugin authoring no SCPT, DIAL, INFO, NPC_ or CREA (a grass or landscape
+plugin) mints no pool and deletes any `ai_aliases.txt` an older build left: no
+script of its layer can call an AI command, and in the merged view its pool,
+being the deepest, would otherwise shadow the one a real master owns.
+
 So the import mints one quest per plugin, with two aliases per package kind
 (the actor running it, and what it aims at) and one `PACK` instance per kind
 hung off the actor's alias. Every package's location and target are
@@ -2709,8 +2714,10 @@ spawned body running through exactly that lookup.
 Each TES3 Journal topic becomes one QUST: a stage per journal index, the page
 as the stage's log entry, the `QuestStatus=Name` page as FULL, `Finished` as
 the completes-quest bit, and an objective per page (see
-[objectives-must-be-displayed](#objectives-must-be-displayed)). `quests_formid.txt` maps the authored id to
-`Plugin|FormID`; `Journal` and `SetJournalIndex` call the
+[objectives-must-be-displayed](#objectives-must-be-displayed)). The QUST is the originating plugin's; a
+dependent that adds pages overrides it with the chain's pages
+([per-owner staging](../plans/morrowind_object_scripts.md#cumulative-gather-must-go)).
+The owner's `quests_formid.txt` maps the authored id to `Plugin|FormID`; `Journal` and `SetJournalIndex` call the
 `Quest.SetCurrentStageID` native. `AddJournalEntry` stages the ENTRY's index
 even when the quest's own index does not rise — a lower page added late is
 still a new page.
@@ -3324,21 +3331,20 @@ nothing, as in vanilla.
 ### <a id="adding-a-runtime-effect"></a>Adding a runtime effect (the remaining missing ones)
 
 Still inert: the `NATIVE_NONE` entries of `MW_EFFECT_ARCHETYPES`. Those are
-SwiftSwim 1, Levitate 10, SlowFall 11, Disintegrate Weapon/Armor 37/38,
-Sanctuary 42, Detect Enchantment/Key 65/66 and ExtraSpell 126. Each converts
-as an inert Value Modifier (the teleports as a script-less Script effect), and
-every effect record it lands as already reaches the runtime's apply sink.
-Adding one takes these steps, in this order:
+Disintegrate Weapon/Armor 37/38, Detect Enchantment/Key 65/66 and ExtraSpell
+126. Each converts as an inert Value Modifier (the teleports as a script-less
+Script effect), and every effect record it lands as already reaches the
+runtime's apply sink. Adding one takes these steps, in this order:
 
-1. **Runtime.** Handle the index in `game_calls_teleport.cpp:OnTeleportEffect`,
-   following OpenMW's `spelleffects.cpp` for that effect. It runs on the game
-   thread, posted from the `OnMagicEffectApply` sink, for an effect landing on
-   the PLAYER only; widen the `target == PlayerRef()` test if OpenMW applies it
-   to actors too. 🛑 The sink fires when the effect STARTS. A duration effect
-   (Levitate, SlowFall, SwiftSwim, Sanctuary) also needs its end, and no end
-   signal has been found yet. Find one, e.g. the active-effect list or the
-   effect's finish event, in the exe before building on a poll: a poll cannot
-   see the four NoDuration teleports either.
+1. **Runtime.** An instant effect is handled by index in
+   `game_calls_teleport.cpp:OnTeleportEffect`, following OpenMW's
+   `spelleffects.cpp` for that effect. It runs on the game thread, posted from
+   the `OnMagicEffectApply` sink, for an effect landing on the PLAYER only;
+   widen the `target == PlayerRef()` test if OpenMW applies it to actors too.
+   🛑 The sink fires only when the effect STARTS. A duration effect doesn't
+   use it: the tick reads its magnitude off the active-effect list, the way
+   [Levitate and SlowFall](#levitate-and-slowfall) do, and never needs an end
+   signal.
 2. **Import.** Add the index to `MW_RUNTIME_EFFECTS` in
    `tes5_import/record_types/magic_morrowind.py`. That one set drives
    everything downstream:
@@ -3346,27 +3352,131 @@ Adding one takes these steps, in this order:
      delivery clone, so the runtime recognizes it. The file keeps its old name.
    - `mw_converts` now counts the effect as working, so a record carrying it
      can be restored.
-3. **Morroblivion mode needs no new code.** `morroblivion_magic.restored_magic`
-   overrides each Morroblivion record whose vanilla effects the runtime now
-   carries, as long as its stand-in script passes the dependency check.
-   Candidates from the census:
-   - for Levitate, 6 SPEL and 5 ALCH on `JDLevitation*Script`;
-   - for SlowFall, `slowfall` on `mwSpellSlowfallEffectScript`;
-   - the Drain Attribute + SlowFall potions and the three Levitate
-     enchantments whose script effect has no script. These flip as soon as
-     their effects convert.
+3. **Morroblivion mode needs no new code, but it needs the patch rebuilt.**
+   `morroblivion_magic.restored_magic` overrides each Morroblivion record
+   whose vanilla effects the runtime now carries: a scripted stand-in that
+   passes the dependency check, or Oblivion effects approximating the
+   runtime-only one (Buoyancy and Swimmer's Blessing fake SwiftSwim with
+   Water Breathing + Feather or Fortify Athletics). Adding SwiftSwim and
+   Levitate flipped 18 SPEL, 11 ALCH and 8 ENCH, among them all six
+   `JDLevitation*Script` spells: their helper `JDLevitate` is `Call`ed only
+   by them, so it is dropped with them.
 
-   Rebuild in this order: `--build-morrowind-patch`, then `--import-only` for
-   Morrowind_ob.esm, TR_Mainland.esm and Morrowind.esm.
+   🛑 Rebuild in this order, or nothing flips:
+   `--build-morrowind-patch "<Morrowind>/Data Files"` (or, once built,
+   `-f Morrowind-Morroblivion-Compatibility.esp --export-only --import-only`), then `--import-only` for Tamriel_Data.esm and TR_Mainland.esm, and
+   Morrowind.esm for the authored path. The patch now writes the delivery
+   copies its new overrides need, so the dependents adopt them: that moved 23
+   of Tamriel_Data's copies and 1 of TR_Mainland's, which a save only feels
+   as a running effect on one of them dropping.
 4. **Check what flipped.** `restored_magic` returns only the records it
    overrides, so compare that list with the census in
    [restored magic](tes4_export_morrowind.md#restored-magic). If a record you
    expected stays, read its script before loosening the check: a stand-in that
    advances a quest, or keeps a global other scripts read, must stay.
 
-A refusal the effect needs (Levitation in Mournhold and Sotha Sil) is already
-authored: `TribunalMain` calls `DisableLevitation`, which today runs as a
-logged no-op stub. Port that opcode with the effect.
+### <a id="levitate-and-slowfall"></a>Levitate and SlowFall
+
+**Code:** `plugin/game_calls_flight.cpp`, `plugin/ids.h`, `OpSetLevitation` in `plugin/script_ops_control.cpp`
+
+Levitate and SlowFall are confirmed in game. 🛑 **SwiftSwim is NOT: re-check
+it** (the open lead is at the end of this section).
+
+SwiftSwim, Levitate and SlowFall are script-less Script effects, runtime-carried like the
+teleports, so `teleports_formid.txt` lists every copy of them
+([what the records carry](tes5_import_magic.md#runtime-effects-read-the-active-effect-list)).
+No vanilla actor value is borrowed: a first build that parked them on the limb
+conditions broke the player's jump.
+
+The object tick (`Hooks().effectTick`, 30 Hz, unpaused play only) sums each
+one's magnitude off the player's active-effect list (`ActiveMagnitude`).
+That's the walk `Actor.HasMagicEffect` does: MagicTarget at `actor+0xA0`,
+list from its vtable slot 7, the MGEF at `[[effect+0x48]+0x10]`, magnitude
+`+0x78`, and flag `0x8000` at `+0x7C` for an effect its conditions switched
+off. The tick also:
+
+- reads the player's character controller;
+- computes OpenMW's fly speed: `fMinFlySpeed + 0.01 × (Speed + magnitude) ×
+  (fMaxFlySpeed − fMinFlySpeed)`, reduced by `fEncumberedMoveEffect × load`,
+  and 0 when overloaded.
+
+All of it goes into atomics.
+
+The physics runs through Bethesda's character states. Each state's vtable
+slot 8 is `simulate(state, controller)`:
+
+- InAir's (`0xf01f40` on 1.6.1170) adds gravity to the controller's velocity
+  at `+0x90`, scaled by the step's seconds at `+0x88`. It also raises the
+  fall start at `+0x240` to the highest z reached, which is what landing
+  charges damage from.
+- Flying's is an empty `ret`.
+
+The runtime swaps InAir's and OnGround's slot 8 for a wrapper. The wrapper
+calls the original, then, for the player's controller only:
+
+- **Levitate** replaces the velocity with the one OpenMW's flight moves at:
+  the move keys (PlayerControls `+0x24` strafe, `+0x28` forward), turned by
+  the player's yaw, with forward following the pitch. No key means hover. On
+  the ground it acts only when the velocity points up, which is liftoff;
+  level movement there is the ground state's walk. While levitation is
+  disabled the player drops, and `sLevitateDisabled` shows once, as in
+  OpenMW's `shouldRemoveEffect`.
+- **SlowFall** is OpenMW's `movementsolver.cpp` recurrence. After gravity, a
+  falling z and the x/y drift each keep `(1 − 0.005 × magnitude)` per
+  60 Hz step. The runtime raises that to the step's length, so the frame
+  rate doesn't change it.
+- Both reset the fall start to the current height each step. OpenMW calls
+  `land()` every step while flying or slow-falling, so a fall only counts
+  from where the effect ended.
+
+How each address was found, and that 1.7.104 reads the same offsets, is in
+the comments in `ids.h`. PlayerControls' data block sits at `+0x24` because
+its input sink zeroes that block, then hands `this+0x24` to every handler.
+MovementHandler writes strafe at `+0` and forward at `+4` of it.
+
+**SwiftSwim** wraps the Swimming state's slot 8 (`0xf02b30`, id 80110; vtable
+id 240836). That simulate rotates the stroke at controller `+0x70` into the
+velocity at `+0x90` (via `0xf3d670`), then adds buoyancy. For the player the
+wrapper scales the stroke by OpenMW's `1 + 0.01 × magnitude` for the
+original's read and restores it after, so buoyancy is untouched and nothing
+compounds. The log shows `flight: SwiftSwim now N`, then one
+`flight: swim stroke (…) ×S -> velocity (…)` on the next moving stroke.
+
+🛑 **Open: SwiftSwim feels no faster.** In game, 60 points logged
+`SwiftSwim now 60` and a ×1.60 stroke, yet swimming felt unchanged. Every
+logged stroke is a UNIT vector (`(0.852, 0.523, 0)`), and `0xf3d670` opens
+with a cross product and its squared length, which looks like building a
+direction frame. If it keeps only the stroke's direction, scaling it cannot
+change the speed, and the speed comes from another controller field. Unproven:
+compare the logged velocity's length with and without the effect, then find
+the field the speed comes from.
+
+Limits: the player only (OpenMW flies and swims any actor with the effect),
+and the player keeps Skyrim's falling animation while levitating.
+
+`DisableLevitation` / `EnableLevitation` set `State().levitation`, which is
+saved in the co-save as a `V` line. `TribunalMain` disables levitation in
+Mournhold and Sotha Sil.
+
+### <a id="sanctuary"></a>Sanctuary
+
+**Code:** `plugin/game_calls_sanctuary.cpp`, `ApplyHook` in `plugin/game_calls_teleport.cpp`
+
+Untested in game.
+
+The dodge itself is a native perk: `MWSanctuaryPerk`'s entry `k` zeroes a
+weapon hit `k`% of the time on an actor ranked `k` in `MWSanctuaryFaction`
+([the records](tes5_import_magic.md#runtime-effects-read-the-active-effect-list)).
+The runtime keeps the rank: each tick it sets every holder's rank to its
+summed Sanctuary, rounded and capped at 100, calling `Actor.SetFactionRank`
+only when the rank changes.
+
+The holders are the player, every tick, and every actor the apply sink has
+seen a Sanctuary land on. An actor leaves the list when its Sanctuary is gone,
+at rank 0. The list is saved in the co-save as `Y` lines, so a holder loaded
+from a save is still ranked. An id that no longer names an actor (form type
+`0x3E`) is never read. `effects_formid.txt` (`sanctuary=plugin|FormID`) names
+the faction; a dependent plugin names its master's.
 
 🛑 **Every TES3 plugin stages its whole loaded chain's markers and anchors.**
 Morrowind_ob.esm is a TES4 plugin and stages no Morrowind sidecar, so its

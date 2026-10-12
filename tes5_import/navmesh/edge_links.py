@@ -292,14 +292,14 @@ def _master_neighbour_views(views, master_index, master_navms):
         return {}
     ours = {v.fid for v in views.values()}
     wanted = set()
-    for (wrld, gx, gy) in views:
+    for (wrld, gx, gy, _fid) in views:
         for dx, dy, _axis, _ in _NEIGHBOURS:
             wanted.add((wrld, gx + dx, gy + dy))
         for dx, dy in ((-1, 0), (0, -1)):
             wanted.add((wrld, gx + dx, gy + dy))
     out = {}
     missing = no_record = 0
-    for cell in sorted(wanted - set(views)):
+    for cell in sorted(wanted - {vkey[:3] for vkey in views}):
         fid = master_navms.get(cell)
         if not fid:
             missing += 1
@@ -348,60 +348,15 @@ def build_edge_links(navm_cache: dict, verbose: bool = True,
     Returns the number of links created.
     See: docs/commentary/tes5_import_navmesh.md#cross-plugin-edge-links
     """
-    from .from_pgrd import pack_navm_record
-    from ..base.writer import pack_subrecord
-
-    # Decode every exterior mesh once, indexed by (worldspace, grid).
-    views = {}
-    holders = {}
-    for key, value in navm_cache.items():
-        if not value:
-            continue
-        navm_bytes, meta = value
-        if not navm_bytes or not meta or not meta.get('is_exterior'):
-            continue
-        blob, prefix, suffix = extract_nvnm(navm_bytes)
-        if blob is None:
-            continue
-        try:
-            view = NavMeshView(meta['fid'], blob)
-        except (struct.error, IndexError):
-            continue
-        if not view.exterior:
-            continue
-        cell = (meta.get('wrld_fid'), meta['grid_x'], meta['grid_y'])
-        views[cell] = view
-        holders[cell] = (key, prefix, suffix, meta)
-
+    views, holders = _exterior_views(navm_cache)
     if relinked_masters is None:
         relinked_masters = []
-    masters = _master_neighbour_views(views, master_index, master_navms)
-    for cell, (view, _pre, _suf) in masters.items():
-        views[cell] = view
+    masters = {}
+    for cell, entry in _master_neighbour_views(views, master_index, master_navms).items():
+        masters[cell + (entry[0].fid,)] = entry
+        views[cell + (entry[0].fid,)] = entry[0]
     live_fids = {v.fid for v in views.values()}
-
-    made = 0
-    # Sorted iteration + only the +X/+Y neighbours means each seam is visited
-    # exactly once, in a stable order.
-    for cell in sorted(views):
-        wrld, gx, gy = cell
-        view_a = views[cell]
-        for dx, dy, axis, _ in _NEIGHBOURS:
-            other = (wrld, gx + dx, gy + dy)
-            view_b = views.get(other)
-            if view_b is None:
-                continue
-            # The shared plane: cell A's upper edge on that axis.
-            coord = ((gx + 1) * CELL_SIZE) if axis == 0 else ((gy + 1) * CELL_SIZE)
-            edges_a = border_edges(view_a, axis, coord)
-            edges_b = border_edges(view_b, axis, coord)
-            if not edges_a or not edges_b:
-                continue
-            for ea, eb in match_seam(edges_a, edges_b):
-                view_a.add_link(ea[0], ea[1], view_b.fid, eb[0])
-                view_b.add_link(eb[0], eb[1], view_a.fid, ea[0])
-                made += 2
-
+    made = _stitch_seams(views)
     _prune_dead_links(views, live_fids, master_navms, masters)
 
     rewritten = _repack(views, holders, masters, navm_cache,
@@ -415,6 +370,62 @@ def build_edge_links(navm_cache: dict, verbose: bool = True,
         print(f"  Navmesh edge links: {made} portals stitched across "
               f"{rewritten} cells ({linked}/{total_ext} exterior "
               f"navmeshes linked, {pct:.0f}%{extra})")
+    return made
+
+
+def _exterior_views(navm_cache: dict) -> tuple:
+    """({(wrld, gx, gy, fid): view}, {same key: (cache key, prefix, suffix, meta)}) per exterior mesh.
+
+    Keyed by mesh, not cell: FO3/FNV author up to 8 navmeshes in one cell.
+    See: docs/commentary/tes5_import_navmesh.md#every-mesh-in-a-cell
+    """
+    views, holders = {}, {}
+    for key, value in navm_cache.items():
+        navm_bytes, meta = value or (None, None)
+        if not navm_bytes or not meta or not meta.get('is_exterior'):
+            continue
+        blob, prefix, suffix = extract_nvnm(navm_bytes)
+        if blob is None:
+            continue
+        try:
+            view = NavMeshView(meta['fid'], blob)
+        except (struct.error, IndexError):
+            continue
+        if view.exterior:
+            vkey = (meta.get('wrld_fid'), meta['grid_x'], meta['grid_y'], meta['fid'])
+            views[vkey] = view
+            holders[vkey] = (key, prefix, suffix, meta)
+    return views, holders
+
+
+def _seam_edges(cell_views: list, axis: int, coord: float) -> list:
+    """Border edges on one seam from every mesh in a cell, each tagged with its mesh."""
+    return [e + (view,) for view in cell_views for e in border_edges(view, axis, coord)]
+
+
+def _stitch_seams(views: dict) -> int:
+    """Link matching border edges across each cell seam; return the links made.
+
+    Sorted cells and only the +X/+Y neighbours visit each seam once, in a stable
+    order. The seam plane is cell A's upper edge on that axis, and every mesh on
+    either side competes for it.
+    """
+    cells = {}
+    for vkey in sorted(views):
+        cells.setdefault(vkey[:3], []).append(views[vkey])
+    made = 0
+    for (wrld, gx, gy) in sorted(cells):
+        for dx, dy, axis, _ in _NEIGHBOURS:
+            other = cells.get((wrld, gx + dx, gy + dy))
+            if other is None:
+                continue
+            coord = ((gx + 1) * CELL_SIZE) if axis == 0 else ((gy + 1) * CELL_SIZE)
+            edges_a = _seam_edges(cells[(wrld, gx, gy)], axis, coord)
+            edges_b = _seam_edges(other, axis, coord)
+            for ea, eb in match_seam(edges_a, edges_b):
+                ea[4].add_link(ea[0], ea[1], eb[4].fid, eb[0])
+                eb[4].add_link(eb[0], eb[1], ea[4].fid, ea[0])
+                made += 2
     return made
 
 

@@ -27,6 +27,7 @@ The layer rules and the decision procedure are in
 - [Phase 0 — hunt chains and script-forced packages](#phase-0-hunt-chains-and-script-packages)
 - [Phase 0 — hair lengths and race skin tones index the masters](#phase-0-hair-and-skin-index-masters)
 - [Phase 0c — combat music is reachable only through DOBJ BTMS](#phase-0c-dobj-btms)
+- [Work the export shows is unneeded is skipped](#skip-what-the-export-does-not-need)
 - [Phase 1 is serial on purpose](#phase-1-is-serial-on-purpose)
 - [A master-dependent plugin may own an entire world](#master-dependent-plugin-owns-a-world)
 - [Phase 3c — LCTN, and why a pure patch plugin skips it](#phase-3c-locations)
@@ -120,6 +121,30 @@ FormIDs into the well-known registry instead (`_adopt_master_special_records`).
 Vendor and trainer factions are adopted per EditorID, and a dependent creates
 the ones its masters lack, since its merchants use service combos theirs don't
 ([vendor factions in a dependent](tes5_import_actors.md#vendor-factions-in-a-dependent)).
+
+**Adoption reaches every depth of the master chain.** A header lists only the
+masters a plugin was authored against, so the plugin that OWNS the support set
+can sit one or more levels down: Grass_Aes_TRv25_05_mowed.esp lists Morrowind_ob,
+the compat patch and TR_Mainland, while the set lives in Oblivion.esm (the
+master behind Morrowind_ob and the patch). Looking only at listed masters found
+nothing, so the plugin created its own ~139 records and Tamriel_Data.esm (whose
+header also lacks Oblivion.esm) shipped 156 duplicates of Oblivion.esm's.
+`nested.inherited_masters` walks `core.plugin_masters.master_chain` and keeps each
+converted master the header omits; `reconcile_masters` lists them right after
+Skyrim.esm, so every export index still shifts by ONE amount
+(`set_formid_index_offset`), and `OverrideContext` indexes them for adoption
+only — they are never diffed against. The engine resolves a FormID's master by
+name through the file's own list (`TESFile::refModInfo`), so their place in the
+list is immaterial.
+
+🛑 Growing the master list renumbers every generated record whose
+`derive_formid` key carries a REMAPPED FormID (its index byte moves with the
+list). Tamriel_Data.esm's first build with Oblivion.esm inherited moved 4,818
+such records (2,175 ARMA, 1,077 STAT, 449 SNDR, 363 MGEF, 358 TXST, 123 OTFT,
+116 PROJ, 77 IPCT/IPDS) besides dropping its 156 duplicates, and TR_Mainland.esm's
+moved 15,246 (4,255 NAVM, 8,535 OTFT, 1,068 LCTN, ...); accepted as a one-off
+save break on 2026-09-30. See
+[FormID determinism](performance.md#formid-determinism-save-game-contract).
 
 Its own converted scripts still reference those records by name (Morroblivion's
 chargen writes `TES4ControlsDisabled`), and an unbound property is None, which
@@ -490,6 +515,31 @@ The engine reaches combat music **ONLY** through DOBJ's BTMS default object
 never play. The master's DOBJ is overridden, copying every other entry unchanged
 — the same full-array override each official DLC ships.
 
+## <a id="skip-what-the-export-does-not-need"></a>Work the export shows is unneeded is skipped
+
+**Code:** `pipeline.py` (`_prescan_package_plan`, `_prescan_vendor_trainer`),
+`pipeline_records.py` (`_phase4a_navmesh`), `morrowind_sidecar.py`
+(`stage_sound_table`), `overrides/master_index.py` (`ChainedMasterIndex.__bool__`).
+
+A plugin with masters indexes its masters' whole export, so a pass that runs
+regardless of what the plugin holds costs the master's size, not the plugin's.
+Measured on `Grass_Aes_TRv25_05_mowed.esp` (CELL/GRAS/LTEX/MGEF/STAT/WRLD only,
+over TR_Mainland; 1.77M master records), `--import-only` went from 11m26s to
+2m09s with a byte-identical ESP, manifest and SKSE sidecar:
+
+| Phase | Before | After | Cause | Fix |
+|---|---|---|---|---|
+| magic effect families | 101s | <1s | `if master_index` on a `ChainedMasterIndex` fell back to `__len__`, which builds the full 1.77M-id set: 0.40s per truth test | `__bool__` stops at the first own record |
+| simple records (702: MGEF/GRAS/STAT) | 383s | 52s | the same truth test, per record (`magic_art` alone tests twice per MGEF) | the same |
+| vendor/trainer | 38s | <1s | `chain_tables` re-read every TES3 binary of the chain | read only when the plugin has NPC_/CREA — the tables answer nothing but its own merchants and trainers |
+| package plan | 20s | 0s | indexed every master PACK/QUST/actor | skipped when the plugin exports none of NPC_/CREA/QUST/PACK/DIAL/INFO, the only readers of the plan, script vars and quest-package set |
+| DIAL/INFO groups | 55s | 0.1s | the sound table ran `gather` over the chain again | `gather` runs only when some master's rows are kept (`_sound_owners`); a plugin over TES3 masters keeps none |
+| navmesh generation | 33s | 18s | the master navmesh grid walked 18,408 master cells | built only when this run generated navmeshes — with none, `_master_neighbour_views` wants no neighbour |
+
+Each gated pass wrote nothing for a plugin without its readers. The gate for the navmesh grid sits in
+`pipeline_records.py`, not `navmesh/`, so the shared navmesh cache tag is
+untouched.
+
 ## <a id="phase-1-is-serial-on-purpose"></a>Phase 1 is serial on purpose
 
 🛑 **Do not "optimize" the Phase 1 loop into a thread pool.** The whole phase is
@@ -782,8 +832,9 @@ seeing before shipping.
 export's `_HEADER.txt` (`core/plugin_masters.py:is_master_export`), never from
 the file name. It used to test `.endswith('.esm')`, which cleared the flag on
 `Morrowind-Morroblivion-Compatibility.esp` whenever the patch went through a
-normal `-f` import. `build_patch` sets the flag itself, so the patch was a
-master only when that function was the last thing to write it. An ESM-flagged
+normal `-f` import. The patch now builds only through that normal import
+(its export header carries `Flags=1`), so there is one place the flag comes
+from. An ESM-flagged
 `.esp` is legal and loads as a master (see `tools/esm/make_master.py`).
 
 Each exporter writes the real flag:

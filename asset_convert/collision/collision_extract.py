@@ -1089,15 +1089,14 @@ def scan_door_axes(export_plugin_dir: str, dest: str,
     See: docs/commentary/tes5_import_navmesh.md#door-base-line-is-local-y
     """
     jobs = _door_axis_jobs(export_plugin_dir)
-    if not jobs:
-        return 0
     out = {}
-    with ProcessPoolExecutor(max_workers=workers or worker_count()) as ex:
-        for key, res in ex.map(_closed_door_entry, jobs, chunksize=8):
-            if res is not None:
-                axis, width, cx, cy, zmin = res
-                out[key] = [axis, round(width, 2), round(cx, 2),
-                            round(cy, 2), round(zmin, 2)]
+    if jobs:
+        with ProcessPoolExecutor(max_workers=workers or worker_count()) as ex:
+            for key, res in ex.map(_closed_door_entry, jobs, chunksize=8):
+                if res is not None:
+                    axis, width, cx, cy, zmin = res
+                    out[key] = [axis, round(width, 2), round(cx, 2),
+                                round(cy, 2), round(zmin, 2)]
     os.makedirs(os.path.dirname(os.path.abspath(dest)), exist_ok=True)
     n = len(out)
     out[_BOUNDS_SCHEMA_KEY] = [DOOR_AXIS_SCHEMA_VERSION]

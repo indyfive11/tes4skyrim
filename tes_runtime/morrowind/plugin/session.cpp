@@ -142,9 +142,9 @@ const char* ChargenActor() { return kChargenActor; }
 std::vector<std::string> ChargenTopics() {
     std::vector<std::string> out;
     for (const auto& entry : Topics()) {
-        for (const Info& info : entry.second.infos) {
-            if (LayerVisible(info.layer) && IEqual(info.actor, kChargenActor)) {
-                CollectAddTopic(info.resultScript, &out);
+        for (const Info* info : ViewInfos(entry.second)) {
+            if (IEqual(info->actor, kChargenActor)) {
+                CollectAddTopic(info->resultScript, &out);
             }
         }
     }

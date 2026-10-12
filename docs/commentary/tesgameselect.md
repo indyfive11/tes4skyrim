@@ -163,6 +163,11 @@ book in alias `Player`'s inventory with the Quest Object flag (`FNAM 0x04`,
 `ALCA 0x80000000 | alias`, as vanilla quest items are), so it cannot be dropped
 or sold and survives `RemoveAllItems`.
 
+A game begun with the console `coc` never runs the MQ101 takeover, so
+`CurrentGame` stays -1 and no game counts as started. The scroll still opens:
+every installed game reads "Begin", the spot the player leaves is not kept
+(there is no current game to return to), and the pick becomes the current game.
+
 Travel is Morrowind's Mark and Recall
 ([morrowind_runtime.md](morrowind_runtime.md#teleport-effects)) in plain
 Papyrus, since the plugin must not need SKSE or the DLL: a heading marker

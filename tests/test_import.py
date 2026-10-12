@@ -8143,7 +8143,8 @@ class TestFalloutReferenceOnlyRecords:
         from tes5_import.record_types.reference_falloutnv import (
             convert_FLST, index_convertible_records)
         by_type = {'WEAP': [{'FormID': '0000000A'}],
-                   'ARMA': [{'FormID': '0000000B'}]}
+                   'ARMA': [{'FormID': '0000000B'}],
+                   'FLST': [{'FormID': '00100009'}]}
         index_convertible_records(by_type, {'WEAP': object()}, set())
         rec = {'FormID': '00100009', 'RecordFlags': '0', 'EditorID': 'L',
                'LNAM[0]': '0000000A', 'LNAM[1]': '0000000B'}
@@ -8156,7 +8157,8 @@ class TestFalloutReferenceOnlyRecords:
         from tes5_import.record_types.impact_falloutnv import convert_EXPL
         from tes5_import.record_types.reference_falloutnv import (
             index_convertible_records)
-        index_convertible_records({'IPDS': [{'FormID': '0000000C'}]},
+        index_convertible_records({'IPDS': [{'FormID': '0000000C'}],
+                                   'EXPL': [{'FormID': '0010000A'}]},
                                   {'IPDS': object()}, set())
         rec = {'FormID': '0010000A', 'RecordFlags': '0', 'EditorID': 'X',
                'MNAM': '0000000D', 'DATA.ImpactDataSet': '0000000C',

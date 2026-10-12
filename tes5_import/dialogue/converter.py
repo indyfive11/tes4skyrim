@@ -44,6 +44,7 @@ import re
 import struct
 from collections import defaultdict
 
+from ..base.master_export import records_of
 from ..base.text_reader import (get_formid_index_offset, info_result_script,
                                 remap_formid)
 from ..base.constants import ENGINE_GLOBAL_FORMIDS
@@ -917,8 +918,7 @@ def build_npc_to_vtyp_map(by_type: dict, num_new_masters: int,
                      if fid}
     race_voice, race_edids = _index_race_voices(by_type)
     npc_to_vtyp = {}
-    actor_sources = [((k, r) for k, r in (master_export or {}).items()
-                      if r.get('Signature') in ('NPC_', 'CREA')),
+    actor_sources = [records_of(master_export, 'NPC_', 'CREA'),
                      ((r.get('FormID', '0'), r) for sig in ('NPC_', 'CREA')
                       for r in by_type.get(sig, []))]
     for fid_str, rec in (p for src in actor_sources for p in src):

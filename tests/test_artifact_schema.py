@@ -155,29 +155,16 @@ class TestPreflight(unittest.TestCase):
                 json.dump(projects, f)      # bare == v0
         return d
 
-    def _patch_layout(self, td):
-        import tes5_import.overrides.nested as ov
-        self._saved = (ov.export_root, ov.master_export_dir)
-        ov.export_root = lambda d: td
-        ov.master_export_dir = lambda root, name: os.path.join(root, name)
-        self.addCleanup(self._restore)
-
-    def _restore(self):
-        import tes5_import.overrides.nested as ov
-        ov.export_root, ov.master_export_dir = self._saved
-
     def test_missing_artifacts_are_not_an_error(self):
         """Plenty of plugins ship no creatures and no music."""
         from tes5_import.base.artifact_schema import preflight_artifacts
         with tempfile.TemporaryDirectory() as td:
-            self._patch_layout(td)
             d = self._plugin(td, 'Bare.esp')
             preflight_artifacts(d)      # must not raise
 
     def test_own_stale_artifact_names_this_plugin(self):
         from tes5_import.base.artifact_schema import preflight_artifacts
         with tempfile.TemporaryDirectory() as td:
-            self._patch_layout(td)
             d = self._plugin(td, 'Nehrim.esm',
                              projects={'rat': {'project_hkx': 'x'}})
             with self.assertRaises(StaleArtifactError) as cm:
@@ -188,7 +175,6 @@ class TestPreflight(unittest.TestCase):
         """The reported bug: DLCFrostcrag died over Oblivion.esm's file."""
         from tes5_import.base.artifact_schema import preflight_artifacts
         with tempfile.TemporaryDirectory() as td:
-            self._patch_layout(td)
             self._plugin(td, 'Oblivion.esm',
                          projects={'rat': {'project_hkx': 'x'}})
             child = self._plugin(td, 'DLCFrostcrag.esp', master='Oblivion.esm')

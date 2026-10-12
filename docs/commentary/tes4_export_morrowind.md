@@ -569,7 +569,7 @@ Morrowind source in the GUI): `vanilla` borrows from the declared masters;
 three vanilla ESMs from the list, so a mod shares Morroblivion's objects
 instead of shipping a second copy of every static. Choosing Morroblivion in
 the GUI builds the [gap patch](#morroblivion-gap-patch) when it is missing,
-and choosing it again while selected rebuilds it; the mode refuses every
+and asks whether to rebuild it when it exists; the mode refuses every
 conversion without the patch, so the two are one choice. Morroblivion's cells and
 worldspace use its own EditorIDs, so in that mode doors into vanilla interiors
 link only where the escaped name matches, and exteriors do not link at all.
@@ -597,7 +597,8 @@ Morroblivion ships no Morrowind skeleton, so the registered install is the only
 source of `base_anim.nif`. A user who built the patch (CLI
 `--build-morrowind-patch <dir>` or the GUI folder picker) but never registered
 that folder got `base_anim.nif not found; N worn meshes skipped` on Tamriel
-Rebuilt. `build_patch` now registers the Data Files folder it was given.
+Rebuilt. `--build-morrowind-patch` now registers the Data Files folder it was
+given (`register_source`), and the patch's Export step reads it back from there.
 
 ### <a id="who-owns-a-mesh"></a>Ownership is asked of the SOURCE, not the extracted tree
 
@@ -836,14 +837,32 @@ BSAs, with no reference to what any record or mesh names.
 
 ### <a id="the-patch-builds-its-own-plugin"></a>The build produces the PLUGIN, not just its export
 
-**Code:** `_import_records` in `tes4_export/morrowind_patch.py`.
+**Code:** `export_patch` / `run_patch_export` / `stage_pair_scripts` in
+`tes4_export/morrowind_patch.py`; the `PATCH_NAME` branches in `convert.py`;
+`PATCH_STEPS` in `convert_cli.py`.
 
-Building the patch is one user action, so it runs the whole chain: export
-records, extract assets, convert assets, and **import the records into the
-plugin itself**. The last step was missing, and its absence was invisible from
+The patch is an ordinary `-f` target. Only its Export step is its own
+(`export_patch`: gap records, BSA assets, gap sounds, split pairs, barks, and
+the split pairs' child scripts saved to `export/<patch>/pair_scripts/`). Every
+later step is the normal stage: Meshes, Creatures, Import, Sounds (the gap
+SOUNs' files and the barks' recordings, which the Export step only copied raw)
+and Scripts (which copies the saved child scripts to `scripts/source` and
+compiles them). Extract
+does nothing for the patch, because its Export step already pulled what it ships.
+`--build-morrowind-patch <dir>` registers `<dir>` and runs `PATCH_STEPS` in
+order, and each step also runs alone:
+
+```bash
+python convert.py -f Morrowind-Morroblivion-Compatibility.esp --import-only
+python convert.py -f Morrowind-Morroblivion-Compatibility.esp --meshes-only
+```
+
+The GUI menu runs `--build-morrowind-patch` as a run in the main log pane.
+
+The import step was once missing entirely, and its absence was invisible from
 every angle the user could check.
 
-`build_patch` wrote `export/<patch>/` and an asset tree under
+The build then wrote `export/<patch>/` and an asset tree under
 `output/<patch>/`, then reported `records` and `assets` and declared the patch
 "a master of every Morroblivion-mode conversion". No plugin file was ever
 written, because nothing called the import stage for it -- `PATCH_NAME` reached
@@ -855,20 +874,19 @@ Three things hid it:
   on `_HEADER.txt` in the export dir, which `_write_records` does create, so
   Morroblivion-mode exports stopped reporting the patch missing and the build
   looked finished.
-- **`output/<patch>/` existed and was full.** `_convert_assets` populated it
+- **`output/<patch>/` existed and was full.** Mesh conversion populated it
   with meshes and textures, so the folder the user would check was there --
   just with no plugin in it.
 - **The record count was real.** It counts what was written to text.
 
-So `ok` now means the plugin FILE exists: a build that wrote records and assets
-but no plugin reports failure and says the records survived in `export/`. The
-patch declares the converted Morroblivion plugins as its masters
+Import is now its own pipeline step, and a failed Import reports as that step
+failing. The patch declares the converted Morroblivion plugins as its masters
 ([why](#the-patch-masters-morroblivion)), so `_reconcile_masters` builds its
 list from the export header like any other dependent's.
 
 The build has two doors, because the refusal that sends a user to it fires on
 the command line too: the GUI menu, and `convert.py --build-morrowind-patch
-"<Morrowind>/Data Files"`. Both run `build_patch`, so neither can drift.
+"<Morrowind>/Data Files"`. The GUI runs that same command, so neither can drift.
 
 It is written **ESM-flagged**, keeping its `.esp` extension -- the one converted
 plugin that does not wait for `tools/esm/make_master.py`. Every Morroblivion-mode
@@ -901,6 +919,7 @@ Morrowind enum translated to the TES4 one where they differ:
 | WPDT type 0-13 | `DATA.Type` | short/long blade 1H -> 0, long blade 2H and spear -> 1, blunt 1H and axe 1H -> 2, blunt 2H and axe 2H -> 3, bow/crossbow -> 5, thrown -> 0; arrow/bolt become **AMMO** |
 | WPDT chop/slash/thrust max | `DATA.Damage` | the largest of the three |
 | WPDT enchant | `ANAM` | Morrowind stores points x10 |
+| WEAP/ARMO/CLOT/BOOK `ENAM` (enchantment id) | `ENAM` | the ENCH FormID. It was written as `EITM` (TES5's name) from the first pass, so every Morrowind-format item lost its enchantment and no enchanted book became a scroll. Fixed, the build gives Tamriel_Data 523 enchanted weapons and 351 armor, TR_Mainland 308 and 431, and turns 131 and 33 of their books into SCRL under the same FormIDs |
 | LHDT color u32 | `DATA.Color.R/G/B` | little-endian RGBA bytes |
 | LHDT flags | `DATA.Flags` | identical bits; 0x10 (Fire) is masked by the importer |
 | CNDT weight, FLAG | `DATA.Weight`, `DATA.Flags` | Respawn 0x02 -> TES4 0x01 |
@@ -2400,7 +2419,11 @@ original's effects, keeping Morroblivion's FormID and EditorID, when four
 conditions hold:
 
 1. The record pairs to vanilla by escaped id and type (`mark` ↔ `0mark`).
-2. It carries a script effect.
+2. It carries a script effect, OR its vanilla original carries an effect only
+   MorrowindRuntime can do. Neither Oblivion nor Skyrim has such an effect, so
+   whatever Morroblivion authored is a stand-in, scripted or not: Buoyancy
+   and Swimmer's Blessing fake SwiftSwim with Water Breathing plus Feather or
+   Fortify Athletics.
 3. Every vanilla effect converts (`mw_converts`). That means a Skyrim archetype,
    with an actor value where one is needed, or an effect the runtime carries.
 4. Each dropped script EITHER does nothing, OR the runtime carries every
@@ -2412,17 +2435,30 @@ conditions hold:
    nowhere else or written somewhere else too. A read counts by name in any
    script or result script, and by FormID in a raw `CTDA`.
 
+   A function script that only dropped scripts `Call` is dropped with them,
+   and its own writes are checked the same way. `JDLevitate` reads the
+   `JDLevitationData` factors the Levitate stand-ins write, and nothing else
+   calls it.
+
 Measured over Morrowind_ob: 52 vanilla records pair to a Morroblivion record
 with a script effect, and **21 are restored**. They are the Mark, Recall and
 Intervention spells, scrolls and potions, plus records whose script effect had
 no script (`rilm's gift`, `corprus`, `panacea`) or a placeholder
 (`mwElothEffectPlaceholderScript`).
 
+Once SwiftSwim, Levitate and SlowFall became runtime-carried, 18 SPEL, 11 ALCH
+and 8 ENCH more flipped: every Levitate spell (Vampire Fly included),
+Slowfall, Buoyancy, Swimmer's Blessing and the Swift Swim and Levitate
+potions and enchantments
+([how](morrowind_runtime.md#adding-a-runtime-effect)).
+
+🛑 **A restored enchantment on a BOOK does not reach its scroll.** The patch
+overrides `0scUreynosfinsUen` with Swift Swim 50, but the SCRL the player
+reads is built from the book when Morrowind_ob.esm converts, and it keeps
+Morroblivion's magnitude-1 effect. Unfixed.
+
 Kept as Morroblivion's, and why:
 
-- **Levitation and Slowfall:** the runtime does not carry them yet. Adding an
-  index to `MW_RUNTIME_EFFECTS` flips them with no patch code
-  ([how](morrowind_runtime.md#adding-a-runtime-effect)).
 - **The blight cures:** `mwSpellBlightCure` stages `fbmwILGnisisBlight`.
 - **The blight resistances:** they write `mwPlayerBlightResistance`, which the
   blight scripts read and nothing else writes.

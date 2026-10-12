@@ -12,6 +12,7 @@ See: docs/commentary/tes4_export_falloutnv.md#projectiles
 import struct
 from collections import Counter
 
+from ..base.master_export import values_of
 from ..base.writer import (pack_formid_subrecord, pack_obnd, pack_record,
                       pack_string_subrecord, pack_subrecord)
 from .common import get_float, get_formid, get_int, get_str, prefix_path
@@ -34,9 +35,7 @@ _FORMLISTS = {}
 def _records(by_type: dict, master_export: dict, sig: str):
     """The plugin's records of `sig`, then its masters'."""
     yield from by_type.get(sig, [])
-    if master_export:
-        yield from (r for r in master_export.values()
-                    if r.get('Signature') == sig)
+    yield from values_of(master_export, sig)
 
 
 def _formlist_members(by_type: dict, master_export: dict) -> dict:

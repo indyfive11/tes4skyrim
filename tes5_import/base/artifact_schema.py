@@ -49,6 +49,8 @@ migrated.
 import json
 import os
 
+from core.plugin_masters import master_dir, masters_from_export_header
+
 
 class StaleArtifactError(RuntimeError):
     """A pipeline artifact was written by an incompatible converter version."""
@@ -190,49 +192,20 @@ def read_artifact(path, plugin_hint=None):
     return data
 
 
-def master_names(export_dir):
-    """This plugin's TES4 master names, in load order, from its export header."""
-    header = os.path.join(export_dir, '_HEADER.txt')
-    if not os.path.isfile(header):
-        return []
-    names = []
-    with open(header, 'r', encoding='utf-8') as f:
-        for line in f:
-            if line.startswith('Master['):
-                _, _, val = line.partition('=')
-                names.append(val.strip())
-    return names
-
-
 def preflight_artifacts(export_dir):
     """Validate every artifact this plugin will read, BEFORE any real work.
 
-    The consumers sit deep in the import (creature projects are read ~15 steps
-    into phase 0), so without this a stale file costs the user a minute of
-    fid maps, cross-ref graphs and script plans before it says anything.  The
-    fix is the same either way, so there is no reason to find out late.
-
-    Checks this plugin's own artifacts AND its masters' -- a dependent plugin
-    reads its master's creature projects and never rewrites them, so the stale
-    file is often the master's.  Raises StaleArtifactError; a MISSING file is
-    not an error (plenty of plugins ship no creatures).
+    The consumers sit deep in the import, so a stale file would otherwise cost
+    a minute of work before it says anything. Checks this plugin's artifacts
+    AND its masters' (a dependent reads its master's creature projects and
+    never rewrites them); each hint names the plugin whose stage rebuilds the
+    file. Raises StaleArtifactError; a MISSING file is not an error.
     """
-    from ..overrides.nested import export_root, master_export_dir
-
     seen = []
-    # This plugin's artifacts, then each master's.  The hint names
-    # the plugin whose stage rebuilds each file -- for the plugin's own export
-    # that is the export dir's name, for a master's it is the master.
     own = os.path.basename(os.path.normpath(export_dir))
-    roots = [(export_dir, own)]
-    try:
-        root = export_root(export_dir)
-        for name in master_names(export_dir):
-            roots.append((master_export_dir(root, name), name))
-    except Exception:
-        # A layout we cannot resolve just means fewer preflight checks; the
-        # real read still raises later.
-        pass
+    roots = [(export_dir, own)] + [
+        (master_dir(export_dir, name), name)
+        for name in masters_from_export_header(export_dir)]
     for base, plugin in roots:
         p = os.path.join(base, 'creature_projects.json')
         if os.path.isfile(p):

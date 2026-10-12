@@ -12,6 +12,7 @@ See: docs/commentary/tes5_import_world.md#tes3-exit-only-door-locks
 See: docs/commentary/tes5_import_world.md#tes3-dont-havok-settle
 """
 
+from ..base.master_export import values_of
 from ..dialogue.morrowind_sidecar import is_tes3_export
 from .common import get_formid, get_int
 
@@ -29,9 +30,8 @@ def _scoped(by_type: dict, master_export: dict, sig: str):
     """Every `sig` record in scope: the masters' plus this plugin's own."""
     if master_export:
         own = {get_formid(rec, 'FormID') for rec in by_type.get(sig, [])}
-        yield from (rec for rec in master_export.values()
-                    if rec.get('Signature') == sig
-                    and get_formid(rec, 'FormID') not in own)
+        yield from (rec for rec in values_of(master_export, sig)
+                    if get_formid(rec, 'FormID') not in own)
     yield from by_type.get(sig, [])
 
 

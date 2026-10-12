@@ -42,7 +42,10 @@ struct Info {
     int         layer = -1;
     std::string id;
     std::string topic;
-    int         ordinal = 0;
+    // The response it follows (PNAM), which OpenMW's InfoOrder places it by.
+    std::string prev;
+    // A tombstone: this plugin deletes the response of this id.
+    bool        deleted = false;
     DialType    type = DialType::Unknown;
     int         disposition = 0;
     int         journalIndex = 0;
@@ -63,18 +66,31 @@ struct Info {
     std::vector<Condition> conditions;
 };
 
-// A topic and its responses, held in export order -- Morrowind takes the FIRST
-// match, so the order IS the filter precedence.
+// A topic: every sidecar's responses, and the order each view offers them in.
+// Morrowind takes the FIRST match, so that order IS the filter precedence.
 struct Topic {
     std::string       id;
     DialType          type = DialType::Unknown;
+    // Every sidecar's responses, masters' first, each in file order.
     std::vector<Info> infos;
+    // Per view: `infos` merged by OpenMW's InfoOrder over the sidecars that
+    // view sees, deleted ones removed. Built by OrderTopic.
+    std::vector<std::vector<const Info*>> views;
     // Every sidecar that stages this DIAL.
     std::vector<int>  layers;
 };
 
 // Whether any sidecar staging `topic` is visible to the current layer.
 bool TopicVisible(const Topic& topic);
+
+// Merges `topic.infos` into `topic.views`, as OpenMW's Dialogue::readInfo
+// and setUp do for each plugin in load order. LoadStore calls it for every
+// topic; a test that fills `infos` by hand calls it itself.
+// See: docs/plans/morrowind_object_scripts.md#cumulative-gather-must-go
+void OrderTopic(Topic& topic);
+
+// The responses the current layer's view offers from `topic`, in order.
+const std::vector<const Info*>& ViewInfos(const Topic& topic);
 
 struct StoreStats {
     std::size_t files = 0;

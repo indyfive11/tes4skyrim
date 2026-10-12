@@ -12,6 +12,7 @@ from asset_convert.game_paths import current_namespace
 from output_layout import asset_cache_chain
 import glob
 import hashlib
+import operator
 import os
 import struct
 import sys
@@ -27,6 +28,7 @@ from ..overrides.nested import DELETED_FLAG
 from ..record_types.navm_falloutnv import precompute_fallout_navmeshes
 from ..record_types.items import tree_nif_stem
 from ..record_types.world_falloutnv import parent_use_flags
+from ..base.master_export import records_of
 from ..base.text_reader import (get_float, get_formid, get_formid_index_offset,
                            get_injected_formids, get_int, get_str)
 
@@ -108,8 +110,30 @@ def base_model_key(rec: dict):
     return model_key(model)
 
 
+#: This run's `_records_of` answers by signatures: (by_type, master_export, own lists, lengths, answer).
+_MERGED = {}
+
+
 def _records_of(by_type: dict, master_export: dict, sigs) -> list:
     """(fid, record) of *sigs*: the masters' plus this plugin's, one per FormID.
+
+    Merged once per run: asked again with the same inputs, the same list comes
+    back, so callers never mutate it.  `precompute_navmeshes` forgets them.
+    """
+    key = tuple(sigs)
+    lists = tuple(by_type.get(sig, ()) for sig in key)
+    lengths = tuple(map(len, lists))
+    hit = _MERGED.get(key)
+    if (hit and hit[0] is by_type and hit[1] is master_export
+            and all(map(operator.is_, hit[2], lists)) and hit[3] == lengths):
+        return hit[4]
+    out = _merge_records(by_type, master_export, key)
+    _MERGED[key] = (by_type, master_export, lists, lengths, out)
+    return out
+
+
+def _merge_records(by_type: dict, master_export: dict, sigs: tuple) -> list:
+    """`_records_of`'s answer, computed.
 
     `master_export` keys by the raw TES4 slot while `get_formid` shifts every id
     by the load-order offset, so a master's key is shifted to match.  The
@@ -123,8 +147,7 @@ def _records_of(by_type: dict, master_export: dict, sigs) -> list:
     own_fids = {fid for fid, _r in own}
     offset = get_formid_index_offset()
     masters = [(_shift_index(key, offset), r)
-               for key, r in (master_export or {}).items()
-               if r.get('Signature') in sigs]
+               for key, r in records_of(master_export, *sigs)]
     out = [(fid, r) for fid, r in masters if fid and fid not in own_fids]
     out.extend((fid, r) for fid, r in own
                if not get_int(r, 'RecordFlags') & DELETED_FLAG)
@@ -553,9 +576,7 @@ def master_navm_grid(master_export: dict, master_index) -> dict:
         return {}
     out = {}
     ext = no_navm = 0
-    for rec in master_export.values():
-        if rec.get('Signature') != 'CELL':
-            continue
+    for _key, rec in records_of(master_export, 'CELL'):
         wrld = get_formid(rec, 'ParentWRLD')
         if not wrld or get_int(rec, 'RecordFlags') & _PERSISTENT_FLAG:
             continue
@@ -769,6 +790,7 @@ def precompute_navmeshes(by_type: dict, writer, base_model_by_fid: dict,
         return fallout
 
     jobs = gather_navm_jobs(by_type, door_fids, master_export)
+    _MERGED.clear()
     if not jobs:
         return {}
 

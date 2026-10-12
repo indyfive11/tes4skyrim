@@ -184,8 +184,8 @@ def _build_settings_menu(app, menubutton, menu_opts) -> None:
     _add_winding_menu(app, settings_menu, menu_opts)
     _add_navmesh_menu(app, settings_menu, menu_opts)
     _add_lod_detail_menu(app, settings_menu, menu_opts)
-    add_source_menu(settings_menu, menu_opts, app.cfg, load_config,
-                    save_config, EXPORT_DIR, app.out_root)
+    add_source_menu(app, settings_menu, menu_opts, app.cfg, load_config,
+                    save_config, EXPORT_DIR)
 
 
 # ---------------------------------------------------------------------------

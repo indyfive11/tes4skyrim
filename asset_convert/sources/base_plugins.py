@@ -16,6 +16,8 @@ Two carriers, because a mod declares its base in two different ways:
 """
 import os
 
+from core.plugin_masters import masters_from_export_header
+
 FILE_NAME = '.base_plugins'
 
 
@@ -43,9 +45,7 @@ def names_for(own_dir):
 def _own_names(own_dir):
     """`names_for` for one RECORD dir (or a flat plugin's folder)."""
     from output_layout import assets_for
-    header = [line.partition('=')[2].strip()
-              for line in _lines(os.path.join(own_dir, '_HEADER.txt'))
-              if line.startswith('Master[')]
+    header = masters_from_export_header(own_dir)
     recorded = []
     for d in dict.fromkeys((own_dir, str(assets_for(own_dir)))):
         recorded += [line.strip()

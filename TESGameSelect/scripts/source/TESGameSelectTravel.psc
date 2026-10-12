@@ -164,12 +164,9 @@ Int Function ReadScroll()
   Return pick
 EndFunction
 
-; Refused before any game has begun, in combat, and while movement controls
-; are off — which also covers every game's opening sequence.
+; Refused in combat and while movement controls are off — which also covers
+; every game's opening sequence.
 Bool Function CanTravel()
-  If CurrentGame < 0
-    Return false
-  EndIf
   Actor player = Game.GetPlayer()
   If player.IsInCombat() || !Game.IsMovementControlsEnabled()
     Debug.Notification("The threads will not answer now.")
@@ -203,8 +200,14 @@ Function TravelTo(Int game)
   Arrive(game)
 EndFunction
 
-; The spot the player is leaving becomes the current game's return point.
+; The spot the player is leaving becomes the current game's return point. A
+; player who began outside the selector (console coc) has no current game, so
+; there is no thread to return to.
 Function KeepReturnPoint(ObjectReference mark)
+  If CurrentGame < 0
+    mark.Delete()
+    Return
+  EndIf
   ObjectReference old = returnPoints[CurrentGame]
   If old != None && old != mark
     old.Delete()

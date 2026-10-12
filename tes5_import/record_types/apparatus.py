@@ -12,12 +12,11 @@ See: docs/commentary/tes_runtime_alchemy.md#alchemy-apparatus
 import json
 import os
 
-from core.plugin_masters import masters_from_export_header
+from core.plugin_masters import export_root, masters_from_export_header
 from tes4_export.tes3_reader import is_tes3
 
 from ..base.text_reader import unescape_value
-from ..dialogue.morrowind_sidecar import (export_records, export_root,
-                                          is_tes3_export)
+from ..dialogue.morrowind_sidecar import export_records, is_tes3_export
 from ..dialogue.morrowind_sidecar_source import source_binary
 from .crime import SIDECAR_DIR
 

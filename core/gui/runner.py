@@ -1189,14 +1189,16 @@ def run_clicked(app, missing_dep) -> None:
 
 def start_global_action(app, key: str, record_done) -> None:
     """Launch one global action with the selection already settled."""
-    from core.worker_budget import WORKERS_ENV_VAR
-
     if app.running.is_set():
         return
-    out_dir = app.output_var.get().strip()
-    cmd = global_cmd(app, key, out_dir)
+    cmd = global_cmd(app, key, app.output_var.get().strip())
     label = next(l for k, l, _t, _s, _r in GLOBAL_ACTIONS if k == key)
+    start_command(app, label, cmd, key, record_done)
 
+
+def start_command(app, label: str, cmd: list, key: str, on_success) -> None:
+    """Stream one command's run into the log pane; `on_success(key)` runs if it exits 0."""
+    out_dir = app.output_var.get().strip()
     _begin_run(app, {"Command": label, "Output": out_dir})
     app.log(label)
     app.log(f"Output: {out_dir}")
@@ -1205,9 +1207,8 @@ def start_global_action(app, key: str, record_done) -> None:
 
     q = queue.Queue()
     want_summary = [False]
-    env = {WORKERS_ENV_VAR: str(app.get_workers())}
-    env.update(app.log_sink.env())
-    start_global_worker(app, cmd, q, env, key, want_summary, record_done)
+    start_global_worker(app, cmd, q, _run_env(app), key, want_summary,
+                        on_success)
     app.root.after(50, make_drain(app, q, want_summary,
                                   lambda ws: _run_finished(app, ws)))
 

@@ -488,6 +488,17 @@ def test_scroll_reads_the_way_vanilla_elder_scrolls_do():
     assert positions == sorted(positions)
 
 
+def test_scroll_works_when_no_game_is_current():
+    """A console coc start never runs the takeover, so CurrentGame stays -1.
+
+    See: docs/commentary/tesgameselect.md#travel-scroll
+    """
+    text = _psc(TRAVEL_SCRIPT_NAME)
+    assert 'CurrentGame < 0' not in _function_body(text, 'CanTravel')
+    keep = _function_body(text, 'KeepReturnPoint')
+    assert keep.index('CurrentGame < 0') < keep.index('returnPoints[CurrentGame]')
+
+
 def test_no_two_records_share_a_formid(built):
     """The growing MESG blocks must never run into another record."""
     ids = [fid for _sig, fid in built[2] if fid]

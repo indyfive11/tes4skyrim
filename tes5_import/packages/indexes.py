@@ -15,6 +15,7 @@ resolves to no signature at all, and _operate_target / the Find branches fall
 through to the default (see CLAUDE.md, master-export blindness).
 """
 
+from ..base.master_export import values_of
 from ..base.text_reader import get_formid
 
 # Every TES4 base signature a placed REFR/ACHR/ACRE (and so a package target)
@@ -187,15 +188,10 @@ def build_pack_indexes(by_type: dict, master_export: dict = None) -> dict:
     Keys: ref_base_sig, base_sig, base_placements, interior_cells, ref_cell,
     pack_runner_cells.
     """
-    master_by_type = {}
-    if master_export:
-        for r in master_export.values():
-            master_by_type.setdefault(r.get('Signature'), []).append(r)
-
     def _iter_bases(sigs):
         """Yield (signature, record) for `sigs`, the masters' records first."""
         for sig in sigs:
-            for r in master_by_type.get(sig, ()):
+            for r in values_of(master_export, sig):
                 yield sig, r
             for r in by_type.get(sig, []):
                 yield sig, r

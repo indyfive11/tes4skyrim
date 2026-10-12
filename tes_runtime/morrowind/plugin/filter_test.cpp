@@ -6,11 +6,14 @@
 
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <map>
 #include <string>
 #include <vector>
 
 #include "filter.h"
+#include "scope.h"
 #include "script_tables.h"
 #include "store.h"
 
@@ -137,7 +140,7 @@ public:
 Info MakeInfo(const char* id, int ordinal) {
     Info info;
     info.id = id;
-    info.ordinal = ordinal;
+    info.prev = ordinal ? "first" : "";
     info.gender = -1;
     info.rank = -1;
     info.pcRank = -1;
@@ -159,6 +162,7 @@ void TestOrderIsPrecedence() {
     Topic topic;
     topic.infos.push_back(MakeInfo("first", 0));
     topic.infos.push_back(MakeInfo("second", 1));
+    OrderTopic(topic);
     FakeActor actor;
     const FilterResult r = SelectInfo(topic, actor, -1);
     Check(r.info && r.info->id == "first", "takes the FIRST match, not the best");
@@ -465,6 +469,84 @@ int RankRequirementCases() {
     return failed + (notRank ? 0 : 1);
 }
 
+// One response record of topic `topic`, as the converter stages it; a null
+// `prev` is a sidecar that predates the key.
+std::string InfoText(const char* topic, const char* id, const char* prev,
+                     const char* extra) {
+    return std::string("---RECORD_BEGIN---\nSignature=MWIN\nEditorID=") + id +
+           "\nTopic=" + topic + "\nInfoType=Topic\n" + extra +
+           (prev ? std::string("Prev=") + prev + "\n" : std::string()) +
+           "---RECORD_END---\n\n";
+}
+
+// The ids the current view offers for `topic`, each `id@layer name`.
+std::string OfferedIds(const char* topic) {
+    std::string out;
+    for (const Info* info : ViewInfos(*FindTopic(topic))) {
+        out += (out.empty() ? "" : " ") + info->id + "@" +
+               LayerName(info->layer).substr(0, 1);
+    }
+    return out;
+}
+
+// Each plugin stages only its own responses; the runtime joins them with
+// OpenMW's own InfoOrder, and a sidecar without `Prev` keeps its ordinals.
+int MergeCases() {
+    namespace fs = std::filesystem;
+    const fs::path root = fs::temp_directory_path() / "mw_merge_test";
+    fs::remove_all(root);
+    const auto write = [&root](const char* plugin, const char* file,
+                               const std::string& text) {
+        fs::create_directories(root / plugin);
+        std::ofstream(root / plugin / file, std::ios::binary) << text;
+    };
+    const auto topic = [](const char* id) {
+        return std::string("---RECORD_BEGIN---\nSignature=MWDI\nEditorID=") +
+               id + "\nDialType=Topic\n---RECORD_END---\n\n";
+    };
+    write("a_master", "DIAL.txt", topic("greet") + topic("old"));
+    write("a_master", "INFO.txt",
+          InfoText("greet", "A", "", "") + InfoText("greet", "B", "A", "") +
+              InfoText("greet", "C", "B", "") + InfoText("greet", "D", "C", "") +
+              InfoText("old", "L2", nullptr, "Ordinal=1\n"));
+    write("b_child", "DIAL.txt", topic("greet") + topic("old"));
+    write("b_child", "INFO.txt",
+          InfoText("greet", "X", "A", "") + InfoText("greet", "B", "A", "") +
+              InfoText("greet", "C", "", "") +
+              InfoText("greet", "D", "C", "Deleted=1\n") +
+              InfoText("greet", "Y", "nowhere", "") +
+              InfoText("old", "L1", nullptr, "Ordinal=0\n"));
+    LoadStoreFrom(root.string());
+    int failed = 0;
+    const struct { const char* topic; const char* want; const char* what; } cases[] = {
+        {"greet", "C@b A@a X@b B@b Y@b",
+         "after PNAM, replace in place, re-linked moves, delete, unknown PNAM last"},
+        {"old", "L1@b L2@a", "a sidecar without Prev sorts by Ordinal"},
+    };
+    for (const auto& c : cases) {
+        const std::string got = OfferedIds(c.topic);
+        std::printf("  %s  %s: %s\n", got == c.want ? "ok  " : "FAIL", c.what,
+                    got.c_str());
+        if (got != c.want) ++failed;
+    }
+    // A save keyed "b_child:greet" when b_child re-staged the topic follows it
+    // to its origin now; a key naming an id nothing defines is kept as saved.
+    const std::string sep = "\x1F";
+    const struct { std::string saved, want; const char* what; } keys[] = {
+        {"b_child" + sep + "greet", "a_master" + sep + "greet",
+         "a saved key follows its record to the origin"},
+        {"b_child" + sep + "gone", "b_child" + sep + "gone",
+         "a key nothing defines is kept"},
+    };
+    for (const auto& k : keys) {
+        const std::string got = Requalify(k.saved);
+        std::printf("  %s  %s\n", got == k.want ? "ok  " : "FAIL", k.what);
+        if (got != k.want) ++failed;
+    }
+    fs::remove_all(root);
+    return failed;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -473,6 +555,8 @@ int main(int argc, char** argv) {
         int failed = UnknownFunctionCases();
         std::printf("rank requirements\n");
         failed += RankRequirementCases();
+        std::printf("merged dialogue\n");
+        failed += MergeCases();
         std::printf("%s\n", failed ? "FAILED" : "all passed");
         return failed ? 1 : 0;
     }

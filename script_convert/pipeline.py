@@ -21,12 +21,14 @@ from script_convert.conversation_sequence import (
     state_writes_before_setstage,
     stepped_gate,
 )
-from script_convert.cross_ref import CrossRefGraph, master_names
+from core.plugin_masters import masters_from_export_header
+from script_convert.cross_ref import CrossRefGraph
 from script_convert.converter import ScriptConverter
 from script_convert.context_setup import (
     build_xref, chargen_menu_plan, deploy_static_scripts, load_bounds_cache,
     load_records, prepare_output_dir, quest_edids_by_fid,
     service_menu_topics, topic_unlock_globals)
+from script_convert.ownership import owner_key, write_owned
 from script_convert.message_menus import build_message_plan
 from script_convert.commands_falloutnv import (quest_objective_indices,
                                                set_quest_objectives)
@@ -62,6 +64,7 @@ _WORKER_CTX: dict = {}
 
 def _new_stats() -> dict:
     return {
+        'written': [],
         'scpt_total': 0, 'scpt_ok': 0, 'scpt_err': 0,
         'info_total': 0, 'info_ok': 0, 'info_err': 0,
         'qust_total': 0, 'qust_ok': 0, 'qust_err': 0,
@@ -206,6 +209,7 @@ def _script_worker_run(job):
     elif kind == 'qust':
         _qust_batch(records, ctx['output_dir'], ctx['xref'], stats,
                     ctx['stage_reveals'])
+    stats['written'] = _drain_written()
     return stats
 
 
@@ -261,9 +265,10 @@ def build_script_context(export_dir: str, output_dir: str) -> dict:
     subset build is the SAME conversion as the full one.
     See: docs/commentary/script_convert.md#script-output-dir
     """
-    prepare_output_dir(output_dir)
+    owner = owner_key(export_dir)
+    shared = prepare_output_dir(output_dir, owner)
     bounds_cache = load_bounds_cache(export_dir)
-    deploy_static_scripts(export_dir, output_dir)
+    _WRITTEN.extend(deploy_static_scripts(export_dir, output_dir, shared))
     xref = build_xref(export_dir)
     by_type = load_records(export_dir, ('DIAL', 'INFO', 'QUST', 'SCPT', 'NPC_',
                                         'CREA', 'PACK', 'MESG'))
@@ -308,8 +313,10 @@ def build_script_context(export_dir: str, output_dir: str) -> dict:
                 build_force_greet_slots(by_type),
                 build_force_flee_slots(by_type),
                 fg_reeval)
+    stats['written'] = _drain_written()
     return {'initargs': initargs, 'scpt_work': scpt_work,
-            'info_work': info_work, 'qust_work': qust_work, 'stats': stats}
+            'info_work': info_work, 'qust_work': qust_work, 'stats': stats,
+            'owner': owner, 'shared': shared}
 
 
 def _write_conversation_driver(export_dir: str, output_dir: str,
@@ -320,7 +327,7 @@ def _write_conversation_driver(export_dir: str, output_dir: str,
     Built from the same plan the importer bound the driver quest's VMAD
     against; a dependent plugin's copy would collide with its master's name.
     """
-    if master_names(export_dir):
+    if masters_from_export_header(export_dir):
         return
     conv_by_type = dict(by_type)
     conv_by_type.update(load_records(export_dir, ('ACHR', 'ACRE')))
@@ -372,6 +379,7 @@ def convert_all_scripts(export_dir: str, output_dir: str, workers: int = None) -
 
     _fix_udf_call_arg_types(output_dir, stats['udf_sigs'],
                             stats['udf_callers'])
+    _record_ownership(output_dir, ctx, stats['written'])
 
     total = stats['scpt_ok'] + stats['info_ok'] + stats['qust_ok']
     errs = stats['scpt_err'] + stats['info_err'] + stats['qust_err']
@@ -402,6 +410,30 @@ def _report_inert_actor_calls(names: list) -> None:
               f'that do nothing there: {", ".join(sorted(names))}')
 
 
+def _record_ownership(output_dir: str, ctx: dict, written: list) -> None:
+    """Save this plugin's script list; report names it took over from a sibling.
+
+    See: docs/commentary/script_convert.md#wipe-output-dir
+    """
+    write_owned(output_dir, ctx['owner'], written)
+    taken = sorted(set(written) & ctx['shared'])
+    if taken:
+        print(f'    WARNING: {len(taken)} script(s) share a name with another '
+              f'plugin in this folder; the last one converted wins: '
+              f'{", ".join(taken[:5])}')
+
+
+#: Script names `write_psc` wrote in THIS process since the last `_drain_written`.
+_WRITTEN: list = []
+
+
+def _drain_written() -> list:
+    """The script names written in this process since the last call, clearing them."""
+    names = list(_WRITTEN)
+    _WRITTEN.clear()
+    return names
+
+
 def write_psc(output_dir: str, script_name: str, text: str) -> None:
     """Write one generated script, commenting out its dangling references.
 
@@ -418,6 +450,7 @@ def write_psc(output_dir: str, script_name: str, text: str) -> None:
     path = os.path.join(output_dir, script_name + '.psc')
     with open(path, 'w', encoding='utf-8') as fh:
         fh.write(_comment_dangling(text))
+    _WRITTEN.append(script_name)
 
 
 def _comment_dangling(text: str) -> str:

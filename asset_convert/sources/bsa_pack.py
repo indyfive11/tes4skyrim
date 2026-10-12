@@ -46,10 +46,12 @@ import subprocess
 import sys
 from pathlib import Path
 
+from core.plugin_masters import masters_from_export_header
 from core.subprocess_flags import POPEN_FLAGS, windows_cmd, to_wine_path
+from output_layout import record_dir
 from tes5_import.base.writer import pack_tes4_header
 from asset_convert import case_paths, paths
-from asset_convert.sources import base_plugins
+from asset_convert.sources import base_plugins, source_registry
 from asset_convert.texture import texture_prune
 
 # ---------------------------------------------------------------------------
@@ -397,27 +399,30 @@ def _misc_dirs(plugin_dir: Path) -> 'list[str]':
     })
 
 
-def _remove_stale_overflow(plugin_dir: Path, stem: str, results: dict) -> None:
-    """Delete overflow archives and loaders a previous, larger run left behind.
+def _stale_candidates(plugin_dir: Path, stem: str, other_stems: list) -> list:
+    """Archives and loaders in `plugin_dir` this run may have left stale."""
+    found = set(plugin_dir.glob(f'{_glob.escape(stem)}_loader*'))
+    found |= set(plugin_dir.glob('oblivion_loader*'))
+    for other in other_stems:
+        found |= set(plugin_dir.glob(f'{_glob.escape(other)}_loader*'))
+        found |= {plugin_dir / _archive_name(other, suffix)
+                  for suffix in [''] + [s for _d, s, _c in _BSA_SPECS]}
+    return sorted(p for p in found if p.is_file())
 
-    A later run needing the loader slot again would otherwise re-create
-    `<stem>_loader.esl` over a stale `<stem>_loader.bsa` and serve the old
-    conversion's assets.  Pre-rename `oblivion_loader*` files are swept too,
-    and the stem is glob-escaped so a `[` in it cannot hide the files.
+
+def _sweep_stale(plugin_dir: Path, stem: str, other_stems: list,
+                 results: dict) -> None:
+    """Delete archives and loaders this run did not write.
+
+    See: docs/commentary/asset_convert_bsa.md#pack-layout
     """
     written = {Path(p).name.lower() for p in results['packed']}
-    loaders = {Path(p).name for p in results['loaders']}
-    stale_candidates = sorted(
-        set(plugin_dir.glob(f'{_glob.escape(stem)}_loader*'))
-        | set(plugin_dir.glob('oblivion_loader*'))
-    )
-    for stale in stale_candidates:
-        suffix = stale.suffix.lower()
-        if suffix not in ('.bsa', '.esl'):
+    loaders = {Path(p).name.lower() for p in results['loaders']}
+    for stale in _stale_candidates(plugin_dir, stem, other_stems):
+        kind = stale.suffix.lower()
+        if kind not in ('.bsa', '.esl'):
             continue
-        keep = (stale.name in loaders if suffix == '.esl'
-                else stale.name.lower() in written)
-        if not keep:
+        if stale.name.lower() not in (loaders if kind == '.esl' else written):
             stale.unlink()
             print(f"  CLEAN {stale.name}  (no longer needed)")
 
@@ -436,6 +441,38 @@ def _out_root(output_dir, plugin: str, export_root=None):
                                str(export_root) if export_root else None)
     except ImportError:
         return Path(output_dir) / plugin
+
+
+def archive_stem(plugin: str, export_root) -> str:
+    """The stem a plugin's archives are named for: the mod member it builds on.
+
+    Follows the plugin's masters while they belong to its own imported mod; the
+    member reached masters no other member, so it is loaded whenever any of
+    them is. A plugin that masters no member is its own stem.
+    See: docs/commentary/asset_convert_bsa.md#one-archive-set-per-mod
+    """
+    members = {m.lower(): m for m in
+               source_registry.group_members(export_root, plugin)}
+    cur, seen = plugin, set()
+    while cur.lower() not in seen:
+        seen.add(cur.lower())
+        up = [members[m.lower()] for m in masters_from_export_header(
+            str(record_dir(export_root, cur))) if m.lower() in members]
+        if not up:
+            break
+        cur = up[0]
+    return Path(cur).stem
+
+
+def _stale_stems(plugin: str, export_root, stem: str) -> list:
+    """Stems of the mod's other plugins whose archives `stem`'s set now replaces."""
+    return sorted({Path(m).stem for m in source_registry.group_members(
+        export_root, plugin) if archive_stem(m, export_root) == stem} - {stem})
+
+
+def _archive_name(stem: str, suffix: str) -> str:
+    """`<stem> - <suffix>.bsa`, or `<stem>.bsa` for the main archive."""
+    return f"{stem} - {suffix}.bsa" if suffix else f"{stem}.bsa"
 
 
 def _find_bsarch(bsarch_path, results: dict):
@@ -545,7 +582,7 @@ def _pack_spec(plugin_dir, stem, spec, files, bsarch, size_limit, results):
     See: docs/commentary/asset_convert_bsa.md#pack-bsas
     """
     subdir_names, bsa_suffix, compress = spec
-    base_name = f"{stem} - {bsa_suffix}.bsa" if bsa_suffix else f"{stem}.bsa"
+    base_name = _archive_name(stem, bsa_suffix)
     if not files:
         print(f"  SKIP  {base_name} (no source content)")
         results['skipped'].append(base_name)
@@ -558,8 +595,7 @@ def _pack_spec(plugin_dir, stem, spec, files, bsarch, size_limit, results):
               f"-> {len(bins)} archives")
     for bin_idx, entries in enumerate(bins):
         lstem = loader_stem(stem, bin_idx - 1) if bin_idx else stem
-        bsa_path = plugin_dir / (
-            f"{lstem} - {bsa_suffix}.bsa" if bsa_suffix else f"{lstem}.bsa")
+        bsa_path = plugin_dir / _archive_name(lstem, bsa_suffix)
         _pack_bin(plugin_dir, bsa_path, entries, spec, bsarch, size_limit,
                   results, bin_idx)
     return len(bins) - 1
@@ -624,12 +660,14 @@ def pack_bsas(
     """Pack the plugin's output folder into Skyrim SE BSAs; the results dict.
 
     `<stem>.bsa` takes meshes/ plus the misc dirs and `<stem> - Textures.bsa`
-    takes textures/, overflow spilling into loader-mounted archives.
+    takes textures/, overflow spilling into loader-mounted archives; `<stem>`
+    comes from `archive_stem`.
     `export_dir` is the RECORD dir (it names the masters), `manifest_dir`
     holds `textures_used.txt`, and `export_root` resolves the output folder.
     Given an `export_dir` and meshes but no manifest, it refuses. Returns packed,
     skipped, errors and loaders lists.
     See: docs/commentary/asset_convert_bsa.md#pack-bsas
+    See: docs/commentary/asset_convert_bsa.md#pack-layout
     """
     results: dict = {'packed': [], 'skipped': [], 'errors': [], 'loaders': []}
     source_name = Path(source_file).name
@@ -648,12 +686,14 @@ def pack_bsas(
         _exempt_pruned(collected, keep, (export_dir, output_dir, export_root))
     if not case_gate(plugin_dir, collected, results):
         return results
-    stem = Path(source_name).stem
+    root = export_root or _DEFAULT_EXPORT
+    stem = archive_stem(source_name, root)
     loaders_needed = max(
         [_pack_spec(plugin_dir, stem, spec, files, bsarch, size_limit, results)
          for spec, files in zip(specs, collected)] + [0])
     _write_loaders(plugin_dir, stem, source_name, loaders_needed, results)
-    _remove_stale_overflow(plugin_dir, stem, results)
+    _sweep_stale(plugin_dir, stem, _stale_stems(source_name, root, stem),
+                 results)
     return results
 
 

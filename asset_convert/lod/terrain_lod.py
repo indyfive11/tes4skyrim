@@ -24,6 +24,7 @@ from pathlib import Path
 
 import numpy as np
 
+from core.plugin_masters import master_dirs, masters_from_export_header
 from core.worker_budget import worker_count
 
 # Apply all PyFFI patches (time.clock fix, nif.xml condition fixes) before import
@@ -261,38 +262,6 @@ def _scan_wrld_block(raw, include_children: bool):
     return ranked
 
 
-def _master_record_dir(export_dir, master: str):
-    """Where `master`'s records live, given any plugin's record folder.
-
-    Masters used to resolve as `export_dir.parent / master`. That holds only
-    while every plugin owns a top-level folder; an imported mod's plugins are
-    nested inside their mod's folder, making `.parent` the mod rather than the
-    export root.
-    """
-    import os as _os
-    from output_layout import export_root_of, record_dir as _rd
-    root = export_root_of(export_dir)
-    got = _rd(root, master)
-    if _os.path.isdir(got):
-        return got
-    return root / master
-
-
-def master_names(export_dir: Path):
-    """The TES4 master file names listed in an export's _HEADER.txt."""
-    header = Path(export_dir) / '_HEADER.txt'
-    if not header.is_file():
-        return []
-    names = []
-    for line in header.read_text(encoding='utf-8', errors='replace').splitlines():
-        if line.startswith('Master['):
-            _, _, val = line.partition('=')
-            val = val.strip()
-            if val:
-                names.append(val)
-    return names
-
-
 def _scan_cell_coords(esm_path: Path, coords: dict):
     """Collect {cell FormID -> (x, y)} from every CELL carrying XCLC.
 
@@ -406,8 +375,8 @@ def worldspace_edids(export_dir):
                 edid_by_fid.setdefault(cur_fid, line[9:].strip())
 
     _scan(export_dir)
-    for master in reversed(master_names(export_dir)):
-        _scan(_master_record_dir(export_dir, master))
+    for mdir in reversed(master_dirs(export_dir)):
+        _scan(Path(mdir))
     return edid_by_fid
 
 
@@ -473,7 +442,8 @@ def shipped_lod_worldspaces(export_dir: Path):
 def export_worldspace_renames(export_dir) -> dict:
     """Worldspace renames for `export_dir`'s plugin and its header's masters."""
     from core.worldspace_names import renames_for
-    return renames_for([Path(export_dir).name, *master_names(export_dir)])
+    return renames_for([Path(export_dir).name,
+                        *masters_from_export_header(str(export_dir))])
 
 
 def parse_land_records(esm_path: Path, worldspace_edid: str = 'TES4Tamriel',

@@ -69,6 +69,9 @@ _KINDS = (
     ('activate', ACTIVATE),
 )
 
+#: Export files whose records can issue an AI command: scripts, dialogue results, actors.
+_AI_COMMAND_SOURCES = ('SCPT', 'DIAL', 'INFO', 'NPC_', 'CREA')
+
 #: How many actors can run one package kind at the same time.
 _SLOTS = 8
 
@@ -169,9 +172,26 @@ def pack_record_for(kind: str, slot: str, template, formid: int,
     return pack_record('PACK', formid, 0, subs)
 
 
-def write_ai_packages(writer, side_dir: str, plugin_name: str) -> int:
+def _issues_ai_commands(export_dir: str) -> bool:
+    """Whether the export authors any record that can run a TES3 AI command."""
+    return any(os.path.isfile(os.path.join(export_dir, f'{sig}.txt'))
+               for sig in _AI_COMMAND_SOURCES)
+
+
+def write_ai_packages(writer, side_dir: str, plugin_name: str,
+                      export_dir: str) -> int:
     """Mint the AI quest, its aliases and one PACK per slot, and stage the
-    alias table the runtime fills. Returns how many packages were written."""
+    alias table the runtime fills. Returns how many packages were written.
+
+    A plugin authoring none of `_AI_COMMAND_SOURCES` gets no pool, and an
+    earlier build's table is deleted.
+    See: docs/commentary/morrowind_runtime.md#ai-packages-are-real-packages
+    """
+    table = os.path.join(side_dir, ALIASES_TABLE)
+    if not _issues_ai_commands(export_dir):
+        if os.path.isfile(table):
+            os.remove(table)
+        return 0
     quest_fid = writer.derive_formid(_QUEST_SITE, _QUEST_EDID)
     pack_ids = {slot: writer.derive_formid(_PACK_SITE, slot)
                 for slot in _SLOT_NAMES}
@@ -186,7 +206,6 @@ def write_ai_packages(writer, side_dir: str, plugin_name: str) -> int:
     lines += [f'pack.{slot}={plugin_name}|{pack_ids[slot]:08X}'
               for slot in _SLOT_NAMES]
     lines += [f'{name}={index}' for index, name in enumerate(_ALIAS_NAMES)]
-    with open(os.path.join(side_dir, ALIASES_TABLE), 'w',
-              encoding='utf-8') as handle:
+    with open(table, 'w', encoding='utf-8') as handle:
         handle.write('\n'.join(lines) + '\n')
     return len(pack_ids)

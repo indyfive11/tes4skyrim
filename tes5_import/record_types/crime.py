@@ -21,6 +21,8 @@ import re
 import struct
 from collections import Counter
 
+from core.plugin_masters import (master_dir, master_index_map,
+                                 masters_from_export_header)
 from core.worldspace_names import (converted_worldspace_edid,
                                    converted_worldspace_name, renames_for)
 from output_layout import paths
@@ -29,8 +31,6 @@ from ..base.owned_records import WELL_KNOWN_PROPERTIES
 from ..base.text_reader import get_int, get_str, remap_formid
 from ..base.writer import (pack_formid_subrecord, pack_record,
                            pack_string_subrecord, pack_subrecord)
-from ..overrides.nested import (export_master_names, export_root,
-                                master_export_dir)
 
 #: Where TESRuntime reads its sidecars, under a plugin's output folder.
 SIDECAR_DIR = os.path.join('SKSE', 'Plugins', 'TESRuntime')
@@ -134,19 +134,15 @@ class _Masters:
 
     def __init__(self, export_dir: str, master_export: dict, output_root: str):
         """Index every master's own master list and read its sidecar."""
-        self.names = export_master_names(export_dir)
+        self.names = masters_from_export_header(export_dir)
         self.records = master_export or {}
-        lower = [n.lower() for n in self.names]
-        root = export_root(export_dir)
         self.maps, self.sidecars, self.renames = [], [], []
         for slot, name in enumerate(self.names):
-            own = export_master_names(master_export_dir(root, name))
-            index = {len(own): slot}
-            index.update({k: lower.index(s.lower()) for k, s in enumerate(own)
-                          if s.lower() in lower})
-            self.maps.append(index)
+            folder = master_dir(export_dir, name)
+            self.maps.append(master_index_map(folder, slot, self.names))
             self.sidecars.append(read_sidecar(name, output_root))
-            self.renames.append(renames_for([name, *own]))
+            self.renames.append(
+                renames_for([name, *masters_from_export_header(folder)]))
 
     def get(self, raw: int) -> dict:
         """The master record this plugin names `raw`, or {}."""

@@ -522,6 +522,11 @@ class ChainedMasterIndex:
     def __len__(self) -> int:
         return len(self.formids())
 
+    def __bool__(self) -> bool:
+        """Whether any master defines a record, without `__len__`'s full-id walk."""
+        return any((f >> 24) & 0xFF == idx.own_index
+                   for idx in self._by_slot.values() for f in idx._offsets)
+
     def formids(self) -> set:
         return {(slot << 24) | (f & 0x00FFFFFF)
                 for slot, idx in self._by_slot.items()

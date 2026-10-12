@@ -75,20 +75,30 @@ def configure_multiprocessing() -> None:
 
     import multiprocessing
 
-    # Prefer pythonw.exe next to the current interpreter so workers have no
-    # console. Fall back silently if it is missing (unusual embedded installs).
-    exe = sys.executable
-    if exe.lower().endswith("python.exe"):
-        candidate = os.path.join(os.path.dirname(exe), "pythonw.exe")
-        if os.path.isfile(candidate):
-            exe = candidate
-
     try:
-        multiprocessing.set_executable(exe)
+        multiprocessing.set_executable(_worker_executable())
     except (RuntimeError, OSError):
         pass
 
     _mp_configured = True
+
+
+def _worker_executable() -> str:
+    """The console-less ``pythonw.exe`` of the BASE interpreter, else
+    ``sys.executable``. A venv's ``pythonw.exe`` is a redirector stub whose
+    re-launch drops the pool's handles, so workers die at start; the base one
+    is told the venv by ``__PYVENV_LAUNCHER__``, as CPython's spawner does.
+
+    See: docs/commentary/performance.md#venv-pool-workers
+    """
+    exe = sys.executable
+    base = getattr(sys, "_base_executable", exe) or exe
+    candidate = os.path.join(os.path.dirname(base), "pythonw.exe")
+    if not exe.lower().endswith("python.exe") or not os.path.isfile(candidate):
+        return exe
+    if os.path.normcase(base) != os.path.normcase(exe):
+        os.environ["__PYVENV_LAUNCHER__"] = exe
+    return candidate
 
 
 _wine_bin = None

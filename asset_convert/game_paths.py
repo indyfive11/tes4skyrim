@@ -20,6 +20,7 @@ import os
 from pathlib import Path
 
 from asset_convert.case_paths import split_rel
+from core.plugin_masters import master_dir, masters_from_export_header
 
 __all__ = ["win_join", "DEFAULT_NAMESPACE", "namespace_for",
            "set_namespace", "current_namespace", "owns_namespace"]
@@ -36,34 +37,19 @@ NAMESPACE_ENV = 'TESCONV_ASSET_NAMESPACE'
 _ACTIVE = {'ns': (os.environ.get(NAMESPACE_ENV) or DEFAULT_NAMESPACE).lower()}
 
 
-def _export_root(export_dir: Path) -> Path:
-    """The export ROOT above `export_dir` (`export_root_of`), never `.parent`.
-
-    See: docs/commentary/asset_convert_texture.md#export-root-by-marker
-    """
-    from output_layout import export_root_of
-    return export_root_of(export_dir)
-
-
 def _chain_root(export_dir: Path) -> Path:
     """The masterless plugin at the root of this plugin's master chain.
 
-    A master is resolved through `record_dir`, never by joining its name onto
-    the export root: an imported mod's plugins share ONE folder named for the
-    MOD, so the plain join misses them and the walk stops at the wrong plugin.
-    Both imports are local because each module reaches back into this package.
+    See: docs/reference/pipeline.md#master-resolution
     """
-    from asset_convert.lod.terrain_lod import master_names
-    from output_layout import record_dir
-    root = _export_root(export_dir)
     seen = set()
     cur = export_dir
     while cur is not None and cur.name.lower() not in seen:
         seen.add(cur.name.lower())
-        masters = [m for m in master_names(cur) if m]
+        masters = masters_from_export_header(str(cur))
         if not masters:
             break
-        dirs = [Path(record_dir(str(root), m)) for m in masters]
+        dirs = [Path(master_dir(cur, m)) for m in masters]
         nxt = next((d for d in dirs
                     if d.is_dir() and d.name.lower() not in seen), None)
         if nxt is None:

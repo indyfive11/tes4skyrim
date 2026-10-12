@@ -28,7 +28,9 @@ override's source id directly.
 
 import json
 import os
-from output_layout import paths, record_dir
+
+from core.plugin_masters import master_export_dir, master_index_map
+from output_layout import paths
 
 MANIFEST_VERSION = 1
 
@@ -56,26 +58,7 @@ class MissingManifestError(RuntimeError):
     """A master's companion manifest is required but absent or stale."""
 
 
-def master_names(export_dir: str) -> list:
-    """A plugin's TES4 master names, in load order, from its export header."""
-    header = os.path.join(export_dir, '_HEADER.txt')
-    if not os.path.isfile(header):
-        return []
-    names = []
-    with open(header, 'r', encoding='utf-8') as f:
-        for line in f:
-            if line.startswith('Master['):
-                _, _, val = line.partition('=')
-                names.append(val.strip())
-    return names
-
-
-def _master_export_dir(export_root, name: str) -> str:
-    """Where master `name`'s exported records live under `export_root`."""
-    return str(record_dir(export_root, name))
-
-
-def _index_map(export_root: str, name: str, slot: int, slot_of: dict,
+def _index_map(export_root: str, name: str, slot: int, names: list,
                new_master_count: int) -> tuple:
     """(source-space map, output-space map) for one master's manifest.
 
@@ -95,15 +78,7 @@ def _index_map(export_root: str, name: str, slot: int, slot_of: dict,
     """
     if not export_root:
         return None
-    # Not a plain join: an imported mod's plugins live inside their mod's
-    # shared folder, so a master that IS exported reads as missing here and the
-    # id remap silently falls back to the verbatim merge.
-    own = master_names(_master_export_dir(export_root, name))
-    src = {len(own): slot}
-    for k, sub in enumerate(own):
-        target = slot_of.get(sub.lower())
-        if target is not None:
-            src[k] = target
+    src = master_index_map(master_export_dir(export_root, name), slot, names)
     out = {k + new_master_count: v + new_master_count for k, v in src.items()}
     return src, out
 
@@ -203,9 +178,6 @@ def load_master_manifests(masters: list, tes4_master_count: int,
         return None
 
     names = masters[len(masters) - tes4_master_count:]
-    # This plugin's own TES4 source space: master k is named by index byte k.
-    slot_of = {n.lower(): i for i, n in enumerate(names)}
-    # New (vanilla) masters prepended by conversion, e.g. Skyrim.esm.
     new_master_count = len(masters) - tes4_master_count
     manifest = MasterManifest()
     missing = []
@@ -215,7 +187,7 @@ def load_master_manifests(masters: list, tes4_master_count: int,
         if not os.path.isfile(path):
             missing.append((name, path))
             continue
-        manifest.load(path, _index_map(export_root, name, slot, slot_of,
+        manifest.load(path, _index_map(export_root, name, slot, names,
                                        new_master_count))
 
     if missing:

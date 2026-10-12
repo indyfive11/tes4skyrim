@@ -139,6 +139,51 @@ def test_pack_bsas_resolves_the_output_folder_from_the_export_root(tmp_path):
     assert _out_root(out, 'A.esm', exp / 'My Pack' / 'A.esm').name != 'My Pack'
 
 
+def _headers(exp, masters_of):
+    """Write `_HEADER.txt` for each {plugin: [masters]} at its record dir."""
+    from output_layout import record_dir
+    for plugin, masters in masters_of.items():
+        rec = record_dir(exp, plugin)
+        rec.mkdir(parents=True, exist_ok=True)
+        (rec / '_HEADER.txt').write_text(''.join(
+            f'Master[{i}]={m}\n' for i, m in enumerate(masters)),
+            encoding='utf-8')
+
+
+def test_one_archive_stem_for_every_plugin_of_a_mod(tmp_path):
+    """Packing Morrowind_ob.esp overwrote the ESM's same-named archives.
+
+    A member that masters no other member keeps its own name, even beside a
+    registered one that was never converted (Aesthesia's grass plugins).
+    """
+    from asset_convert.sources.bsa_pack import archive_stem
+
+    exp = _fake_group(tmp_path, ['Mod.esm', 'Mod.esp', 'Addon.esp',
+                                 'Solo.esp', 'Unconverted.esp'])
+    _headers(exp, {'Mod.esm': ['Oblivion.esm'],
+                   'Mod.esp': ['Oblivion.esm', 'Mod.esm'],
+                   'Addon.esp': ['Mod.esm'],
+                   'Solo.esp': ['Oblivion.esm']})
+    assert {archive_stem(p, exp)
+            for p in ('Mod.esm', 'Mod.esp', 'Addon.esp')} == {'Mod'}
+    assert archive_stem('Solo.esp', exp) == 'Solo'
+    assert archive_stem('Oblivion.esm', exp) == 'Oblivion'
+
+
+def test_pack_sweeps_a_sibling_stems_old_archives(tmp_path):
+    """An older build packed each plugin under its own stem; those copies go."""
+    from asset_convert.sources.bsa_pack import _sweep_stale
+
+    out = tmp_path / 'My Pack'
+    out.mkdir()
+    for name in ('Mod.bsa', 'Addon.bsa', 'Addon - Textures.bsa',
+                 'Addon_loader.esl', 'Other.bsa'):
+        (out / name).write_bytes(b'x')
+    _sweep_stale(out, 'Mod', ['Addon'],
+                 {'packed': [str(out / 'Mod.bsa')], 'loaders': []})
+    assert sorted(p.name for p in out.iterdir()) == ['Mod.bsa', 'Other.bsa']
+
+
 # ---------------------------------------------------------------------------
 #  Assets vs records
 # ---------------------------------------------------------------------------
@@ -224,7 +269,7 @@ def test_master_lookups_all_agree_on_the_export_root(tmp_path):
     silently: dropped manifest entries, no voice-type adoption, no inherited
     creature projects -- each with at most a warning.
     """
-    from tes5_import.overrides.nested import export_root, master_export_dir
+    from core.plugin_masters import export_root, master_export_dir
 
     exp = _fake_group(tmp_path, ['A.esm', 'B.esp'])
     rec = exp / 'My Pack' / 'A.esm'
@@ -241,6 +286,24 @@ def test_master_lookups_all_agree_on_the_export_root(tmp_path):
     assert export_root(str(plain)) == str(exp)
 
 
+def test_script_stage_finds_a_master_outside_the_mod_folder(tmp_path):
+    """Morrowind_ob.esm imported as a mod lost Oblivion.esm: 939 compile errors.
+
+    The script stage joined the master's name onto the record dir's PARENT,
+    which for a mod is the mod folder, and skipped the miss silently.
+    """
+    from script_convert.cross_ref import _export_dirs_with_masters
+    from core.plugin_masters import master_chain
+
+    exp = _fake_group(tmp_path, ['Mod.esm', 'Mod.esp'])
+    _headers(exp, {'Oblivion.esm': [], 'Mod.esm': ['Oblivion.esm'],
+                   'Mod.esp': ['Oblivion.esm', 'Mod.esm']})
+    esp = str(exp / 'My Pack' / 'Mod.esp')
+    assert master_chain(esp) == ['Oblivion.esm', 'Mod.esm']
+    assert _export_dirs_with_masters(esp) == [
+        str(exp / 'Oblivion.esm'), str(exp / 'My Pack' / 'Mod.esm'), esp]
+
+
 def test_import_main_master_dirs_match_load_master_export(tmp_path):
     """`master_export_dirs` exists to mirror `load_master_export` exactly.
 
@@ -249,7 +312,7 @@ def test_import_main_master_dirs_match_load_master_export(tmp_path):
     actor fell through to the Imperial default.
     """
     from tes5_import.pipeline import master_export_dirs
-    from tes5_import.overrides.nested import export_root, master_export_dir
+    from core.plugin_masters import export_root, master_export_dir
 
     exp = _fake_group(tmp_path, ['A.esm', 'B.esp'])
     rec = exp / 'My Pack' / 'A.esm'

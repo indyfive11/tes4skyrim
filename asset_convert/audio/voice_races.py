@@ -38,6 +38,8 @@ See: docs/commentary/asset_convert_audio.md#race-identity-spans-the-masters
 
 from pathlib import Path
 
+from core.plugin_masters import master_dirs
+
 __all__ = ['voice_key', 'vtyp_edid', 'load_race_voices', 'RaceVoices',
            'master_race_dirs']
 
@@ -99,28 +101,9 @@ def iter_records(txt: Path):
 
 
 def master_race_dirs(export_dir: Path) -> list:
-    """Record directories of each master named in `_HEADER.txt`, load order.
-
-    Mirrors how the importer resolves masters (`export_root_of` +
-    `master_record_dir`), so both halves of the voice pipeline read the same
-    RACE.txt and cannot disagree on a voice type. `export_dir.parent / name`
-    missed every master of a nested mod, whose parent is its MOD folder.
-    See: docs/commentary/tes5_import_mod_merge.md#export-root-resolution
-    """
-    from output_layout import export_root_of, master_record_dir
-    export_dir = Path(export_dir)
-    header = export_dir / '_HEADER.txt'
-    if not header.is_file():
-        return []
-    try:
-        lines = header.read_text(encoding='utf-8', errors='replace').splitlines()
-    except OSError:
-        return []
-    names = [ln.partition('=')[2].strip() for ln in lines
-             if ln.startswith('Master[')]
-    root = export_root_of(export_dir)
-    dirs = [Path(master_record_dir(root, n)) for n in names]
-    return [d for d in dirs if d.is_dir() and d != export_dir]
+    """Each exported master's folder, resolved as the importer resolves it."""
+    return [Path(d) for d in master_dirs(export_dir)
+            if Path(d) != Path(export_dir)]
 
 
 def _race_dirs(export_dir: Path) -> list:

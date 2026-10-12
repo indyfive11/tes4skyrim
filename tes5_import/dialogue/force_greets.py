@@ -13,6 +13,7 @@ import struct
 
 from script_convert.constants import FORCE_GREET_QUEST
 from script_convert.pipeline import build_vmad_package_fragment
+from ..base.master_export import values_of
 from ..packages.converter import (ANY_TIME_PSDT, build_pkdt,
                                   FORCEGREET_INTERRUPT, force_greet_inputs,
                                   Inputs, package_markers, SPEED_RUN)
@@ -45,8 +46,7 @@ _ALIAS_FNAM = 0x0000000A
 def dial_index(by_type: dict, master_export: dict = None) -> dict:
     """Lowercased DIAL EditorID -> record, the plugin's own over its masters'."""
     out = {}
-    masters = [r for r in (master_export or {}).values()
-               if r.get('Signature') == 'DIAL']
+    masters = values_of(master_export, 'DIAL')
     for rec in masters + by_type.get('DIAL', []):
         edid = get_str(rec, 'EditorID', '').lower()
         if edid:

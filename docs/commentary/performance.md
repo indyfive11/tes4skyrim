@@ -5,6 +5,7 @@
 ## Contents
 
 - [Low-core machines: where the time actually goes (measured 2026-08-09)](#low-core-machines-where-time)
+- [Import: each read happens once per run (measured 2026-09-30)](#import-once-per-run)
 - [Parallelism rules (learned 2026-07-16)](#parallelism-rules)
 - [FormID determinism — the save-game contract (rewritten 2026-08-17)](#formid-determinism-save-game-contract)
 - [One heavy job at a time](#one-heavy-job-at-a-time)
@@ -568,6 +569,30 @@ properly parallel. Two findings:
   1,301 of those tiles (82%).** Budget accordingly — and do not put a timeout on
   a real LOD build.
 
+## Import: each read happens once per run (measured 2026-09-30)
+<a id="import-once-per-run"></a>
+
+A cProfile of `TR_Mainland.esm --import-only` (navmesh cached, 4m12s) found
+the same inputs read over and over. The shared readers that replaced them
+live in memory for the run only, and each is dropped after its last use:
+`folder_tables` once the sidecar is staged; `gather` trimmed to `sounds` then,
+and dropped after the runtime sound table. Kept whole for the run they
+measured 246 MB (`gather`) + 63 MB (`folder_tables`) on TR_Mainland; the
+signature index holds only positions and keys.
+
+| Reader | What it replaced |
+|---|---|
+| `dialogue/morrowind_sidecar_source.gather` (one per chain) | The TES3 binaries parsed twice: sidecar `gather` + vendor `read_tables` (8.2 s per pass, 1.7 GB to keep raw, so the chain is FOLDED once and `table_records` keeps only the 8 types `read_tables` needs); the patch's sound table parsed the vanilla chain a third time |
+| `dialogue/morrowind_placements.folder_tables` (one per export folder) | `REFR.txt` (1.24M refs) read four times per folder by markers, instances, placed refs and travel; CELL.txt and the scripted exports twice |
+| `base/master_export.MasterExport.of` (one signature index) | ~40 sites walking every master record (483k-1.6M) to filter by type |
+| `navmesh/pool._records_of` (answers memoized until jobs are gathered) | REFR/CELL/base types merged twice (teleport grid, then job gathering) |
+| `pipeline_records._children_by_cell` | REFR/ACHR/LAND/PGRD bucketed by cell separately in the CELL and WRLD builders |
+
+`index_convertible_records` (FO3/FNV FLST members) is skipped for a plugin
+with no FLST/IPCT/EXPL. Result on TR_Mainland: record conversion 150.7 s ->
+101.2 s, total 4m12s -> 3m21s; the Morrowind chain (7 plugins) rebuilt
+byte-identical (ESMs and every sidecar table).
+
 ## Parallelism rules (learned 2026-07-16)
 <a id="parallelism-rules"></a>
 
@@ -610,6 +635,15 @@ properly parallel. Two findings:
   `configure_multiprocessing()` therefore defaults `OPENBLAS_NUM_THREADS` to 1
   before anything imports numpy. The pool gives the parallelism, and 29
   processes × 32 BLAS threads would only oversubscribe the cores anyway.
+- <a id="venv-pool-workers"></a>**In a venv, workers run the BASE `pythonw.exe`.**
+  A venv's `Scripts\pythonw.exe` is a redirector stub that re-launches the base
+  interpreter as a second process, and the pool's inherited handles do not
+  survive it: every worker died at start, surfacing as `BrokenProcessPool` from
+  `parse_export_directory` on the first `--import-only` under the repo's
+  `.venv` (no worker traceback, as `pythonw` has no stderr). CPython's own
+  spawner bypasses the stub only when the executable IS `sys.executable`, by
+  launching `sys._base_executable` with `__PYVENV_LAUNCHER__` set, so
+  `subprocess_flags._worker_executable` does the same for the console-less one.
 
 ## FormID determinism — the save-game contract (rewritten 2026-08-17)
 <a id="formid-determinism-save-game-contract"></a>

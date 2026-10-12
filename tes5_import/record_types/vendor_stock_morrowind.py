@@ -11,6 +11,7 @@ See: docs/commentary/tes5_import_actors.md#morrowind-merchant-stock
 
 import struct
 
+from ..base.master_export import records_of
 from ..dialogue.morrowind_sidecar import is_tes3_export
 from .common import get_float, get_formid, get_int
 
@@ -45,8 +46,7 @@ def _is_stock(base: dict) -> bool:
 
 def _bases(by_type: dict, master_export: dict) -> dict:
     """{TES4 FormID string: record} for every stock base in scope, own ones last."""
-    out = {key: rec for key, rec in (master_export or {}).items()
-           if rec.get('Signature') in _STOCK_BASES}
+    out = dict(records_of(master_export, *_STOCK_BASES))
     for sig in _STOCK_BASES:
         out.update((rec.get('FormID', ''), rec) for rec in by_type.get(sig, []))
     return out

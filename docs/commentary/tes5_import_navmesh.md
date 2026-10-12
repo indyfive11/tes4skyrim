@@ -234,15 +234,28 @@ or 2 is set holds an NVEX index in that edge, not a neighbour triangle (xEdit
 `wbNVTREdgeToStr`). The exporter dropped NVEX and the parser ignored the flag,
 so a linked edge either vanished or, when its index was below the triangle
 count, joined an unrelated triangle; the geometric seam pass then linked only
-241 of 2,727 exterior meshes (9%), though FalloutNV.esm authors links on
-2,105 navmeshes. NPCs could not cross an exterior cell border: Sunny
+241 of the 2,727 exterior cells it counted (9%), though FalloutNV.esm authors
+94,467 links on 4,105 navmeshes (4,095 exterior). NPCs could not cross an
+exterior cell border: Sunny
 Smiles's `VCG02SunnyTravelToWell1` started and she never moved. Each authored
 link is now written after the mesh is packed, through `NavMeshView.add_link`
 with the source link type, to the target's output FormID
 (`derive_formid('NAVM', (cell, source FormID))`, mapped for every navmesh
 before any is converted). `build_edge_links` only fills border edges that
-carry no link, so it adds to them and never duplicates one. This lives in
-`record_types/`, outside the shared navmesh cache's tag.
+carry no link, so it adds to them and never duplicates one.
+
+<a id="every-mesh-in-a-cell"></a>**The seam pass keys every exterior mesh, not
+every cell** (`edge_links._exterior_views`, `_stitch_seams`). It used to index
+meshes by `(worldspace, grid)`, so a cell holding several kept only the last
+one, and `_prune_dead_links` then stripped every link into the dropped ones.
+That was invisible while every source had one exterior mesh per cell
+(Oblivion's splitter cuts interiors only, after this pass), but FalloutNV.esm
+has 990 exterior cells with 2 to 8 navmeshes (2,523 meshes, 59% of the
+exterior). With the authored links carried in, the pass deleted 14,485 of the
+94,467 across 1,466 meshes. Keyed per mesh, with each seam matched across
+every mesh on both sides at once, it loses none, and 4,097 of 4,260 exterior
+meshes end up linked (96%). With one mesh per cell the output is
+byte-identical to the old pass (3,238 FNV meshes, one per cell, compared).
 
 <a id="fallout-door-links-renumbered"></a>**FO3/FNV door links are renumbered
 like every other reference** (`navm_falloutnv.parse_door_links`). An authored

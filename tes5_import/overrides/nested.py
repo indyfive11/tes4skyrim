@@ -18,8 +18,13 @@ conversion runs (see export_diff for why that distinction is load-bearing).
 
 import os
 import struct
+import time
 from collections import Counter, namedtuple
 
+from output_layout import paths
+
+from core.plugin_masters import (export_root, master_chain, master_dir,
+                                 master_index_map, masters_from_export_header)
 from .diff import diff_records
 from .manifest import load_master_manifests
 from .builder import (RECONVERT_KEYS, apply_changes, join_subrecords,
@@ -35,6 +40,7 @@ from ..dialogue.converter import convert_INFO
 from ..record_types.actor_common import origin_gate, read_items
 from ..record_types.magic_variants import copy_editor_ids
 from ..record_types.world import convert_ACHR, convert_REFR, restamp_wrld_mnam
+from ..base.master_export import MasterExport
 from ..base.text_reader import (get_formid, get_int, get_str,
                                 parse_export_directory, remap_formid)
 from ..base.writer import (PluginWriter, RECORD_HEADER_SIZE, pack_group,
@@ -97,46 +103,59 @@ def _note(ctx, key: str) -> None:
         stats[key] += 1
 
 
-def export_master_names(export_dir: str) -> list:
-    """This plugin's TES4 master names, in load order, from its export header."""
-    header = os.path.join(export_dir, '_HEADER.txt')
-    if not os.path.isfile(header):
-        return []
-    names = []
-    with open(header, 'r', encoding='utf-8') as f:
-        for line in f:
-            if line.startswith('Master['):
-                _, _, val = line.partition('=')
-                names.append(val.strip())
-    return names
+def inherited_masters(export_dir: str, output_root: str) -> list:
+    """The converted masters of this plugin's masters, at any depth, that its
+    header omits, deepest first.
 
-
-def export_root(export_dir: str) -> str:
-    """The `export/` root, given any plugin's record folder (`export_root_of`).
-
-    See: docs/commentary/tes5_import_mod_merge.md#export-root-resolution
+    A support record a deeper master owns is adoptable only through a slot in
+    this plugin's own master list, so these are listed too.
+    See: docs/commentary/tes5_import_pipeline.md#phase-0-dependent-skips-support-records
     """
-    from output_layout import export_root_of
-    return str(export_root_of(export_dir))
+    listed = {name.lower() for name in masters_from_export_header(export_dir)}
+    return [name for name in master_chain(export_dir)
+            if name.lower() not in listed
+            and os.path.isfile(paths(name, out_root=output_root).esm)]
 
 
-def master_export_dir(root: str, name: str) -> str:
-    """Where master `name`'s records live under `root`.
+def reconcile_masters(masters: list, header: list, inherited: list) -> list:
+    """`masters` as Skyrim.esm, then `inherited`, then the export `header`'s.
 
-    Masters resolve as sibling directories, EXCEPT that an imported mod's
-    plugins live inside their mod's folder. Consulting the registry is what
-    lets a plugin master a resource pack's ESM after that pack moved into a
-    group folder; without it the master silently reads as missing and every
-    override is diffed against nothing.
+    The header is the authority on what this plugin was BUILT against; the
+    caller's binary-derived list can name files the conversion replaced.
+    `inherited` goes ahead of the header so every export index shifts by one
+    amount; the engine resolves a master by name, not by its place in the list.
+    See: docs/commentary/tes4_export_morrowind.md#masters
+    See: docs/commentary/tes5_import_pipeline.md#phase-0-dependent-skips-support-records
     """
-    try:
-        from output_layout import record_dir
-        got = record_dir(root, name)
-        if os.path.isdir(got):
-            return str(got)
-    except ImportError:
-        pass
-    return os.path.join(root, name)
+    if not header:
+        return masters
+    lowered = [name.lower() for name in masters]
+    kept = [] if lowered == [name.lower() for name in header] else [
+        name for name in masters if name.lower() == 'skyrim.esm']
+    merged = kept + inherited + header
+    if merged != masters:
+        print(f"  Masters (from export header): {', '.join(merged)}")
+    return merged
+
+
+def open_masters(export_dir: str, masters: list, output_root: str) -> tuple:
+    """(TES5 masters, header master count, OverrideContext or None) for an import."""
+    header = masters_from_export_header(export_dir)
+    inherited = inherited_masters(export_dir, output_root) if header else []
+    masters = reconcile_masters(masters, header, inherited)
+    if not header:
+        return masters, 0, None
+    print(f"  TES4 masters: {len(header)} "
+          f"(records below index {len(header):02X} are overrides)")
+    if inherited:
+        print(f"  Inherited masters (adopted from): {', '.join(inherited)}")
+    started = time.time()
+    ctx = OverrideContext(export_dir, masters, len(header), output_root,
+                          len(inherited))
+    print(f"  Master: {len(ctx.master_index)} converted records, "
+          f"{len(ctx.master_manifest)} manifest entries, "
+          f"{len(ctx)} exported records ({time.time() - started:.1f}s)")
+    return masters, len(header), ctx if len(ctx) else None
 
 
 def load_master_export(export_dir: str, shadowed: dict = None) -> dict:
@@ -149,25 +168,15 @@ def load_master_export(export_dir: str, shadowed: dict = None) -> dict:
 
     See: docs/commentary/tes5_import_override.md#re-keying-the-masters-ids
     """
-    names = export_master_names(export_dir)
-    if not names:
-        return {}
-    slot_of = {n.lower(): i for i, n in enumerate(names)}
-
-    root = export_root(export_dir)
-    out = {}
+    names = masters_from_export_header(export_dir)
+    out = MasterExport()
     for slot, name in enumerate(names):
-        mdir = master_export_dir(root, name)
+        mdir = master_dir(export_dir, name)
         if not os.path.isdir(mdir):
             print(f"  WARNING: master export not found ({mdir}); "
                   f"overrides cannot be diffed against it")
             continue
-        own = export_master_names(mdir)
-        remap = {len(own): slot}
-        for k, sub in enumerate(own):
-            target = slot_of.get(sub.lower())
-            if target is not None:
-                remap[k] = target
+        remap = master_index_map(mdir, slot, names)
         for rec in parse_export_directory(mdir):
             fid = rec.get('FormID')
             if not fid:
@@ -321,15 +330,17 @@ class OverrideContext:
     """Everything a plugin's import needs to emit overrides of its masters."""
 
     def __init__(self, export_dir: str, masters: list, num_tes4_masters: int,
-                 output_root: str):
-        """Index the converted masters and load their exports for diffing.
+                 output_root: str, inherited: int = 0):
+        """Load the masters' index, manifests and export for `export_dir`.
 
+        `inherited` counts the deeper masters listed just ahead of the header's
+        `num_tes4_masters`: indexed for adoption, never diffed against.
         `shadowed` maps a plugin-space FormID to the last live master export
         record under a later master's deleted copy.
         """
         self.export_dir = export_dir
         self.master_index = load_master_index(
-            masters, num_tes4_masters, output_root)
+            masters, num_tes4_masters + inherited, output_root)
         self.master_manifest = load_master_manifests(
             masters, num_tes4_masters, output_root,
             export_root=export_root(export_dir))

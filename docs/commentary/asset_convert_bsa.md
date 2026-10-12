@@ -6,6 +6,51 @@
 
 - [Staging past the Windows path limit](#staging-past-the-path-limit)
 - [What `pack_bsas` packs, and from which roots](#pack-bsas)
+- [One archive set per imported mod](#one-archive-set-per-mod)
+- [What a pack writes](#pack-layout)
+
+## <a id="pack-layout"></a>What a pack writes
+
+**Code:** `pack_bsas` and its helpers in `asset_convert/sources/bsa_pack.py`
+
+- **Where.** The output folder is resolved from the export ROOT
+  (`plugin_out_root`), never a plugin's record dir. A record dir holds no
+  `sources.json`, so the registry reads as empty and the folder resolves to
+  the pre-group `output/<plugin>/`, which does not exist for an imported mod.
+  The pack then aborted with "output directory not found".
+- **Which archives.** `<stem> - Textures.bsa` holds `textures/`. `<stem>.bsa`
+  holds `meshes/` plus every other non-empty top-level folder (sound, scripts,
+  …) except `SKSE/`, which stays loose (SKSE never sees an archived file).
+- **Overflow.** A spec whose files exceed the per-archive budget is binned; the
+  first bin keeps the auto-mounted name, and bin N is `<stem>_loader[_N-1]`.
+  A loader ESL mounts both its `.bsa` and its `- Textures.bsa`, so each spec
+  counts its own overflow and the specs share loader slots by index.
+- **Stale sweep.** Overflow archives and loaders a previous, larger run left are
+  removed. Otherwise a later run needing that loader slot again re-creates
+  `<stem>_loader.esl` over a stale `<stem>_loader.bsa` and serves assets from
+  the old conversion. `oblivion_loader*` is swept too, since loaders used to
+  carry that name for every plugin. The stem is `glob.escape`d because a plugin
+  name may hold `[` or `?`.
+
+## <a id="one-archive-set-per-mod"></a>One archive set per imported mod
+
+**Code:** `archive_stem` in `asset_convert/sources/bsa_pack.py`
+
+An imported mod's plugins share one `output/<Mod>/` folder, and a pack reads the
+whole folder, so each plugin's pack held the same assets. The archives were
+named for the plugin being packed. Morrowind_ob.esp therefore wrote
+`Morrowind_ob.bsa` / `Morrowind_ob - Textures.bsa` over the ESM's (same stem).
+Plugins with different stems got a second, duplicate set that Skyrim mounts
+twice. The archives are now named by following the packed plugin's masters
+while they belong to the same mod, up to the member that masters no other
+member. Every dependent packs the same set under that member's name, which is
+always loaded when they are. Archives and `_loader` plugins named for a
+dependent's own stem are deleted, since older builds wrote them. A member
+that masters no other member keeps its own name. Aesthesia registers many
+alternative grass plugins and converts one: a "root of the whole mod" rule
+named that one's archive after `Grass Bloodmoon.esp`, a plugin the user never
+loads, so it would never mount. Skyrim mounts `<stem>.bsa` for whichever
+extension is loaded (`Morrowind_ob.esm` or `.esp`).
 
 ## Staging past the Windows path limit
 <a id="staging-past-the-path-limit"></a>

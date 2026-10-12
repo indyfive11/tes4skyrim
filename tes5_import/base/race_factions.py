@@ -10,6 +10,7 @@ See: docs/commentary/tes5_import_conditions.md#plugin-authored-races
 
 import struct
 
+from .master_export import records_of
 from .equivalents import TES4_RACE_FID_TO_EDID
 from .text_reader import get_formid, get_str, remap_formid
 from .writer import pack_record, pack_string_subrecord, pack_subrecord
@@ -34,8 +35,7 @@ def race_faction(race_fid: int) -> int:
 def _races(by_type: dict, master_export: dict) -> dict:
     """{output-space FormID: RACE record}, this plugin's own overriding its masters'."""
     races = {remap_formid(int(k, 16), is_own_id=True): r
-             for k, r in (master_export or {}).items()
-             if r.get('Signature') == 'RACE'}
+             for k, r in records_of(master_export, 'RACE')}
     races.update((get_formid(r, 'FormID'), r) for r in by_type.get('RACE', ()))
     return races
 

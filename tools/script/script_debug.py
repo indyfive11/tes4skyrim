@@ -27,6 +27,8 @@ What it captures per script kind:
                 the ground truth for "did this dialogue reach the player"
   OBJECT        (--object) every event an object script receives, with `Self`
                 and its state variables — which events reach an item at all
+  PLACE         (--place-calls) every PlaceAtMe(): the form, the spawner's and
+                the new ref's position, and the new ref again 2s later
 
 Instrumentation is idempotent (a second run is a no-op) and is wiped by any
 `convert.py --scripts-only`, which is also how you revert.
@@ -220,6 +222,9 @@ _EVENT_RE = re.compile(r'^Event (\w+)\([^)]*\)\n', re.M)
 _STATE_VAR_RE = re.compile(r'^(?:Bool|Int|Float|ObjectReference)\s+(TES4_\w+)',
                            re.M)
 
+#: Globals a script reads: TES4 scripts sequence through them as often as through their own variables.
+_GLOBAL_PROP_RE = re.compile(r'^GlobalVariable Property (\w+)', re.M)
+
 
 def _object_block(log, tag, event, fields):
     """Trace one event's arrival with `Self` and the script's state; OnUpdate only on change.
@@ -260,7 +265,8 @@ def instrument_object(path, log, tag):
     if 'extends ObjectReference' in src.split('\n', 1)[0]:
         src += ''.join(f'\nEvent {sig}\nEndEvent\n' for sig in _ITEM_EVENTS
                        if f'Event {sig.split("(")[0]}(' not in src)
-    fields = _conditional_props(src) + _STATE_VAR_RE.findall(src)
+    fields = (_conditional_props(src) + _STATE_VAR_RE.findall(src)
+              + [f'{g}.GetValue()' for g in _GLOBAL_PROP_RE.findall(src)])
     src = _EVENT_RE.sub(lambda m: m.group(0) + _object_block(
         log, tag, m.group(1), fields), src)
     open(path, 'w', encoding='utf-8').write(src)
@@ -323,6 +329,41 @@ def instrument_say_calls(path, log, tag):
         return False
     new = _add_state(new)
     open(path, 'w', encoding='utf-8').write(new)
+    return True
+
+
+#: A bare `x.PlaceAtMe(Form, n)` statement as emitted by script_convert.
+_PLACE_RE = re.compile(
+    r'^(?P<indent>[ \t]*)(?P<call>(?P<obj>[\w.()]+)\.PlaceAtMe\((?P<form>\w+)[^\n]*\))[ \t]*$',
+    re.M)
+
+
+def _place_probe(m, log, tag, n):
+    """The statement rewritten to keep its result, trace it, and trace it again 2s later."""
+    ind, obj, form, r = m.group('indent'), m.group('obj'), m.group('form'), f'_dbgPlaced{n}'
+    where = (f'" at=" + {obj} + " z=" + {obj}.GetPositionZ() + " -> " + {r}'
+             f' + " z=" + {r}.GetPositionZ() + " 3d=" + {r}.Is3DLoaded()'
+             f' + " dead=" + ({r} as Actor).IsDead()')
+    return (f'{ind}ObjectReference {r} = {m.group("call")}\n'
+            f'{ind}Debug.TraceUser("{log}", "PLACE {tag} form={form}=" + {form} + {where})\n'
+            f'{ind}Utility.Wait(2.0)\n'
+            f'{ind}Debug.TraceUser("{log}", "PLACE+2s {tag} form={form}" + {where})')
+
+
+def instrument_place_calls(path, log, tag):
+    """Log every PlaceAtMe(): the form, where it went, and where the new ref is 2s later.
+
+    Separates "the spawn never ran" (no PLACE line) from "it ran but the
+    object landed somewhere unseen" (z below the floor, never 3D-loaded).
+    """
+    src = open(path, encoding='utf-8').read()
+    if f'"PLACE {tag} ' in src:
+        return False
+    count = iter(range(1_000_000))
+    new, hits = _PLACE_RE.subn(lambda m: _place_probe(m, log, tag, next(count)), src)
+    if not hits:
+        return False
+    open(path, 'w', encoding='utf-8').write(_add_state(new))
     return True
 
 
@@ -538,6 +579,9 @@ def _parse_args():
                     help='object script stem: trace every event it receives')
     ap.add_argument('--say-calls', action='store_true',
                     help='log every Actor.Say() in the touched scripts')
+    ap.add_argument('--place-calls', action='store_true',
+                    help='log every PlaceAtMe() in the touched scripts, and the '
+                         'placed ref 2s later')
     ap.add_argument('--log', default=None,
                     help='user-log name (default TES4Debug)')
     ap.add_argument('--no-compile', action='store_true')
@@ -597,6 +641,16 @@ def _instrument_says(d, log, touched, say_targets):
             print(f'  say-probes in {stem}')
 
 
+def _instrument_places(d, log, touched, stems):
+    """Add PlaceAtMe() probes to every selected script that spawns something."""
+    for stem in dict.fromkeys(stems):
+        path = os.path.join(d, stem + '.psc')
+        if os.path.isfile(path) and instrument_place_calls(path, log, _tag(stem)):
+            if stem not in touched:
+                touched.append(stem)
+            print(f'  place-probes in {stem}')
+
+
 def _compile_touched(plugin, touched, headers, log):
     """Compile the instrumented scripts; 0 on success."""
     print('Compiling...')
@@ -633,6 +687,8 @@ def main():
     _instrument_stems(args, d, log, touched, say_targets)
     if args.say_calls:
         _instrument_says(d, log, touched, say_targets)
+    if args.place_calls:
+        _instrument_places(d, log, touched, say_targets + args.object)
     print(f'\n{len(touched)} script(s) instrumented')
     if args.no_compile:
         return 0

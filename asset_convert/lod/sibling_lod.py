@@ -35,7 +35,8 @@ import shutil
 import struct
 from pathlib import Path
 
-from asset_convert.lod.terrain_lod import (shipped_lod_worldspaces, master_names)
+from asset_convert.lod.terrain_lod import shipped_lod_worldspaces
+from core.plugin_masters import masters_from_export_header as master_names
 from tes5_import.base.tes5_reader import FLAG_PERSISTENT, records, walk
 
 

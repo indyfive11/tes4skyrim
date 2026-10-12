@@ -81,8 +81,8 @@ plugin (`MorrowindRuntime.dll`) with a Morrowind-style menu. It is set up automa
 | **Morroblivion + patch** | [Morroblivion](https://morroblivion.com/), the fan remake of Morrowind in Oblivion, converted through the normal Oblivion path. |
 
 Morroblivion mode needs a compatibility patch. Choosing **Settings ▸ Morrowind source ▸ Morroblivion + patch** builds it
-for you from your Morrowind `Data Files` if it doesn't exist yet (convert `Morrowind_ob.esm` first). Choose it again while
-it's selected to rebuild the patch.
+for you from your Morrowind `Data Files` if it doesn't exist yet (convert `Morrowind_ob.esm` first). If the patch already
+exists, it asks whether to rebuild it.
 
 ---
 

@@ -3,7 +3,6 @@
 import mmap
 import os
 import re
-from pathlib import Path
 
 from script_convert.constants import (
     ACTOR_SIGS, PLACED_REF_SIGS, PLAYER_ALIAS_EXTENDS, SCHOOL_ENCHANT_SHADER,
@@ -15,9 +14,11 @@ from script_convert.command_rows import (
 from tes5_import.base.mesh_bounds import get_mesh_physics_flags
 from tes5_import.base.text_reader import parse_export_file, unescape_value
 from asset_convert.game_paths import current_namespace
+from core.plugin_masters import (
+    master_chain, master_dir, masters_from_export_header
+)
 from core.worker_budget import worker_count
 from core.worldspace_names import converted_worldspace_edid, renames_for
-from output_layout import assets_for, master_record_dir
 
 # ===========================================================================
 # Cross-reference graph builder
@@ -32,22 +33,6 @@ _SCAN_SKIP_SIGS = {'LAND', 'PGRD', 'ROAD'}
 _SCAN_CHUNK_BYTES = 16 * 1024 * 1024
 
 
-def master_names(export_dir) -> list:
-    """The TES4 master file names listed in an export's _HEADER.txt."""
-    header = Path(export_dir) / '_HEADER.txt'
-    if not header.is_file():
-        return []
-    names = []
-    for line in header.read_text(encoding='utf-8',
-                                 errors='replace').splitlines():
-        if line.startswith('Master['):
-            _, _, val = line.partition('=')
-            val = val.strip()
-            if val:
-                names.append(val)
-    return names
-
-
 def _scan_chain(export_dir: str) -> tuple:
     """(`_export_dirs_with_masters`, the worldspace renames that chain applies)."""
     dirs = _export_dirs_with_masters(export_dir)
@@ -58,28 +43,18 @@ def _export_dirs_with_masters(export_dir: str) -> list:
     """`export_dir` preceded by its masters' export dirs, deepest first.
 
     Masters come FIRST so the last-wins merge lets an overriding plugin's own
-    version of a record win.  The walk is transitive (a plugin's master may
-    itself have masters) and cycle-safe; masters with no export directory are
-    skipped silently.  A master resolves through `master_record_dir`, so a
-    nested mod's plugin and a lowercase header name both find it.
-    See: docs/commentary/asset_convert_paths.md#plugin-names
+    version of a record win. A master with no export is reported, not skipped silently.
+    See: docs/reference/pipeline.md#master-resolution
     """
-    root = Path(export_dir)
-    ordered: list = []
-    seen: set = set()
-
-    def visit(d: Path):
-        """Append `d` after every master it (transitively) names."""
-        key = str(d).lower()
-        if key in seen or not d.is_dir():
-            return
-        seen.add(key)
-        for name in master_names(d):
-            visit(Path(master_record_dir(assets_for(d).parent, name)))
-        ordered.append(str(d))
-
-    visit(root)
-    return ordered
+    dirs = []
+    for name in master_chain(export_dir):
+        d = master_dir(export_dir, name)
+        if os.path.isdir(d):
+            dirs.append(d)
+        else:
+            print(f"    WARNING: master export not found ({d}); "
+                  f"script references to {name}'s records will not resolve")
+    return dirs + [str(export_dir)]
 
 
 def _new_scan_out() -> dict:
@@ -304,8 +279,9 @@ def _index_remap(root_dir: str, export_dir: str):
     if os.path.normcase(os.path.abspath(export_dir)) == \
             os.path.normcase(os.path.abspath(root_dir)):
         return None
-    slot_of = {n.lower(): i for i, n in enumerate(master_names(root_dir))}
-    own = master_names(export_dir)
+    slot_of = {n.lower(): i
+               for i, n in enumerate(masters_from_export_header(root_dir))}
+    own = masters_from_export_header(export_dir)
     remap = {k: slot_of[n.lower()] for k, n in enumerate(own)
              if n.lower() in slot_of}
     self_slot = slot_of.get(os.path.basename(os.path.normpath(export_dir)).lower())

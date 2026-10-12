@@ -34,9 +34,7 @@ from tes5_import.navmesh.pool import build_base_model_index, model_key
 from tes5_import.navmesh.from_pgrd import (collect_doors,
                                       load_door_centroids)
 from tools.navmesh import cell_index as cell_index_mod
-from tes5_import.overrides.nested import (
-    export_master_names, export_root, master_export_dir,
-)
+from core.plugin_masters import master_dir, masters_from_export_header
 from tes5_import.base.text_reader import (
     parse_export_directory, group_records_by_type, get_float, get_formid,
     get_int, get_str,
@@ -344,10 +342,9 @@ def master_dirs(export):
     Recursive: TR_Mainland -> Morrowind_ob -> Oblivion. A master with no
     export on disk is skipped rather than failing the open.
     """
-    root = export_root(export)
     out = []
-    for name in export_master_names(export):
-        d = master_export_dir(root, name)
+    for name in masters_from_export_header(export):
+        d = master_dir(export, name)
         if not os.path.isdir(d) or d in out:
             continue
         out.append(d)

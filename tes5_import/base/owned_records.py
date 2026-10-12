@@ -10,6 +10,7 @@ these call nothing else in that file, and only import_plugin calls them.
 
 import struct
 
+from .master_export import values_of
 from ..overrides.adoption import adopted_formid, generated_formid
 from ..packages.escort_when_near import (ESCORT_WHEN_NEAR_EDID,
                                          escort_root_record,
@@ -139,31 +140,49 @@ def create_chargen_menu_records(writer: PluginWriter, plan: dict) -> dict:
     return name_to_fid
 
 
-def create_force_combat_factions(writer: PluginWriter) -> dict:
+#: The ForceCombat faction pair's EditorIDs: (attackers, victims).
+_FORCE_COMBAT_EDIDS = ('TES4ForceCombatAttackers', 'TES4ForceCombatVictims')
+
+
+def _adopted(master_index, sig: bytes, edids: tuple) -> dict:
+    """{edid: FormID} when the masters define every one of `edids`, else {}."""
+    found = {edid: master_index.find_by_edid(sig, edid) for edid in edids
+             } if master_index is not None else {}
+    return found if found and all(found.values()) else {}
+
+
+def create_force_combat_factions(writer: PluginWriter, master_index=None) -> dict:
     """The conversion-owned enemy-faction pair TES4Polyfill.ForceCombat uses.
 
     ForceCombat puts the attacker in one and the victim in the other; the
-    mutual XNAM Enemy reaction is what makes StartCombat stick. Fixed ids.
+    mutual XNAM Enemy reaction is what makes StartCombat stick. Fixed ids;
+    a master's pair is adopted whole, since each names the other.
 
     See: docs/commentary/tes5_import_dialogue.md#synthesized-menus-factions-and-formlists
     """
+    adopted = _adopted(master_index, b'FACT', _FORCE_COMBAT_EDIDS)
+    if adopted:
+        return adopted
     atk_fid = writer.chargen_fid_base + 0x42
     vic_fid = writer.chargen_fid_base + 0x43
-    for fid, edid, other in ((atk_fid, 'TES4ForceCombatAttackers', vic_fid),
-                             (vic_fid, 'TES4ForceCombatVictims', atk_fid)):
+    attackers, victims = _FORCE_COMBAT_EDIDS
+    for fid, edid, other in ((atk_fid, attackers, vic_fid),
+                             (vic_fid, victims, atk_fid)):
         subs = pack_string_subrecord('EDID', edid)
         subs += pack_subrecord('XNAM', struct.pack('<IiI', other, 0, 1))
         subs += pack_subrecord('DATA', struct.pack('<I', 0x1))
         writer.add_record('FACT', pack_record('FACT', fid, 0, subs))
-    return {'TES4ForceCombatAttackers': atk_fid,
-            'TES4ForceCombatVictims': vic_fid}
+    return {attackers: atk_fid, victims: vic_fid}
 
 
-def create_destroyed_formlist(writer: PluginWriter) -> dict:
-    """The FormList backing TES4 GetDestroyed, which Skyrim has no reader for.
+def create_destroyed_formlist(writer: PluginWriter, master_index=None) -> dict:
+    """The FormList backing TES4 GetDestroyed, which Skyrim has no reader for; a master's is adopted.
 
     See: docs/commentary/tes5_import_dialogue.md#synthesized-menus-factions-and-formlists
     """
+    adopted = _adopted(master_index, b'FLST', ('TES4DestroyedRefs',))
+    if adopted:
+        return adopted
     fid = writer.chargen_fid_base + 0x44
     subs = pack_string_subrecord('EDID', 'TES4DestroyedRefs')
     writer.add_record('FLST', pack_record('FLST', fid, 0, subs))
@@ -186,17 +205,27 @@ _MGEF_ARCHETYPE_VALUE_MOD, _AV_HEALTH = 0, 24
 _FIRE_AND_FORGET, _DELIVERY_SELF = 1, 0
 
 
-def _fall_damage_perk(fid: int, edid: str) -> bytes:
-    """Hidden, unconditioned PERK multiplying the owner's falling damage by 0."""
+def multiply_entry(entry_point: bytes, conditions: bytes = b'') -> bytes:
+    """One rank-0 PERK entry multiplying its value by 0 while `conditions` (packed CTDAs) hold."""
+    subs = pack_subrecord('PRKE', bytes((2, 0, 0)))
+    subs += pack_subrecord('DATA', entry_point)
+    if conditions:
+        subs += pack_subrecord('PRKC', bytes((0,))) + conditions
+    subs += pack_subrecord('EPFT', bytes((1,)))
+    subs += pack_subrecord('EPFD', struct.pack('<f', 0.0))
+    return subs + pack_subrecord('PRKF', b'')
+
+
+#: The entry that zeroes all of the owner's falling damage.
+FALL_DAMAGE_ENTRY = multiply_entry(_FALL_ENTRY_POINT)
+
+
+def hidden_perk(fid: int, edid: str, entries: bytes) -> bytes:
+    """Hidden, unplayable one-rank PERK carrying the packed `entries`."""
     subs = pack_string_subrecord('EDID', edid)
     subs += pack_string_subrecord('DESC', '')
     subs += pack_subrecord('DATA', bytes((0, 0, 1, 0, 1)))
-    subs += pack_subrecord('PRKE', bytes((2, 0, 0)))
-    subs += pack_subrecord('DATA', _FALL_ENTRY_POINT)
-    subs += pack_subrecord('EPFT', bytes((1,)))
-    subs += pack_subrecord('EPFD', struct.pack('<f', 0.0))
-    subs += pack_subrecord('PRKF', b'')
-    return pack_record('PERK', fid, 0, subs)
+    return pack_record('PERK', fid, 0, subs + entries)
 
 
 def _fall_damage_effect(fid: int, edid: str, perk: int) -> bytes:
@@ -243,7 +272,7 @@ def create_fall_damage_spell(writer: PluginWriter, master_index=None) -> dict:
         perk = writer.derive_formid('PERK', name + 'Perk')
         mgef = writer.derive_formid('MGEF', name + 'Effect')
         spel = writer.derive_formid('SPEL', name)
-        writer.add_record('PERK', _fall_damage_perk(perk, name + 'Perk'))
+        writer.add_record('PERK', hidden_perk(perk, name + 'Perk', FALL_DAMAGE_ENTRY))
         writer.add_record('MGEF', _fall_damage_effect(mgef, name + 'Effect', perk))
         writer.add_record('SPEL', _fall_damage_spell(spel, name, mgef))
     return {name: spel}
@@ -257,8 +286,7 @@ DAY_CLOCK_GLOBAL, DAY_CLOCK_QUEST, DAY_CLOCK_SCRIPT = (
 def _source_counts_whole_days(by_type: dict, ctx) -> bool:
     """True when the source game declares GameDaysPassed Short (Oblivion), not Float (FO3/FNV)."""
     records = list(by_type.get('GLOB', []))
-    records += [r for r in (getattr(ctx, 'master_export', None) or {}).values()
-                if r.get('Signature') == 'GLOB']
+    records += values_of(getattr(ctx, 'master_export', None), 'GLOB')
     return any(get_str(r, 'EditorID', '').lower() == 'gamedayspassed'
                and get_str(r, 'FNAM.Type') == 's' for r in records)
 

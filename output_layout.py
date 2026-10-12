@@ -263,15 +263,13 @@ def asset_cache_chain(export_subdir, filename: str) -> tuple:
     own last lets an override win a shared key.  A masterless plugin yields
     a one-element chain.
 
+    The import is local: `core.plugin_masters` imports this module.
     See: docs/commentary/tes5_import_navmesh.md#master-owned-cells
     """
-    from tes5_import.overrides.nested import (export_master_names,
-                                              export_root,
-                                              master_export_dir)
-    root = export_root(str(export_subdir))
+    from core.plugin_masters import master_dir, masters_from_export_header
     chain = []
-    for name in export_master_names(str(export_subdir)):
-        path = str(assets_for(master_export_dir(root, name)) / filename)
+    for name in masters_from_export_header(str(export_subdir)):
+        path = str(assets_for(master_dir(export_subdir, name)) / filename)
         if path not in chain:
             chain.append(path)
     own = str(assets_for(export_subdir) / filename)

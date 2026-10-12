@@ -367,8 +367,8 @@ FilterResult TestInfo(const Info& info, const ActorView& actor, int choice,
 
 FilterResult SelectInfo(const Topic& topic, const ActorView& actor,
                         int choice, bool invertDisposition) {
-    for (const Info& info : topic.infos) {
-        FilterResult result = TestInfo(info, actor, choice, invertDisposition);
+    for (const Info* info : ViewInfos(topic)) {
+        FilterResult result = TestInfo(*info, actor, choice, invertDisposition);
         if (result.why == Reject::None) return result;
     }
     FilterResult none;
@@ -378,9 +378,9 @@ FilterResult SelectInfo(const Topic& topic, const ActorView& actor,
 std::vector<const Info*> ListInfos(const Topic& topic, const ActorView& actor,
                                    int choice) {
     std::vector<const Info*> out;
-    for (const Info& info : topic.infos) {
-        if (TestInfo(info, actor, choice).why == Reject::None) {
-            out.push_back(&info);
+    for (const Info* info : ViewInfos(topic)) {
+        if (TestInfo(*info, actor, choice).why == Reject::None) {
+            out.push_back(info);
         }
     }
     return out;

@@ -4,21 +4,21 @@ Settings ▸ Morrowind source: the GUI half of the Morrowind master switch.
 The export stage reads the chosen set from `conversion_config.json`, so the
 radio group saves on every change and nothing else has to be plumbed. Choosing
 Morroblivion also builds the compatibility patch when it is missing, because
-that mode refuses every conversion without it; choosing it again while it is
-already selected rebuilds the patch.
+that mode refuses every conversion without it, and asks whether to rebuild it
+when it exists.
 
 See: docs/commentary/tes4_export_morrowind.md#masters
 """
 
-import os
-import threading
+import sys
 import tkinter as tk
-from tkinter import filedialog, messagebox
+from tkinter import filedialog
 
-from asset_convert.sources import source_registry
+from core.gui import runner
+from core.gui.config import REPO_ROOT
 from core.gui.menubar_behavior import enable_tips
 from tes4_export.export_morrowind import MORROWIND_SOURCE_KEY, SOURCE_MORROBLIVION, SOURCE_VANILLA, morroblivion_exports
-from tes4_export.morrowind_patch import PATCH_NAME, PATCH_SOURCES, build_patch, patch_exists, source_paths
+from tes4_export.morrowind_patch import PATCH_NAME, PATCH_SOURCES, patch_exists, source_dir, source_paths
 
 #: Source set -> its menu label, in menu order.
 _LABELS = (
@@ -33,7 +33,7 @@ _TITLE = "Morroblivion compatibility patch"
 MORROBLIVION_TIP = (
     f"Convert Morrowind plugins against Morroblivion and {PATCH_NAME}. "
     "Builds the patch if it is missing (convert Morrowind_ob.esm first); "
-    "choose it again while selected to rebuild the patch")
+    "asks whether to rebuild it if it exists")
 
 
 def source_default(cfg: dict) -> str:
@@ -42,14 +42,9 @@ def source_default(cfg: dict) -> str:
     return value if value in dict(_LABELS) else SOURCE_VANILLA
 
 
-def add_source_menu(settings_menu, menu_opts: dict, cfg: dict,
-                    load_config, save_config, export_dir,
-                    out_root) -> tk.StringVar:
-    """Add Settings ▸ Morrowind source as a radio cascade saved on change.
-
-    `out_root` is called at click time, not read now: the user can retarget the
-    output directory after the menu is built.
-    """
+def add_source_menu(app, settings_menu, menu_opts: dict, cfg: dict,
+                    load_config, save_config, export_dir) -> tk.StringVar:
+    """Add Settings ▸ Morrowind source as a radio cascade saved on change."""
     var = tk.StringVar(value=source_default(cfg))
     chosen = {"mode": var.get()}
 
@@ -63,13 +58,12 @@ def add_source_menu(settings_menu, menu_opts: dict, cfg: dict,
     def _pick_morroblivion():
         """Switch, building the patch first when it is missing or asked for."""
         was = chosen["mode"]
-        if patch_exists(str(export_dir)):
-            if was != SOURCE_MORROBLIVION:
-                _save()
-                return
-            if not messagebox.askyesno(_TITLE, f"Rebuild {PATCH_NAME}?"):
-                return
-        if build_patch_dialog(settings_menu, str(export_dir), out_root()):
+        if patch_exists(str(export_dir)) and not app.confirm(
+                _TITLE, f"{PATCH_NAME} already exists.\n\nRebuild it?",
+                yes="Rebuild", no="Keep"):
+            _save()
+            return
+        if build_patch_dialog(app, str(export_dir)):
             _save()
         else:
             var.set(was)
@@ -86,12 +80,12 @@ def add_source_menu(settings_menu, menu_opts: dict, cfg: dict,
     return var
 
 
-def _morrowind_data_dir(export_dir: str) -> str:
+def _morrowind_data_dir(app, export_dir: str) -> str:
     """The Morrowind Data Files folder: the registered install, else asked for.
 
     Returns "" when the user cancels or picks a folder without the masters.
     """
-    known = source_registry.directory_for(export_dir, PATCH_SOURCES[0])
+    known = source_dir(export_dir)
     if known and not source_paths(known, PATCH_SOURCES)[1]:
         return known
     data_dir = filedialog.askdirectory(
@@ -100,7 +94,7 @@ def _morrowind_data_dir(export_dir: str) -> str:
         return ""
     _, missing = source_paths(data_dir, PATCH_SOURCES)
     if missing:
-        messagebox.showerror(
+        app.info(
             _TITLE,
             "That folder is not a Morrowind Data Files directory.\n\n"
             f"Looked in:\n{data_dir}\n\nMissing:\n  " + "\n  ".join(missing))
@@ -108,73 +102,29 @@ def _morrowind_data_dir(export_dir: str) -> str:
     return data_dir
 
 
-def build_patch_dialog(parent, export_dir: str, out_root) -> bool:
-    """Start building the patch in a window; False when it could not start.
+def build_patch_dialog(app, export_dir: str) -> bool:
+    """Start building the patch as a run in the main log pane; False when it could not start.
 
     Morroblivion has to be converted first -- the patch holds what it does NOT
     supply, so without it there is no gap to measure.
     """
-    exports = morroblivion_exports(export_dir)
-    if not exports:
-        messagebox.showerror(
+    if app.running.is_set():
+        app.info(_TITLE, "Wait for the current run to finish, "
+                         "then choose Morroblivion again.")
+        return False
+    if not morroblivion_exports(export_dir):
+        app.info(
             _TITLE,
             "No converted Morroblivion plugin was found.\n\n"
             f"{PATCH_NAME} holds the objects Morroblivion does NOT convert, so "
             "convert Morrowind_ob.esm first, then choose Morroblivion again.")
         return False
-    data_dir = _morrowind_data_dir(export_dir)
+    data_dir = _morrowind_data_dir(app, export_dir)
     if not data_dir:
         return False
-    _run_build_window(parent, data_dir, export_dir, exports, out_root)
+    cmd = [sys.executable, "-u", str(REPO_ROOT / "convert.py"),
+           "--build-morrowind-patch", data_dir,
+           "--output-dir", str(app.out_root())]
+    runner.start_command(app, f"Build {PATCH_NAME}", cmd, PATCH_NAME,
+                         lambda _key: None)
     return True
-
-
-def _run_build_window(parent, data_dir: str, export_dir: str,
-                      exports: list, out_root) -> None:
-    """Run the build on a worker thread, streaming progress into a window."""
-    win = tk.Toplevel(parent)
-    win.title("Building compatibility patch")
-    win.geometry("620x300")
-    text = tk.Text(win, wrap="word", state="disabled")
-    text.pack(fill="both", expand=True, padx=8, pady=8)
-    log = _line_writer(win, text)
-
-    def _work():
-        """Build, then report the outcome in the same window."""
-        try:
-            result = build_patch(data_dir, export_dir, exports, progress=log,
-                                 out_root=out_root)
-        except Exception as exc:
-            log(f"FAILED: {exc}")
-            return
-        if not result["ok"]:
-            log("")
-            for line in result["error"].splitlines():
-                log(line)
-            return
-        log("")
-        log(f"Done in {result['seconds']:.1f}s -- {result['records']} records, "
-            f"{result['assets']} assets.")
-        log(f"Plugin: {result['plugin']}")
-        log(f"{PATCH_NAME} is now a master of every Morroblivion-mode "
-            f"conversion.")
-
-    log(f"Source: {data_dir}")
-    log(f"Against: {', '.join(exports)}")
-    threading.Thread(target=_work, daemon=True).start()
-
-
-def _line_writer(win, text):
-    """A callable appending one line to `text`, safe to call off the UI thread."""
-    def _log(line=""):
-        """Queue one progress line onto the UI thread."""
-        win.after(0, _append, str(line))
-
-    def _append(line: str):
-        """Append one line and scroll to it; runs on the UI thread."""
-        text.configure(state="normal")
-        text.insert("end", line + os.linesep)
-        text.see("end")
-        text.configure(state="disabled")
-
-    return _log

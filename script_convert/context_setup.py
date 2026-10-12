@@ -11,9 +11,11 @@ import os
 import shutil
 
 from asset_convert.collision.collision_extract import bounds_cache_is_current
+from core.plugin_masters import masters_from_export_header
 from output_layout import assets_for
-from script_convert.cross_ref import CrossRefGraph, master_names
+from script_convert.cross_ref import CrossRefGraph
 from script_convert.message_menus import build_chargen_menus
+from script_convert.ownership import read_owned, sibling_owned
 from tes5_import.base.mesh_bounds import load_mesh_bounds
 from tes5_import.base.text_reader import parse_export_file
 from tes5_import.dialogue.converter import service_menu_kind
@@ -22,19 +24,27 @@ from tes5_import.dialogue.converter import service_menu_kind
 _STATIC_DIR = os.path.join(os.path.dirname(__file__), 'static_scripts')
 
 
-def prepare_output_dir(output_dir: str) -> None:
-    """Wipe the generated .psc tree and every sibling .pex, then recreate it.
+def prepare_output_dir(output_dir: str, owner: str) -> set:
+    """Clear `owner`'s previous scripts; returns the names other plugins here own.
 
+    A folder no other plugin shares is wiped whole, .psc tree and sibling .pex.
+    In a shared one only the files on `owner`'s own list go.
     See: docs/commentary/script_convert.md#wipe-output-dir
     """
-    if os.path.isdir(output_dir):
-        shutil.rmtree(output_dir, onexc=_keep_held_dir)
+    shared = sibling_owned(output_dir, owner)
     pex_dir = os.path.dirname(output_dir)
-    if os.path.isdir(pex_dir):
-        for name in os.listdir(pex_dir):
-            if name.lower().endswith('.pex'):
-                _remove_quietly(os.path.join(pex_dir, name))
+    if not shared:
+        if os.path.isdir(output_dir):
+            shutil.rmtree(output_dir, onexc=_keep_held_dir)
+        stale = [n[:-4] for n in (os.listdir(pex_dir) if os.path.isdir(pex_dir) else [])
+                 if n.lower().endswith('.pex')]
+    else:
+        stale = read_owned(output_dir, owner) - shared
+    for name in stale:
+        _remove_quietly(os.path.join(output_dir, name + '.psc'))
+        _remove_quietly(os.path.join(pex_dir, name + '.pex'))
     os.makedirs(output_dir, exist_ok=True)
+    return shared
 
 
 def _keep_held_dir(func, path: str, exc: BaseException) -> None:
@@ -79,25 +89,29 @@ def _static_script_names() -> list:
     return [n for n in os.listdir(_STATIC_DIR) if n.endswith('.psc')]
 
 
-def deploy_static_scripts(export_dir: str, output_dir: str) -> None:
+def deploy_static_scripts(export_dir: str, output_dir: str,
+                          shared: frozenset = frozenset()) -> list:
     """Copy the static scripts for a masterless plugin; purge them for a dependent.
 
+    Returns the script names copied. A copy another plugin in this folder owns
+    (`shared`) is never purged.
     See: docs/commentary/script_convert.md#static-scripts-ownership
     """
     names = _static_script_names()
-    if not master_names(export_dir):
+    if not masters_from_export_header(export_dir):
         for name in names:
             shutil.copy2(os.path.join(_STATIC_DIR, name),
                          os.path.join(output_dir, name))
-        return
+        return [name[:-4] for name in names]
     print('  Static scripts: skipped (owned by this plugin\'s master)')
-    for name in names:
+    for name in (n for n in names if n[:-4] not in shared):
         for stale in (os.path.join(output_dir, name),
                       os.path.join(os.path.dirname(output_dir),
                                    name[:-4] + '.pex')):
             if os.path.isfile(stale):
                 os.remove(stale)
                 print(f'    removed stale master-owned copy: {stale}')
+    return []
 
 
 def build_xref(export_dir: str) -> CrossRefGraph:

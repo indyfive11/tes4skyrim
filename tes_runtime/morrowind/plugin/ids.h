@@ -48,6 +48,20 @@ constexpr std::uint64_t kGFxLoaderLoadMovie = 82325;
 // it with a plain mov from .data.
 constexpr std::uint64_t kGFxLoaderSingleton = 402775;
 
+// bool MovieFileExists(const char* path) (0xfb49a0): LoadMovie's own check,
+// through the engine's resource locator, before it tries "Interface/%s.swf"
+// and then "Interface/Exported/%s.gfx".
+constexpr std::uint64_t kMovieFileExists = 82411;
+
+// Scaleform's state bag (the GFx loader proper), at +8 in that singleton.
+// Vtable slot 2 is SetState(type, state), slot 3 GetStateAddRef(type); type 4
+// is the log. Layout from skse64 ScaleformState.h, whose bEnableGFXLog logger
+// is installed the same way.
+constexpr std::size_t kOffLoaderStateBag = 0x8;
+constexpr std::size_t kStateBagSetStateSlot = 2;
+constexpr std::size_t kStateBagGetStateSlot = 3;
+constexpr std::uint32_t kGfxStateLog = 4;
+
 // The Scaleform allocator singleton POINTER (0x3292490). Menus are allocated
 // through it, at vtable slot 0x50: Alloc(this, size, 0).
 //
@@ -98,6 +112,7 @@ constexpr std::uint32_t kResultPassOn = 2;
 // up, key down, key up) were seen in game.
 constexpr std::uint32_t kEventMouseMove = 1;
 constexpr std::uint32_t kEventMouseDown = 2;
+constexpr std::uint32_t kEventMouseUp = 3;
 constexpr std::size_t kMouseEventXOffset = 0x4;
 constexpr std::size_t kMouseEventButtonOffset = 0x10;
 
@@ -678,5 +693,67 @@ constexpr std::size_t kOffPlayerJailFaction = 0x720;
 
 // TESObjectREFR's base form, which TESObjectREFR::ActivateRef dispatches on.
 constexpr std::size_t kOffRefBase = 0x40;
+
+// SwiftSwim, Levitate and SlowFall steer the character controller. Each id
+// was read off 1.6.1170 and checked to do the same on 1.7.104 (1.6.659 in
+// brackets):
+//   bhkCharacterStateInAir vtable     0x19f70b8  [0x189cfa8]  RTTI
+//   bhkCharacterStateInAir slot 8     0xf01f40   [0xe74db0]   simulate(state,
+//        controller): adds gravity to the velocity, tracks the fall start
+//   bhkCharacterStateOnGround vtable  0x19f72f8  [0x189d1e8]  RTTI
+//   bhkCharacterStateOnGround slot 8  0xf02550   [0xe753c0]
+//   bhkCharacterStateSwimming vtable  0x19f7378  [0x189d268]  RTTI
+//   bhkCharacterStateSwimming slot 8  0xf02b30   [0xe759a0]   rotates the
+//        stroke at controller+0x70 into the velocity, then adds buoyancy
+//   Actor::GetCharController          0x6628f0   [0x608600]   what the
+//        `GetVelocity` console handler (0x329ac0) calls on its actor:
+//        [actor+0xF8] -> [+0x8] -> [+0x250]
+//   PlayerControls singleton pointer  0x30fda18  [0x2f59828]  stored by its
+//        constructor (0x79a4c0) beside its four sink vtables
+// See: docs/commentary/morrowind_runtime.md#levitate-and-slowfall
+constexpr std::uint64_t kInAirStateVtable = 240826;
+constexpr std::uint64_t kInAirSimulate = 80098;
+constexpr std::uint64_t kOnGroundStateVtable = 240833;
+constexpr std::uint64_t kOnGroundSimulate = 80106;
+constexpr std::uint64_t kSwimmingStateVtable = 240836;
+constexpr std::uint64_t kSwimmingSimulate = 80110;
+constexpr std::uint64_t kActorGetCharController = 37258;
+constexpr std::uint64_t kPlayerControlsSingleton = 400864;
+constexpr std::size_t kStateSimulateSlot = 0x40;
+
+// bhkCharacterController fields the state simulates read and write, identical
+// on 1.6.1170 and 1.7.104: the swim stroke (an hkVector4), the step's
+// seconds, the velocity it integrates (an hkVector4 in havok units), and the
+// highest z of the fall, which landing charges damage from. Slot 2 is
+// GetPositionImpl(out, applyCenterOffset).
+constexpr std::size_t kOffControllerStroke = 0x70;
+constexpr std::size_t kOffControllerStepSeconds = 0x88;
+constexpr std::size_t kOffControllerVelocity = 0x90;
+constexpr std::size_t kOffControllerFallStart = 0x240;
+constexpr std::size_t kControllerGetPositionSlot = 2;
+
+// PlayerControlsData.moveInputVec: strafe then forward, -1..1. The input sink
+// (0x79a970) zeroes it, then hands `this+0x24` to each handler, and
+// MovementHandler writes x at +0 and y at +4 -- on 1.7.104 too.
+constexpr std::size_t kOffPlayerControlsMoveX = 0x24;
+constexpr std::size_t kOffPlayerControlsMoveY = 0x28;
+
+// An actor's active effects, as Actor.HasMagicEffect (0x9e76b0) walks them on
+// 1.6.1170 and 1.7.104 alike: the MagicTarget base at actor+0xA0, its vtable
+// slot 7 (+0x38) returning the list head, nodes {ActiveEffect*, next}, and
+// the MGEF at [[effect+0x48]+0x10] (0x5ac560). Magnitude and flags, with
+// 0x8000 Inactive, are SKSE64's ActiveEffect layout (GameObjects.h), whose
+// GetMagnitude native reads +0x78.
+constexpr std::size_t kOffActorMagicTarget = 0xA0;
+constexpr std::size_t kActiveEffectListSlot = 7;
+constexpr std::size_t kOffActiveEffectItem = 0x48;
+constexpr std::size_t kOffEffectItemBase = 0x10;
+constexpr std::size_t kOffActiveEffectMagnitude = 0x78;
+constexpr std::size_t kOffActiveEffectFlags = 0x7C;
+constexpr std::uint32_t kActiveEffectInactive = 0x8000;
+
+// Game units per havok unit: what InAir's simulate scales the controller's
+// height by before comparing it with the fall start.
+constexpr float kHavokToGame = 69.99125f;
 
 }  // namespace tesruntime::mw::ids

@@ -76,21 +76,23 @@ Vanilla does exactly this split: instance-identified logic lives on the ACHR
 (masterAmbushScript, 464 placements), while generic per-actor behaviour stays on
 the base (WIDeadBodyCleanupScript, defaultGhostScript).
 
-The script is moved (base entry removed) rather than duplicated so there is
-exactly ONE instance — both the fragment write (via the ACHR-typed self
-property) and the condition read resolve to it.
+The script is COPIED onto the reference; the base keeps its entry. A reference
+whose VMAD names the same script as its base gets ONE merged instance, not two
+(measured in a Nehrim save: `NQRatte02`'s base and its two placed rats all carry
+`NQ00Ratte02Script`, and each rat has exactly one instance). Removing the base
+entry — the old "single placement" rule — stripped the script from every actor
+spawned from that base at runtime: Nehrim's rat holes `PlaceAtMe` the rat
+bases, and a spawned `NQRatte01`/`NQRatte03` had no `OnDeath`, so the respawn
+ring died after one spawn. Vanilla keeps `Actor` scripts with `OnDeath` on the
+base (`WIDeadBodyCleanupScript`: 210 NPC_, 0 ACHR), so reason 2 above does not
+hold for `OnDeath`.
 
-### Which scripts qualify, and the single-placement rule
+### Which scripts qualify
 
 The MASTERS' scripts are indexed alongside this plugin's (keyed on the
 `master_export` key, this plugin's space — see `_collect_scpts`): a dependent
 plugin's actor can carry one of its master's scripts, and missing it means the
 relocation never happens, so every reason above silently applies.
-
-A script may be moved OFF the base only when that base has a single placement,
-else siblings would lose it. Shared bases (rare: SI victims, Sheogorath's sheep)
-keep the base attachment and gain a per-ref one, matching Oblivion's
-per-instance variables.
 
 ## Quest conversion: bugs found and fixed
 <a id="quest-conversion-bugs"></a>

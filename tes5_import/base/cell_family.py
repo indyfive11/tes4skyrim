@@ -17,6 +17,7 @@ import itertools
 import struct
 from collections import namedtuple
 
+from .master_export import values_of
 from .ctda_bool import bool_outcomes
 from .text_reader import get_formid, get_int, get_str, remap_formid
 from .writer import pack_record, pack_string_subrecord
@@ -53,8 +54,7 @@ def set_cell_families(by_type: dict, master_export: dict = None, writer=None,
     _FAMILY.clear()
     _KEYWORD.clear()
     _OWN_ANCHORS.clear()
-    masters = [r for r in (master_export or {}).values()
-               if r.get('Signature') == 'CELL']
+    masters = values_of(master_export, 'CELL')
     for own, recs in ((False, masters), (True, by_type.get('CELL', []))):
         for rec in recs:
             _index_cell(rec, own)

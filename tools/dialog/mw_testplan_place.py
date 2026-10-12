@@ -16,7 +16,7 @@ See: docs/commentary/morrowind_runtime.md#opcode-test-plan
 
 import os
 
-from asset_convert.sources import source_registry
+from core.plugin_masters import master_export_dir, masters_from_export_header
 from tools.dialog.morrowind_quest_trace import records
 
 #: `DATA.Flags` bit 0 is an interior cell; bit 1 is an exterior one.
@@ -32,17 +32,8 @@ def master_dirs(record_dir, export_root='export'):
     See: docs/commentary/morrowind_runtime.md#opcode-test-plan
     """
     out = [record_dir]
-    header = os.path.join(record_dir, '_HEADER.txt')
-    if not os.path.isfile(header):
-        return out
-    with open(header, encoding='utf-8', errors='replace') as handle:
-        names = [line.split('=', 1)[1].strip() for line in handle
-                 if line.startswith('Master[')]
-    for name in names:
-        try:
-            other = str(source_registry.record_dir(export_root, name))
-        except Exception:
-            continue
+    for name in masters_from_export_header(record_dir):
+        other = master_export_dir(export_root, name)
         if os.path.isdir(other) and other not in out:
             out.append(other)
     return out

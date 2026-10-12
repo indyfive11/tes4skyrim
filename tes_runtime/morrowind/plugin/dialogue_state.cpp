@@ -53,8 +53,8 @@ std::string GlobalKey(const std::string& name) {
 bool EntryExists(const std::string& quest, int index) {
     const Topic* topic = FindTopic(quest);
     if (!topic) return false;
-    for (const Info& info : topic->infos) {
-        if (info.journalIndex == index && LayerVisible(info.layer)) return true;
+    for (const Info* info : ViewInfos(*topic)) {
+        if (info->journalIndex == index) return true;
     }
     return false;
 }
@@ -470,6 +470,8 @@ std::string DialogueState::Serialize() const {
         if (!mControls[i]) out << "W\t" << i << '\n';
     }
     if (!teleporting) out << "T\n";
+    if (!levitation) out << "V\n";
+    for (const std::uint32_t id : sanctuaryHolders) out << "Y\t" << id << '\n';
     if (mark.place) {
         const std::streamsize was = out.precision(9);
         out << "P\t" << mark.place << '\t' << mark.x << '\t' << mark.y << '\t'
@@ -495,11 +497,14 @@ std::size_t DialogueState::Deserialize(const std::string& text) {
     const bool v1 = line == kFormatV1;
     if (!v1 && line != kFormat) return 0;
     // A version 1 key is a bare id: the merged view resolves it to the origin
-    // it had then. A version 2 key is already one.
+    // it had then. A version 2 key names an origin, re-resolved in case the
+    // sidecars now stage that id elsewhere.
     const LayerScope merged(kEveryLayer);
-    const auto key = [v1](const std::string& id) { return v1 ? Key(id) : id; };
+    const auto key = [v1](const std::string& id) {
+        return v1 ? Key(id) : Requalify(id);
+    };
     const auto global = [v1](const std::string& id) {
-        return v1 ? GlobalKey(id) : id;
+        return v1 ? GlobalKey(id) : Requalify(id);
     };
     std::size_t taken = 0;
     while (std::getline(in, line)) {
@@ -515,7 +520,7 @@ std::size_t DialogueState::Deserialize(const std::string& text) {
         else if (kind == "F" && n == 5) mFactions[key(f[1])] = {Int(f[2]), f[3] == "1", Int(f[4])};
         else if (kind == "X" && n == 4) mReactions[{key(f[1]), key(f[2])}] = Int(f[3]);
         else if (kind == "S" && v1 && n >= 2) mRunning[key(f[1])] = MigrateRunning(f);
-        else if (kind == "S" && n == 4) mRunning[f[1]] = {f[2], f[3]};
+        else if (kind == "S" && n == 4) mRunning[key(f[1])] = {f[2], f[3]};
         else if (kind == "K" && n == 2) mKnownTopics.insert(key(f[1]));
         else if (kind == "A" && n == 4) mAiSettings[{key(f[1]), Int(f[2])}] = Int(f[3]);
         else if (kind == "M" && n == 3) mMovementFlags[{key(f[1]), Int(f[2])}] = true;
@@ -524,6 +529,11 @@ std::size_t DialogueState::Deserialize(const std::string& text) {
             mControls[Int(f[1])] = false;
         }
         else if (kind == "T" && n == 1) teleporting = false;
+        else if (kind == "V" && n == 1) levitation = false;
+        else if (kind == "Y" && n == 2) {
+            sanctuaryHolders.insert(
+                static_cast<std::uint32_t>(std::strtoul(f[1].c_str(), nullptr, 10)));
+        }
         else if (kind == "P" && n == 6) {
             mark = {static_cast<std::uint32_t>(std::strtoul(f[1].c_str(), nullptr, 10)),
                     Float(f[2]), Float(f[3]), Float(f[4]), Float(f[5])};

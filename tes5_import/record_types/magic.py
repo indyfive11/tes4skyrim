@@ -962,7 +962,16 @@ def build_data(rec: dict, code: str, archetype: int, actor_value: int,
     if second_av != AV_NONE:
         struct.pack_into('<f', data, O_SECOND_AV_WEIGHT, 1.0)
     struct.pack_into('<f', data, O_DUAL_CAST_SCALE, 1.0)
+    struct.pack_into('<I', data, O_PERK_TO_APPLY, _morrowind_perk(rec))
     return bytes(data)
+
+
+def _morrowind_perk(rec: dict) -> int:
+    """PerkToApply of a Morrowind effect (import cycle), else 0."""
+    from .magic_morrowind import mw_effect_perk
+
+    index = morrowind_index(rec)
+    return mw_effect_perk(index) if index >= 0 else 0
 
 
 def mgef_parts(rec: dict) -> tuple:

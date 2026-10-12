@@ -10,9 +10,9 @@ script runs `Journal`, so Skyrim's own journal fills in as the player talks.
 An objective per page rides alongside, because a QUST with none never displays
 its name; the runtime displays one as it stages the quest.
 
-The pages are read from the STAGED SIDECAR, not this plugin's export, because
-the sidecar's dialogue is already merged over the plugin's TES3 masters and a
-result script names its masters' quests freely.
+The pages are read from the STAGED SIDECARS. A journal is the QUST of the
+plugin that originates it; a dependent that adds pages writes an OVERRIDE of
+that QUST carrying every page of the chain, and stages no row of its own.
 
 See: docs/commentary/morrowind_runtime.md#journal-quests
 """
@@ -52,7 +52,8 @@ _COMPLETES_QUEST = 0x01
 _NOT_IDENTIFIER = re.compile(r'[^A-Za-z0-9_]')
 
 #: The INFO fields a journal page is built from.
-_PAGE_KEYS = ('Topic', 'InfoType', 'JournalIndex', 'Response', 'QuestStatus')
+_PAGE_KEYS = ('Topic', 'InfoType', 'JournalIndex', 'Response', 'QuestStatus',
+              'Deleted')
 
 #: Names for journals that author none, hand-written first, then UESP's.
 _NAME_TABLES = tuple(
@@ -75,7 +76,8 @@ def journal_quests(side_dir: str) -> dict:
                                         'stages': {}}
     for rec in export_records(infos_file, _PAGE_KEYS):
         quest = quests.get(unescape_value(rec.get('Topic', '')).lower())
-        if quest is None or rec.get('InfoType') != 'Journal':
+        if (quest is None or rec.get('InfoType') != 'Journal'
+                or rec.get('Deleted') == '1'):
             continue
         text = unescape_value(rec.get('Response', ''))
         if rec.get('QuestStatus') == 'Name':
@@ -183,20 +185,79 @@ def as_record(quest: dict, formid: int) -> bytes:
     return pack_record('QUST', formid, 0, subs)
 
 
-def write_journal_quests(writer, side_dir: str, plugin_name: str) -> int:
+def _owned_quests(masters: list) -> dict:
+    """`{lower journal id: (owner plugin, local FormID)}` from the masters'
+    quest tables, the most-master owner winning."""
+    owners = {}
+    for plugin, side_dir in masters:
+        for rec in _table_rows(os.path.join(side_dir, QUESTS_TABLE)):
+            quest_id, _, value = rec.partition('=')
+            owner, _, formid = value.partition('|')
+            if owner.lower() == plugin.lower() and formid:
+                owners.setdefault(quest_id.lower(),
+                                  (owner, int(formid, 16) & 0xFFFFFF))
+    return owners
+
+
+def _table_rows(path: str) -> list:
+    """The lines of a staged table, [] when there is none."""
+    if not os.path.isfile(path):
+        return []
+    with open(path, encoding='utf-8') as handle:
+        return handle.read().splitlines()
+
+
+def _chain_pages(key: str, chains: list, own: dict) -> dict:
+    """`own` with every page of the journal `key` across the masters'
+    sidecar `chains` (load order), a later plugin's page of an index winning."""
+    merged = {'id': own['id'], 'name': '', 'stages': {}}
+    for quests in chains + [{key: own}]:
+        quest = quests.get(key)
+        if quest:
+            merged['name'] = quest['name'] or merged['name']
+            merged['stages'].update(quest['stages'])
+    return merged
+
+
+def _override_formid(writer, owner: str, local: int) -> int:
+    """The owner's QUST in this plugin's FormID space."""
+    names = [name.lower() for name in writer.masters]
+    return (names.index(owner.lower()) << 24) | local
+
+
+def write_journal_quests(writer, side_dir: str, plugin_name: str,
+                         masters: list) -> int:
     """Add a QUST per journal topic in `side_dir`'s dialogue and stage the id
-    table beside it. Returns how many quests were written."""
+    table beside it; returns how many quests were written. `masters` is
+    `[(plugin, sidecar dir)]` in load order. A journal a master originates is
+    written as an override of the master's QUST, with the chain's pages.
+
+    See: docs/plans/morrowind_object_scripts.md#cumulative-gather-must-go
+    """
     quests = journal_quests(side_dir)
-    lines = []
+    owners = _owned_quests(masters)
+    chains = None
+    lines, written = [], 0
     for key in sorted(quests):
         quest = quests[key]
-        if not quest['stages']:
+        if not quest['stages'] and not quest['name']:
             continue
-        formid = writer.derive_formid(_FORMID_SITE, key)
+        if key in owners and owners[key][0].lower() in (
+                name.lower() for name in writer.masters):
+            chains = chains or [journal_quests(folder) for _p, folder in masters]
+            formid = _override_formid(writer, *owners[key])
+            quest = _chain_pages(key, chains, quest)
+        elif quest['stages']:
+            formid = writer.derive_formid(_FORMID_SITE, key)
+            lines.append(f"{quest['id']}={plugin_name}|{formid:08X}")
+        else:
+            continue
         writer.add_record('QUST', as_record(quest, formid))
-        lines.append(f"{quest['id']}={plugin_name}|{formid:08X}")
+        written += 1
+    table = os.path.join(side_dir, QUESTS_TABLE)
     if lines:
-        with open(os.path.join(side_dir, QUESTS_TABLE), 'w',
-                  encoding='utf-8') as handle:
+        with open(table, 'w', encoding='utf-8') as handle:
             handle.write('\n'.join(lines) + '\n')
-    return len(lines)
+    elif os.path.isfile(table):
+        os.remove(table)
+    return written

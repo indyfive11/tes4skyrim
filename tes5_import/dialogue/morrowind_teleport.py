@@ -17,12 +17,16 @@ import struct
 from core.plugin_masters import masters_from_export_header
 from tes4_export.record_types.morrowind_magic import effect_editor_id
 
+from .morrowind_placements import MARKER_KINDS, export_records, folder_tables
 from ..base.tes5_reader import read_record
 from ..record_types.magic_morrowind import MW_RUNTIME_EFFECTS
 from ..record_types.magic_variants import delivery_editor_ids, known_effects
 
 #: `plugin|MGEF=TES3 effect index`, every effect record the runtime acts on (the name predates non-teleports).
 TELEPORTS_TABLE = 'teleports_formid.txt'
+
+#: `name=plugin|FormID`, the conversion-owned records runtime effects act through (the Sanctuary faction).
+EFFECT_FORMS_TABLE = 'effects_formid.txt'
 
 #: `plugin|marker=kind|place plugin|place|x|y|z|zRot degrees`, one row per marker.
 MARKERS_TABLE = 'markers_formid.txt'
@@ -33,11 +37,6 @@ ANCHORS_TABLE = 'anchors_formid.txt'
 #: `plugin|child worldspace=plugin|parent worldspace`, one row per child.
 WORLDS_TABLE = 'worlds_formid.txt'
 
-#: TES4 marker base -> the kind the runtime keys on; the TES3 export writes the same ids.
-_MARKER_KINDS = {0x00000005: 'divine', 0x00000006: 'temple'}
-
-_REF_KEYS = ('FormID', 'NAME', 'ParentCELL', 'PosX', 'PosY', 'PosZ', 'RotZ')
-_CELL_KEYS = ('FormID', 'ParentWRLD')
 _WORLD_KEYS = ('FormID', 'WNAM.Parent')
 
 #: The exports a restored Intervention names its replaced script's destinations in.
@@ -64,16 +63,16 @@ def _owner(raw: int, masters: list, plugin: str) -> str:
     return masters[index] if index < len(masters) else plugin
 
 
-def _folder_markers(folder: str, plugin: str, own: int, read_records) -> list:
+def _folder_markers(folder: str, plugin: str, own: int) -> list:
     """This export's own marker rows; a marker in a cell it does not export is skipped."""
     masters = masters_from_export_header(folder)
-    cells = {_raw(rec, 'FormID'): _raw(rec, 'ParentWRLD')
-             for rec in read_records(os.path.join(folder, 'CELL.txt'), _CELL_KEYS)}
+    tables = folder_tables(folder)
+    cells = {_raw(rec, 'FormID'): _raw(rec, 'ParentWRLD') for rec in tables['cells']}
     rows = []
-    for rec in read_records(os.path.join(folder, 'REFR.txt'), _REF_KEYS):
-        kind = _MARKER_KINDS.get(_raw(rec, 'NAME'))
+    for rec in tables['markers']:
+        kind = MARKER_KINDS[_raw(rec, 'NAME')]
         cell = _raw(rec, 'ParentCELL')
-        if not kind or _raw(rec, 'FormID') >> 24 != own or cell not in cells:
+        if _raw(rec, 'FormID') >> 24 != own or cell not in cells:
             continue
         place = cells[cell] or cell
         spot = '|'.join(f"{float(rec.get(axis) or 0):g}"
@@ -105,16 +104,15 @@ def teleport_lines(effect_lines: list, plugin: str, own: int) -> list:
     return rows
 
 
-def marker_lines(dirs: list, read_records) -> list:
+def marker_lines(dirs: list) -> list:
     """Every Divine and Temple marker the `(folder, plugin, own)` exports place.
 
     A master that stages no Morrowind sidecar of its own (Morrowind_ob) still
     has its markers found, because each dependent stages its whole chain.
-    `read_records` is the sidecar's export reader, which imports this module.
     """
     rows = []
     for folder, plugin, own in dirs:
-        rows.extend(_folder_markers(folder, plugin, own, read_records))
+        rows.extend(_folder_markers(folder, plugin, own))
     return rows
 
 
@@ -130,12 +128,12 @@ def _placed_spot(master_index, fid: int) -> tuple:
     return struct.unpack('<I', label)[0], f'{x:g}|{y:g}|{z:g}|{math.degrees(rz):g}'
 
 
-def target_lines(folder: str, read_records, master_index, masters: list) -> list:
+def target_lines(folder: str, master_index, masters: list) -> list:
     """Marker rows for where each restored Intervention's replaced script sent
     the player: its `InterventionTargets`, resolved in the converted masters."""
     rows = []
     for name in _TARGET_EXPORTS:
-        for rec in read_records(os.path.join(folder, name), _TARGET_KEYS):
+        for rec in export_records(os.path.join(folder, name), _TARGET_KEYS):
             for edid in filter(None, (rec.get('InterventionTargets') or '').split(',')):
                 fid = next((f for sig in _PLACED for f in master_index.find_all_by_edid(sig, edid)), 0)
                 place, spot = _placed_spot(master_index, fid) if fid else (0, '')
@@ -145,12 +143,12 @@ def target_lines(folder: str, read_records, master_index, masters: list) -> list
     return rows
 
 
-def world_lines(dirs: list, read_records) -> list:
+def world_lines(dirs: list) -> list:
     """`child=parent` for every child worldspace the `(folder, plugin, own)` exports define."""
     rows = []
     for folder, plugin, _own in dirs:
         masters = masters_from_export_header(folder)
-        for rec in read_records(os.path.join(folder, 'WRLD.txt'), _WORLD_KEYS):
+        for rec in export_records(os.path.join(folder, 'WRLD.txt'), _WORLD_KEYS):
             child, parent = _raw(rec, 'FormID'), _raw(rec, 'WNAM.Parent')
             if child and parent:
                 rows.append(f'{_owner(child, masters, plugin)}|{child:08X}='

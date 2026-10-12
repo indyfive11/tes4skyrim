@@ -6385,6 +6385,20 @@ anything present IS something this run produced. Both source and compiled
 output are cleared: a stale `.pex` is worse than a stale `.psc`, because the VM
 loads it whether or not the source is still there.
 
+**A shared folder is cleared per plugin.** An imported mod's plugins all
+convert into one `output/<Mod>/scripts/`, so the whole-folder wipe let each
+plugin's run delete every sibling's `.psc`/`.pex`: converting Morrowind_ob.esp
+after Morrowind_ob.esm left only the ESP's scripts, and its pack shipped them
+alone. Each run now writes `scripts/<plugin>.owned.txt`, the names `write_psc`
+and the static-script deploy wrote (workers return theirs in `stats['written']`).
+When another plugin's list is present, a rebuild removes only the names on its
+own list that no sibling also claims, the static-script purge skips a copy a
+sibling owns, and `papyrus_compile` compiles only the plugin's own list. With no
+sibling list the folder is wiped whole, as before, which also clears an older
+build's leftovers once. A name two plugins both write is reported; the one
+converted last wins, as `Data\Scripts` would resolve it.
+(`script_convert/ownership.py`)
+
 A directory another process holds open (an Explorer window or a shell sitting
 in `scripts/source`) empties but cannot be removed: Windows refuses the final
 `rmdir` with WinError 32. The wipe keeps that empty directory rather than
@@ -6458,6 +6472,16 @@ aliases never fill (FGC01Rats: QuillWeave, an NPC_ base, was typed as the
 Actor script `TES4_FGC01QuillweaveScript`). The same rule holds in
 `scro_refs._add_scro_ref`: an `ActorBase` typing already set is never
 overwritten by the SCRO's record type.
+
+`PlaceAtMe` is the same kind of base-semantics call: its argument is always a
+base form, so the handler types it `ActorBase` for an NPC_/CREA and the record's
+own base type otherwise (`Form` where the map only has the `ObjectReference`
+fallback). Nehrim's rat-hole spawners (`NQ00RattenSpawn01-03`) had
+`NEHRIM_NQ00Ratte0NScript Property NQRatte0N` — the SCRO gave the CREA its
+attached Actor script's type — so every spawn logged "cannot be bound" and
+`Cannot place a None object`. A spawned actor also needs the script on its
+BASE record; see
+[tes5_import_quest.md](tes5_import_quest.md#actor-script-relocation).
 
 ### <a id="unlock-globals-declared-once"></a>Unlock globals are declared once
 

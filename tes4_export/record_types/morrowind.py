@@ -376,7 +376,7 @@ def export_WEAP(rec: Tes3Record, ctx) -> list:
     lines.append(f'DATA.Weight={weight}')
     lines.append(f'DATA.Damage={damage}')
     lines.append(f'ANAM={data[6] // _ENCHANT_POINT_SCALE}')
-    emit_ref(lines, 'EITM', rec, 'ENAM', ctx, 'ENCH')
+    emit_ref(lines, 'ENAM', rec, 'ENAM', ctx, 'ENCH')
     return lines
 
 
@@ -392,7 +392,7 @@ def _emit_wearable(lines: list, rec: Tes3Record, biped: int,
     emit_model(lines, rec, 'Male.WorldModel.MODL')
     emit_worn_models(lines, rec, biped, ctx)
     emit_icon(lines, rec, key='Male.Icon')
-    emit_ref(lines, 'EITM', rec, 'ENAM', ctx, 'ENCH')
+    emit_ref(lines, 'ENAM', rec, 'ENAM', ctx, 'ENCH')
 
 
 def export_ARMO(rec: Tes3Record, ctx) -> list:
@@ -470,7 +470,7 @@ def export_BOOK(rec: Tes3Record, ctx) -> list:
         lines.append(f'DATA.Teaches={MW_SKILL_TO_TES4.get(skill, -1)}')
         emit_value_weight(lines, value, weight)
         lines.append(f'ANAM={enchant_points}')
-    emit_ref(lines, 'EITM', rec, 'ENAM', ctx, 'ENCH')
+    emit_ref(lines, 'ENAM', rec, 'ENAM', ctx, 'ENCH')
     return lines
 
 

@@ -88,10 +88,12 @@ loses 211 responses.
 ### <a id="ordinal"></a>`Ordinal` is the filter precedence
 
 Morrowind takes the **first matching INFO in list order**, so the order is
-semantic, not cosmetic. The source chains it through `PNAM`/`NNAM` (previous and
-next), but a reader that walked that chain would have to trust every link in a
-23,693-record list. The ordinal is therefore emitted explicitly and is the
-authority.
+semantic, not cosmetic. The export writes each INFO's position in its own
+file's list as `Ordinal`. The MorrowindRuntime SIDECAR does not: it stages
+`Prev` (PNAM) and `Deleted` instead, and the runtime orders the responses of
+every loaded plugin with OpenMW's own `InfoOrder`, so a dependent's responses
+land where OpenMW puts them among its masters'
+([per-owner staging](../plans/morrowind_object_scripts.md#cumulative-gather-must-go)).
 
 ### <a id="conditions"></a>`Condition[n]` — the SCVR rule
 

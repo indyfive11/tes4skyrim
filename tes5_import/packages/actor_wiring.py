@@ -18,6 +18,7 @@ Quest packages are NOT in the actor's PKID list: they hang off a QUST reference
 alias (ALPC), which is how they outrank the standing schedule.  See pack_aliases.
 """
 
+from ..base.master_export import values_of
 from ..base.text_reader import get_formid, get_int
 
 # Vanilla Skyrim.esm records (master index 0 — written unremapped)
@@ -56,10 +57,7 @@ def load_package_types(by_type: dict, master_export: dict = None) -> None:
     actor's converted AIPackage list (both come from get_formid()).
     """
     _PACK_TYPES.clear()
-    sources = [by_type.get('PACK', [])]
-    if master_export:
-        sources.append([r for r in master_export.values()
-                        if r.get('Signature') == 'PACK'])
+    sources = [by_type.get('PACK', []), values_of(master_export, 'PACK')]
     n_master = 0
     for i, src in enumerate(sources):
         for rec in src:

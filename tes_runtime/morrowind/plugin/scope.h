@@ -89,6 +89,11 @@ std::string StateKey(const std::string& id);
 // A StateKey back into its layer (-1 when unqualified or not loaded) and id.
 std::pair<int, std::string> SplitStateKey(const std::string& key);
 
+// A saved StateKey re-resolved in its own layer's view: when another sidecar
+// has become the id's origin (a master now stages what a dependent once
+// copied), the state follows it. Unchanged when nothing defines the id now.
+std::string Requalify(const std::string& key);
+
 // One id's rows, one per layer that staged it, answered through the current
 // layer's view.
 template <typename T>

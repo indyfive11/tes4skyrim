@@ -24,7 +24,8 @@ from tes4_export.record_types.morrowind_scripts import export_SCPT
 from tes4_export.morroblivion import MorroblivionModels
 from tes4_export.morrowind_cell import parse_cell as _parse
 from tes4_export.morrowind_pathgrid import pathgrid_records
-from tes4_export.morrowind_patch import PATCH_NAME, build_patch, patch_formid
+from tes4_export.morrowind_patch import (PATCH_NAME, export_patch, patch_formid,
+                                         register_source)
 
 #: Struct layouts of the fixed subrecords the tests author.
 _WPDT = '<fihHffH6Bi'
@@ -85,6 +86,12 @@ def test_item_exporters_speak_the_tes4_vocabulary():
     assert 'DATA.Type=2' in lines and 'DATA.Damage=14' in lines
     assert 'DATA.Weight=12.0' in lines and 'DATA.Health=1800' in lines
     assert tes4_signature(mace) == 'WEAP'
+
+    ctx.register_own('fire bite', 'ENCH')
+    flaming = _rec('WEAP', 'flame mace', _sub('WPDT', wpdt), _text('ENAM', 'fire bite'))
+    shield = _rec('ARMO', 'fins shield', _text('ENAM', 'fire bite'))
+    for item in (export_WEAP(flaming, ctx), export_ARMO(shield, ctx)):
+        assert _value(item, 'ENAM') == ctx.resolve('fire bite', 'ENCH')
 
     arrow = _rec('WEAP', 'iron arrow', _sub('WPDT', struct.pack(
         _WPDT, 0.1, 1, 12, 0, 1.0, 0.0, 0, 1, 3, 1, 3, 1, 3, 0)))
@@ -611,9 +618,9 @@ def test_gap_patch_holds_what_morroblivion_lacks(tmp_path):
     _export(export, _FIXTURE_MASTER, [_rec('STAT', 'covered_rock')])
     _convert_morroblivion(export, tmp_path / 'output')
 
-    result = build_patch(str(data), str(export), [_FIXTURE_MASTER],
-                         progress=lambda *_: None,
-                         out_root=tmp_path / 'output')
+    assert register_source(str(export), str(data)) == ''
+    result = export_patch(str(data), str(export), [_FIXTURE_MASTER],
+                          progress=lambda *_: None)
 
     assert result['ok'], result.get('error')
     assert result['records'] == 1, 'only the object Morroblivion lacks'
@@ -662,9 +669,9 @@ def test_gap_patch_carries_vanillas_authored_magic_effects(tmp_path):
     _export(export, _FIXTURE_MASTER, [_rec('STAT', 'covered_rock')])
     _convert_morroblivion(export, tmp_path / 'output')
 
-    result = build_patch(str(data), str(export), [_FIXTURE_MASTER],
-                         progress=lambda *_: None,
-                         out_root=tmp_path / 'output')
+    assert register_source(str(export), str(data)) == ''
+    result = export_patch(str(data), str(export), [_FIXTURE_MASTER],
+                          progress=lambda *_: None)
 
     assert result['ok'], result.get('error')
     body = (export / PATCH_NAME / 'MGEF.txt').read_text(encoding='utf-8')
@@ -678,15 +685,15 @@ def test_gap_patch_carries_vanillas_authored_magic_effects(tmp_path):
         'the stand-in master, a TES3 export, already supplies the other 142')
 
 
-def test_gap_patch_builds_the_plugin_itself(tmp_path):
-    """A build reports success only when the installable plugin EXISTS.
+def test_gap_patch_imports_like_any_plugin(tmp_path):
+    """The patch's export builds an installable ESM through the ordinary Import step.
 
-    The build wrote an export and an asset tree, reported success, and never
-    ran the import -- so `output/` held meshes and textures but no plugin,
-    while every Morroblivion-mode conversion still declared it as a master.
+    `phase_import` finds no source binary for the patch, so it passes only
+    Skyrim.esm and reads the ESM bit from the export header.
     See: docs/commentary/tes4_export_morrowind.md#the-patch-builds-its-own-plugin
     """
     from asset_convert.lod.sibling_lod import converted_plugins
+    from tes5_import.pipeline import import_plugin
     from tools.esm.make_master import read_header
 
     export = tmp_path / 'export'
@@ -700,13 +707,18 @@ def test_gap_patch_builds_the_plugin_itself(tmp_path):
     out_root = tmp_path / 'output'
     _convert_morroblivion(export, out_root)
 
-    result = build_patch(str(data), str(export), [_FIXTURE_MASTER],
-                         progress=lambda *_: None, out_root=out_root)
+    result = export_patch(str(data), str(export), [_FIXTURE_MASTER],
+                          progress=lambda *_: None)
 
     assert result['ok'], result.get('error')
+    assert is_master_export(str(export / PATCH_NAME)), (
+        'the -f import of the patch must keep the ESM flag')
     plugin = out_root / PATCH_NAME / PATCH_NAME
-    assert plugin.is_file(), 'the build must leave an installable plugin'
-    assert result['plugin'] == str(plugin), 'the caller is told where it went'
+    plugin.parent.mkdir(parents=True)
+    _converted, errors = import_plugin(
+        export_dir=str(export / PATCH_NAME), output_path=str(plugin),
+        masters=['Skyrim.esm'], is_esm=True, output_root=str(out_root))
+    assert errors == 0
     assert plugin.read_bytes()[:4] == b'TES4', 'a real plugin, not a stub'
 
     flags, masters = read_header(str(plugin))
@@ -714,8 +726,6 @@ def test_gap_patch_builds_the_plugin_itself(tmp_path):
         'it names what Morroblivion holds, so it masters Morroblivion')
     assert flags & 0x1, 'ESM-flagged: dependent plugins declare it a master'
     assert PATCH_NAME.lower().endswith('.esp'), 'the .esp extension is kept'
-    assert is_master_export(str(export / PATCH_NAME)), (
-        'a later -f import of the patch must keep the ESM flag too')
     assert PATCH_NAME in converted_plugins(out_root), (
         'the patch registers as a converted plugin like any other')
 

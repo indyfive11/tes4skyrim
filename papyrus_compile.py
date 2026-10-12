@@ -17,9 +17,11 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+from core.plugin_masters import master_chain
 from core.subprocess_flags import POPEN_FLAGS as _POPEN_FLAGS, windows_cmd
 from core.worker_budget import worker_count
 from output_layout import plugin_out_root, record_dir
+from script_convert.ownership import owner_key, read_owned, sibling_owned
 from source_paths import find_game_path
 
 #: TESConversion root, for the bundled compiler and as the compiler's cwd.
@@ -137,7 +139,8 @@ class _Compiler:
         self.script_src = script_src
         self.script_out = script_out
         self.master_src_dirs = master_src_dirs
-        self.psc_files = sorted(script_src.glob("*.psc"))
+        self.psc_files = _own_psc_files(file_name, script_src)
+        self.partial = len(self.psc_files) != len(list(script_src.glob("*.psc")))
 
     def _header_args(self) -> list:
         """`-h`: vanilla headers, SKSE's, this plugin's, then its masters'."""
@@ -161,7 +164,7 @@ class _Compiler:
         Built once and maintained incrementally.
         See: docs/commentary/script_convert.md#batch-compilation
         """
-        if not quarantine:
+        if not quarantine and not self.partial:
             return self.script_src
         stage = self.script_out / "_batch_src"
         if not stage.is_dir():
@@ -267,26 +270,17 @@ class _Compiler:
         return ok_count, errors
 
 
-def _master_chain(file_name: str, export_root: str) -> list:
-    """Every plugin `file_name` inherits from, nearest master first.
+def _own_psc_files(file_name: str, script_src: Path) -> list:
+    """The .psc files `file_name` wrote: all of them, unless the folder is shared.
 
-    A header lists masters in load order, so each level is walked from its
-    LAST master back. The walk is transitive and cycle-safe. A master is
-    resolved through `record_dir`, never by joining its name onto the export
-    root: plugins imported from one mod archive share a folder named for the
-    MOD, so a plain join misses them.
-    See: docs/commentary/script_convert.md#vanilla-headers
+    See: docs/commentary/script_convert.md#wipe-output-dir
     """
-    from script_convert.cross_ref import master_names
-    ordered, seen, queue = [], {file_name.lower()}, [file_name]
-    while queue:
-        for name in reversed(master_names(record_dir(export_root, queue.pop(0)))):
-            if not name or name.lower() in seen:
-                continue
-            seen.add(name.lower())
-            ordered.append(name)
-            queue.append(name)
-    return ordered
+    owner = owner_key(record_dir(str(SCRIPT_DIR / "export"), file_name))
+    every = sorted(script_src.glob("*.psc"))
+    if not sibling_owned(script_src, owner):
+        return every
+    own = {n.lower() for n in read_owned(script_src, owner)}
+    return [p for p in every if p.stem.lower() in own]
 
 
 def _master_source_dirs(file_name: str, out_root: Path) -> list:
@@ -299,7 +293,7 @@ def _master_source_dirs(file_name: str, out_root: Path) -> list:
     """
     export_root = str(SCRIPT_DIR / "export")
     dirs = []
-    for m in _master_chain(file_name, export_root):
+    for m in reversed(master_chain(record_dir(export_root, file_name))):
         d = plugin_out_root(out_root, m, export_root) / "scripts" / "source"
         if d.is_dir():
             dirs.append(d)

@@ -1586,6 +1586,39 @@ class TestScroRefBaseObjectGuard:
         assert self._typed('ACTI', add_ref) == 'TES4_TheThingScript'
 
 
+class TestPlaceAtMeBindsABaseForm:
+    """PlaceAtMe's argument is a BASE form, so its property takes a base type.
+
+    The SCRO typed a scripted CREA as its attached Actor script, which a base
+    record can never bind: Nehrim's rat-hole spawners read None and spawned
+    nothing.
+    See: docs/commentary/script_convert.md#property-type-merge
+    """
+
+    def _xref(self, rtype, edid, fid):
+        """A scripted base record of `rtype` named `edid`."""
+        x = CrossRefGraph()
+        x.formid_to_edid[fid] = edid
+        x.edid_to_formid[edid.lower()] = fid
+        x.record_type[fid] = rtype
+        x.record_scri[fid] = '001AB00E'
+        x.script_formid_to_edid['001AB00E'] = 'NQ00Ratte02Script'
+        x.script_formid_to_type['001AB00E'] = 0
+        return x
+
+    @pytest.mark.parametrize('rtype, ptype', [('CREA', 'ActorBase'), ('NPC_', 'ActorBase'),
+                                              ('ACTI', 'Activator')])
+    def test_scripted_base_is_typed_as_a_base(self, rtype, ptype):
+        """The spawned form's property is a base type, not its attached script."""
+        from script_convert.scro_refs import add_scro_ref
+        x = self._xref(rtype, 'NQRatte02', '001AB066')
+        conv = ScriptConverter(x)
+        add_scro_ref(conv, '001AB066', x)
+        out = conv.convert_fragment('PlaceAtMe NQRatte02 1,1,1', 'ObjectReference')
+        assert 'Self.PlaceAtMe(NQRatte02, 1)' in '\n'.join(out)
+        assert conv.get_property_refs()['NQRatte02'] == ptype
+
+
 # ===========================================================================
 # Stale source names recovered from the SCRO table
 # ===========================================================================

@@ -22,6 +22,7 @@
 #include "log.h"
 #include "menu.h"
 #include "menu_layout.h"
+#include "menu_widgets.h"
 #include "persuasion.h"
 #include "scope.h"
 #include "script_context.h"
@@ -32,13 +33,6 @@
 namespace tesruntime::mw {
 
 namespace {
-
-struct Rect {
-    int x, y, w, h;
-    bool Contains(double px, double py) const {
-        return px >= x && py >= y && px < x + w && py < y + h;
-    }
-};
 
 constexpr Rect kHistory{layout::kHistoryX, layout::kHistoryY,
                         layout::kHistoryW, layout::kHistoryH};
@@ -134,6 +128,7 @@ int g_listScroll = 0;
 int g_hoverItem = -1;
 int g_hoverHot = -1;
 bool g_hoverBye = false;
+ThumbDrag g_drag;
 bool g_scrollToEnd = false;
 bool g_captionDirty = false;
 bool g_open = false;
@@ -209,16 +204,6 @@ std::string RowPath(int row, const char* property) {
 }
 
 // ---------------------------------------------------------------- text layout
-
-// A glyph's width on screen at the body size, as the movie draws it.
-double CharWidth(char c) {
-    const int index = static_cast<unsigned char>(c) - layout::kFirstCode;
-    constexpr int count = sizeof(layout::kAdvance) / sizeof(layout::kAdvance[0]);
-    const int units = (index >= 0 && index < count)
-                          ? layout::kAdvance[index]
-                          : layout::kAdvance['?' - layout::kFirstCode];
-    return units * static_cast<double>(layout::kFontPx) / layout::kFontEm;
-}
 
 // The pitch of the pane's lines. Starts at the face's ascent + descent and
 // is replaced by what the field itself measures (textHeight / numLines)
@@ -418,26 +403,13 @@ void PushHistory(bool keepScroll) {
 
 // --------------------------------------------------------------- scrollbars
 
-// Shows `bar` with its `thumb` at `fraction` of the track, or hides both.
-void PushScrollbar(const Rect& bar, const char* barPath, const char* thumbPath,
-                   bool visible, double fraction) {
-    SetMenuNumber(Path(barPath, "._visible").c_str(), visible ? 1 : 0);
-    SetMenuNumber(Path(thumbPath, "._visible").c_str(), visible ? 1 : 0);
-    if (!visible) return;
-    const int track = bar.h - layout::kScrollTrackTop -
-                      layout::kScrollTrackBottom - layout::kThumbH;
-    const double top = bar.y + layout::kScrollTrackTop +
-                       std::clamp(fraction, 0.0, 1.0) * track;
-    SetMenuNumber(Path(thumbPath, "._y").c_str(), top);
-}
-
 void PushHistoryScrollbar() {
     double most = 0, scroll = 1;
     const bool known =
         GetMenuNumber(Path(layout::kFieldHistory, ".maxscroll").c_str(), &most) &&
         GetMenuNumber(Path(layout::kFieldHistory, ".scroll").c_str(), &scroll);
     const bool visible = known && most > 1;
-    PushScrollbar(kHistoryScroll, layout::kSpriteHistoryScroll,
+    PushScrollbar(DialogueMenu(), kHistoryScroll, layout::kSpriteHistoryScroll,
                   layout::kSpriteHistoryThumb, visible,
                   visible ? (scroll - 1) / (most - 1) : 0);
 }
@@ -452,22 +424,9 @@ int ListRange() { return std::max(0, ListHeight() - kTopics.h); }
 
 void PushTopicScrollbar() {
     const int range = ListRange();
-    PushScrollbar(kTopicScroll, layout::kSpriteTopicScroll,
+    PushScrollbar(DialogueMenu(), kTopicScroll, layout::kSpriteTopicScroll,
                   layout::kSpriteTopicThumb, range > 0,
                   range > 0 ? static_cast<double>(g_listScroll) / range : 0);
-}
-
-// A click on a scrollbar: the arrows step, the track pages, relative to
-// where the thumb sits. Returns the signed number of steps.
-int ScrollClick(const Rect& bar, double y, double fraction, int page) {
-    if (y < bar.y + layout::kScrollEnd) return -1;
-    if (y >= bar.y + bar.h - layout::kScrollEnd) return 1;
-    const int track = bar.h - layout::kScrollTrackTop -
-                      layout::kScrollTrackBottom - layout::kThumbH;
-    const double thumbTop = bar.y + layout::kScrollTrackTop + fraction * track;
-    if (y < thumbTop) return -page;
-    if (y >= thumbTop + layout::kThumbH) return page;
-    return 0;
 }
 
 // ---------------------------------------------------------------- the list
@@ -831,7 +790,38 @@ void ScrollList(int pixels) {
     PushTopics();
 }
 
+// Where each list's thumb sits: 0 at the top, 1 at the bottom.
+double HistoryFraction() {
+    double most = 1, scroll = 1;
+    GetMenuNumber(Path(layout::kFieldHistory, ".maxscroll").c_str(), &most);
+    GetMenuNumber(Path(layout::kFieldHistory, ".scroll").c_str(), &scroll);
+    return most > 1 ? (scroll - 1) / (most - 1) : 0;
+}
+
+double TopicFraction() {
+    return ListRange() > 0 ? static_cast<double>(g_listScroll) / ListRange() : 0;
+}
+
+// The held thumb follows the cursor: the history by whole lines, the topic
+// list by pixels.
+void DragThumb(double y) {
+    const double fraction = g_drag.Fraction(y);
+    if (g_drag.bar == &kHistoryScroll) {
+        double most = 1;
+        GetMenuNumber(Path(layout::kFieldHistory, ".maxscroll").c_str(), &most);
+        SetMenuNumber(Path(layout::kFieldHistory, ".scroll").c_str(),
+                      1 + std::round(fraction * (std::max(most, 1.0) - 1)));
+        PushHistoryScrollbar();
+        return;
+    }
+    ScrollList(static_cast<int>(std::lround(fraction * ListRange())) - g_listScroll);
+}
+
 void OnHover(double x, double y) {
+    if (g_drag.Active()) {
+        DragThumb(y);
+        return;
+    }
     if (ListModalOpen()) {
         ListModalHover(x, y);
         return;
@@ -855,18 +845,15 @@ void OnHover(double x, double y) {
 
 void ClickScrollbars(double x, double y) {
     if (kHistoryScroll.Contains(x, y)) {
-        double most = 1, scroll = 1;
-        GetMenuNumber(Path(layout::kFieldHistory, ".maxscroll").c_str(), &most);
-        GetMenuNumber(Path(layout::kFieldHistory, ".scroll").c_str(), &scroll);
+        const double fraction = HistoryFraction();
+        if (g_drag.Begin(kHistoryScroll, x, y, fraction)) return;
         const int page = static_cast<int>(kHistory.h / g_lineHeight);
-        ScrollHistory(ScrollClick(kHistoryScroll, y,
-                                  most > 1 ? (scroll - 1) / (most - 1) : 0,
-                                  page));
+        ScrollHistory(ScrollClick(kHistoryScroll, y, fraction, page));
     } else if (kTopicScroll.Contains(x, y) && ListRange() > 0) {
-        ScrollList(kListStep * ScrollClick(
-                                   kTopicScroll, y,
-                                   static_cast<double>(g_listScroll) / ListRange(),
-                                   kTopics.h / kListStep));
+        const double fraction = TopicFraction();
+        if (g_drag.Begin(kTopicScroll, x, y, fraction)) return;
+        ScrollList(kListStep *
+                   ScrollClick(kTopicScroll, y, fraction, kTopics.h / kListStep));
     }
 }
 
@@ -934,6 +921,7 @@ void OnClosed() {
     g_hoverItem = -1;
     g_hoverHot = -1;
     g_hoverBye = false;
+    g_drag.End();
 }
 
 // After the movie advanced its text is laid out, so the measurements that
@@ -964,6 +952,7 @@ void InstallConversation() {
         const LayerScope scope(g_layer);
         OnClick(x, y);
     };
+    input.release = []() { g_drag.End(); };
     input.wheel = [](double x, double y, double delta) {
         const LayerScope scope(g_layer);
         OnWheel(x, y, delta);

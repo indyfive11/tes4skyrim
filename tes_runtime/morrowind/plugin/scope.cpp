@@ -270,4 +270,12 @@ std::pair<int, std::string> SplitStateKey(const std::string& key) {
     return {LayerIndex(key.substr(0, at)), key.substr(at + 1)};
 }
 
+std::string Requalify(const std::string& key) {
+    const auto [layer, id] = SplitStateKey(key);
+    if (layer < 0) return key;
+    const LayerScope scope(layer);
+    const std::string now = StateKey(id);
+    return now.find(kKeySeparator) == std::string::npos ? key : now;
+}
+
 }  // namespace tesruntime::mw

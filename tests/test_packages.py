@@ -579,20 +579,10 @@ def _reloc_setup(monkeypatch, placements):
     return os_, by_type
 
 
-def test_actor_script_relocated_to_placed_ref(monkeypatch):
-    os_, by_type = _reloc_setup(monkeypatch, placements=1)
-    moved = os_._relocate_actor_scripts_to_refs(by_type, 0)
-    assert moved == 1
-    # Script now lives on the placed ACHR ...
-    assert os_._OBJECT_VMAD.get(0x0000BC72) == b'VMAD\x04\x00base'
-    # ... and ONLY there (single placement -> moved off the base).
-    assert 0x0000A29D not in os_._OBJECT_VMAD
-
-
-def test_shared_base_keeps_script_and_adds_ref(monkeypatch):
-    """A base placed more than once keeps its script (siblings need it) and the
-    read ref gains its own copy."""
-    os_, by_type = _reloc_setup(monkeypatch, placements=3)
+@pytest.mark.parametrize('placements', [1, 3])
+def test_actor_script_copied_to_placed_ref_and_kept_on_base(monkeypatch, placements):
+    """The read ref gains the script, and the base keeps it for runtime spawns."""
+    os_, by_type = _reloc_setup(monkeypatch, placements=placements)
     moved = os_._relocate_actor_scripts_to_refs(by_type, 0)
     assert moved == 1
     assert os_._OBJECT_VMAD.get(0x0000BC72) == b'VMAD\x04\x00base'

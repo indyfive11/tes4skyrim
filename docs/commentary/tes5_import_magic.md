@@ -1062,7 +1062,7 @@ The export writes each effect's EditorID (`MW014FireDamage`) as the `EFID`,
 and `register_mgef_formids` already indexes `_code_to_fid` by EditorID, so
 `_resolve_mgef` resolves Morrowind effects with **no change at all**.
 
-### 114 of 143 are native; 19 await the runtime
+### Most are native; 9 await the runtime
 
 Most Morrowind effects are ordinary Skyrim ones -- fire damage is fire damage.
 The mapping was checked against `wbActorValueEnum` and against real vanilla
@@ -1086,11 +1086,81 @@ the drain, as `DisDamageHealthVampire` (archetype 34 on Health), and that is
 what Vampirism and Corprus map to. Attaching the full vampire quest chain is
 runtime work, not record work.
 
-The 14 with no Skyrim mechanism carry `NATIVE_NONE`. Mark, Recall and the two
-Interventions convert as a script-less Script effect, which MorrowindRuntime
-acts on ([teleport effects](morrowind_runtime.md#teleport-effects)). The other
-ten still convert as an inert Value Modifier: present, addressable by a script,
-doing nothing.
+The 13 with no Skyrim mechanism carry `NATIVE_NONE`. Eight convert as a
+script-less Script effect that MorrowindRuntime acts on: Mark, Recall and the
+two Interventions ([teleport effects](morrowind_runtime.md#teleport-effects)),
+and SwiftSwim, Levitate, SlowFall and Sanctuary (below). The other five (Disintegrate
+Weapon/Armor 37/38, Detect Enchantment/Key 65/66, ExtraSpell 126) still
+convert as an inert Value Modifier: present, addressable by a script, doing
+nothing.
+
+<a id="runtime-effects-read-the-active-effect-list"></a>
+### SwiftSwim, Levitate, SlowFall and Sanctuary
+
+**Code:** `magic_morrowind.py` (`MW_RUNTIME_EFFECTS`, `MW_EFFECT_PERKS`, `register_effect_perks`), `magic.py` (`_morrowind_perk`), `tes_runtime/morrowind/plugin/game_calls_flight.cpp`, `game_calls_sanctuary.cpp`
+
+Levitate and SlowFall are confirmed in game. Sanctuary is untested.
+🛑 **SwiftSwim is NOT confirmed: re-check it.** With 60 points the runtime
+reads the effect and scales the stroke ×1.60, yet swimming feels no faster
+([the open lead](morrowind_runtime.md#levitate-and-slowfall)).
+
+The magic-effect apply sink reports only when an effect *starts*, and these
+four last. None of them needs an end signal: each is an effect the engine's
+own active-effect list holds, magnitude and all, for as long as it lasts.
+
+| Effect | Converts as | What acts on it | OpenMW source |
+|---|---|---|---|
+| SwiftSwim 1 | script-less Script effect | MorrowindRuntime swim stroke | `actor.hpp`: swim speed × (1 + 0.01 × magnitude) |
+| Levitate 10 | script-less Script effect | MorrowindRuntime flight | `npc.cpp` `getMaxSpeed`, `worldimp.cpp` `isFlying` |
+| SlowFall 11 | script-less Script effect + PERK `MWSlowFallPerk` | the perk, and MorrowindRuntime | `movementsolver.cpp`, `mtphysics.cpp` |
+| Sanctuary 42 | script-less Script effect + PERK `MWSanctuaryPerk` | the perk, on a rank MorrowindRuntime sets | `creaturestats.cpp` `getEvasion`, `combat.cpp` `getHitChance` |
+
+🛑 **No effect parks its state on a vanilla actor value, obsolete or not.**
+The first build put Levitate, SlowFall and Sanctuary on the limb conditions
+(50-52). Those carry an implicit engine base (they are on the CK wiki's Actor
+Value notes list), and the exe still carries Fallout's limb damage
+(`fCombatPlayerLimbDamageMult`). So Levitate read as always on and overwrote
+every jump: the player could not jump at all. Instead, the runtime sums a
+runtime-carried effect's magnitude straight off the actor's active-effect list
+(`ActiveMagnitude`). A perk reads a rank in a converter-owned faction.
+
+**SwiftSwim** is runtime-carried; the stroke scaling is in
+[Levitate and SlowFall](morrowind_runtime.md#levitate-and-slowfall).
+🛑 **SpeedMult gated on `IsSwimming` does not work.** The first two builds
+converted it as vanilla Frost Slow turned around: a Peak Value Modifier on
+SpeedMult with an MGEF condition `IsSwimming == 1`. In game the player's
+SpeedMult stayed at 100 for the potion's whole run, swimming included, so the
+refresh (`ModActorValue` CarryWeight ±0.1, the CK wiki's recipe) was never
+the problem: the gated effect never switched on. No vanilla MGEF gates on
+`IsSwimming`; all 27 live-state MGEF conditions are `IsInInterior`.
+
+**Sanctuary** is vanilla `DeftMovement`'s dodge: a Mod Incoming Damage entry
+(36, Multiply Value, 3 tabs) that rolls `GetRandomPercent` and multiplies the
+hit by 0. A roll cannot compare against a magnitude, so `MWSanctuaryPerk`
+carries one entry per point, 1 to 100. Each entry tests
+`GetFactionRank(MWSanctuaryFaction) == k`, then rolls `GetRandomPercent < k`,
+and rank 100 always dodges. MorrowindRuntime holds each holder's rank at its
+summed Sanctuary, capped at 100: OpenMW adds `min(100, Sanctuary)` to evasion,
+so stacked Sanctuaries add. OpenMW's evasion lowers weapon hit chance only,
+and Mod Incoming Damage fires on weapon hits only. The faction is hidden and
+rankless; `effects_formid.txt` names it for the runtime
+([Sanctuary](morrowind_runtime.md#sanctuary)).
+
+**SlowFall's damage** is exact: OpenMW calls `land()` every step while
+SlowFall is above 0 (`mtphysics.cpp`), so no fall under it ever hurts.
+`MWSlowFallPerk` carries the same unconditioned zeroing entry as
+`TES4NoFallDamagePerk` (`owned_records.FALL_DAMAGE_ENTRY`). It is a separate
+perk so that a converted `RestoreFallDamage` dispelling its spell cannot also
+remove SlowFall's protection. The slower drift down is the runtime's job
+([Levitate and SlowFall](morrowind_runtime.md#levitate-and-slowfall)).
+
+**PerkToApply** is how an effect gives its target a perk; vanilla does this
+on 9 MGEFs. `register_effect_perks` adopts a master's perk and faction by
+EditorID, else writes them, before any MGEF or variant is built. Every
+delivery clone copies the base DATA, so every clone applies the same perk.
+
+Open question for the first in-game test: whether the engine refcounts a perk
+applied by two overlapping effects.
 
 <a id="morrowind-borrowed-art"></a>
 ### Art is borrowed from vanilla Skyrim

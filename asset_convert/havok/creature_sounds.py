@@ -14,8 +14,8 @@ See: docs/commentary/tes4_export_morrowind.md#creature-sound-generators
 import os
 
 from tes5_import.base.text_reader import parse_export_file
-from tes5_import.overrides.nested import (export_master_names, export_root,
-                                          master_export_dir)
+from core.plugin_masters import (master_dir, master_index_map,
+                                 masters_from_export_header)
 
 #: How many `CSCR` hops are followed inside one plugin before giving up.
 _MAX_INHERIT_DEPTH = 4
@@ -82,18 +82,13 @@ def _creature_slots(rec: dict, by_fid: dict, view: _Sounds, depth: int = 0) -> d
 
 def _adopt_masters(view: _Sounds, export_dir: str, seen: dict) -> None:
     """Fold each master's resolved view into `view`, in this plugin's id space."""
-    names = export_master_names(export_dir)
-    slot_of = {name.lower(): i for i, name in enumerate(names)}
-    root = export_root(export_dir)
+    names = masters_from_export_header(export_dir)
     for slot, name in enumerate(names):
-        folder = master_export_dir(root, name)
+        folder = master_dir(export_dir, name)
         if not os.path.isdir(folder):
             continue
         theirs = _load(folder, seen)
-        own = export_master_names(folder)
-        remap = {len(own): slot}
-        remap.update({k: slot_of[sub.lower()] for k, sub in enumerate(own)
-                      if sub.lower() in slot_of})
+        remap = master_index_map(folder, slot, names)
         view.edids.update(_rekeyed(theirs.edids, remap))
         view.slots.update(_rekeyed(theirs.slots, remap))
         for key, slots in theirs.folders.items():

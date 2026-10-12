@@ -119,7 +119,7 @@ class Binary:
         The name we match sits at descriptor+16.
         """
         out = []
-        for m in re.finditer(rb'\.\?AV[A-Za-z0-9_@]{2,120}?@@', self.data):
+        for m in re.finditer(rb'\.\?A[UV][A-Za-z0-9_@]{2,120}?@@', self.data):
             name = m.group(0).decode('latin1')
             if needle and needle.lower() not in name.lower():
                 continue
@@ -136,7 +136,7 @@ class Binary:
         x64 holds a *relative* pointer to the type descriptor at +12.
         """
         descs = [rva for nm, rva in self.find_rtti_names(class_name)
-                 if nm == f'.?AV{class_name}@@']
+                 if nm in (f'.?AV{class_name}@@', f'.?AU{class_name}@@')]
         if not descs:
             return []
         desc = descs[0]

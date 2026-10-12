@@ -1475,6 +1475,13 @@ XNAM is (Faction, Modifier 0, Group Combat Reaction 1 = Enemy); DATA bit 0 is
 Hidden From PC. **REVERTED:** relationship rank -4 was tried as the hostile
 reaction and did not work.
 
+A plugin whose masters (at any depth, see
+[support records](tes5_import_pipeline.md#phase-0-dependent-skips-support-records))
+already define the pair adopts it by EditorID instead of writing its own, and
+likewise `TES4DestroyedRefs`; a second pair would split ForceCombat's two sides
+across plugins. The pair is adopted only whole, since each faction names the
+other in its XNAM.
+
 ### The GetDestroyed formlist
 
 TES4 keeps a per-reference "destroyed" flag: `SetDestroyed` writes it,

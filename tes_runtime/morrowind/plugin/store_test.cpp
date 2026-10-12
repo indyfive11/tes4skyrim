@@ -4,6 +4,7 @@
 // (the one holding DIAL.txt and INFO.txt) and reports what parsed, so the
 // reader is checked against 23,693 real records rather than a fixture.
 
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -13,10 +14,22 @@
 #include <unordered_map>
 #include <vector>
 
+#include "scope.h"
 #include "store.h"
 
 namespace tesruntime::mw {
 namespace {
+
+// Per plugin: the responses its view offers once every sidecar is merged.
+void PrintViews() {
+    for (std::size_t layer = 0; layer < LayerCount(); ++layer) {
+        LayerScope scope(static_cast<int>(layer));
+        std::size_t offered = 0;
+        for (const auto& entry : Topics()) offered += ViewInfos(entry.second).size();
+        std::printf("  view %-40s %zu offered\n",
+                    LayerName(static_cast<int>(layer)).c_str(), offered);
+    }
+}
 
 int g_failures = 0;
 
@@ -177,11 +190,16 @@ int main(int argc, char** argv) {
         // The deployed layout: <root>/<plugin>/{DIAL,INFO}.txt, walked the way
         // LoadStore does rather than from a caller-named directory.
         std::printf("sidecar root %s\n", argv[2]);
+        const auto start = std::chrono::steady_clock::now();
         const StoreStats s = LoadStoreFrom(argv[2]);
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - start).count();
         std::printf("  plugins   %zu\n", s.files);
         std::printf("  topics    %zu\n", s.topics);
         std::printf("  responses %zu\n", s.infos);
         std::printf("  scripts   %zu\n", s.scripts);
+        std::printf("  load      %lld ms\n", static_cast<long long>(ms));
+        PrintViews();
         Check(s.files > 0, "at least one plugin folder found");
         Check(s.topics > 0, "topics loaded");
         Check(s.infos > 0, "responses loaded");

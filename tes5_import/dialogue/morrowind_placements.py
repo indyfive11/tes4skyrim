@@ -1,0 +1,119 @@
+"""
+What the Morrowind sidecar reads from an export folder's text: each file is
+read ONCE per run, and every table built from it takes its share of that read.
+
+See: docs/commentary/morrowind_runtime.md#sidecar
+"""
+
+import functools
+import math
+import os
+
+from core.plugin_masters import masters_from_export_header
+
+#: Every TES3 type that can carry a script.
+SCRIPTED_EXPORTS = ('NPC_.txt', 'CREA.txt', 'ACTI.txt', 'ALCH.txt', 'AMMO.txt',
+                    'APPA.txt', 'ARMO.txt', 'BOOK.txt', 'CLOT.txt', 'CONT.txt',
+                    'DOOR.txt', 'INGR.txt', 'KEYM.txt', 'LIGH.txt', 'MISC.txt',
+                    'WEAP.txt')
+
+#: The exports holding PLACED references, which name their base by FormID.
+PLACEMENT_EXPORTS = ('REFR.txt', 'ACHR.txt', 'ACRE.txt')
+
+#: TES4 marker base -> the kind the runtime keys on; the TES3 export writes the same ids.
+MARKER_KINDS = {0x00000005: 'divine', 0x00000006: 'temple'}
+
+#: The EditorID prefix of the persistent markers the export mints for travel destinations.
+TRAVEL_PREFIX = 'TES3Travel'
+
+_RECORD_MARK = '---RECORD_BEGIN---'
+_PLACEMENT_KEYS = ('PosX', 'PosY', 'PosZ', 'RotX', 'RotY', 'RotZ')
+_REF_KEYS = ('FormID', 'NAME', 'ParentCELL', 'EditorID') + _PLACEMENT_KEYS
+_SCRIPTED_KEYS = ('FormID', 'EditorID', 'SCRI')
+_CELL_KEYS = ('FormID', 'EditorID', 'FULL', 'ParentWRLD')
+
+
+def export_records(path: str, keys: tuple):
+    """Each record in an export file as a dict of just `keys`."""
+    if not os.path.isfile(path):
+        return
+    wanted = tuple(key + '=' for key in keys)
+    record = None
+    with open(path, encoding='utf-8', errors='replace') as handle:
+        for line in handle:
+            if line.startswith(_RECORD_MARK):
+                if record:
+                    yield record
+                record = {}
+            elif record is not None and line.startswith(wanted):
+                key, _, value = line.rstrip('\n').partition('=')
+                record[key] = value
+    if record:
+        yield record
+
+
+def placement(rec: dict) -> str:
+    """`x,y,z,rx,ry,rz` for a placed ref, the angles in DEGREES.
+
+    The runtime's SetAngle hook takes degrees; the record stores radians.
+    """
+    out = []
+    for key in _PLACEMENT_KEYS:
+        value = float(rec.get(key) or 0.0)
+        if key.startswith('Rot'):
+            value = math.degrees(value)
+        out.append(f'{value:g}')
+    return ','.join(out)
+
+
+def _base_id(base: str) -> int:
+    """A placement's NAME as an int, 0 when absent or malformed."""
+    try:
+        return int(base or '0', 16)
+    except ValueError:
+        return 0
+
+
+def _take_ref(out: dict, rec: dict, in_refr: bool, owner: str,
+              scripted: set) -> None:
+    """Fold one placed reference into `folder_tables`' `first`, `instances`,
+    and, for a REFR, `travel` and `markers`."""
+    base, formid = rec.get('NAME', ''), rec.get('FormID', '')
+    if base and formid[:2].upper() == owner:
+        out['first'].setdefault(base, formid)
+    if formid and base.upper() in scripted:
+        out['instances'].append(rec)
+    if not in_refr:
+        return
+    edid = rec.get('EditorID', '')
+    if formid and edid.startswith(TRAVEL_PREFIX):
+        out['travel'].setdefault(edid.lower(), formid)
+    if _base_id(base) in MARKER_KINDS:
+        out['markers'].append(rec)
+
+
+@functools.lru_cache(maxsize=16)
+def folder_tables(folder: str) -> dict:
+    """What the sidecar reads from the export at `folder`, each file once:
+    `scripted` `[(file, record)]` of `SCRIPTED_EXPORTS`, `cells` CELL.txt's
+    records, `first` `{base: first placement FormID the folder owns}`,
+    `travel` `{lower TES3Travel EditorID: FormID}`, `markers` the REFRs of a
+    `MARKER_KINDS` base, and `instances` the placements of a scripted base.
+    """
+    scripted = [(name, rec) for name in SCRIPTED_EXPORTS
+                for rec in export_records(os.path.join(folder, name), _SCRIPTED_KEYS)]
+    bases = {rec['FormID'].upper() for _name, rec in scripted
+             if rec.get('FormID') and rec.get('SCRI')}
+    owner = f'{len(masters_from_export_header(folder)):02X}'
+    out = {'scripted': scripted, 'first': {}, 'travel': {}, 'markers': [],
+           'instances': [],
+           'cells': list(export_records(os.path.join(folder, 'CELL.txt'), _CELL_KEYS))}
+    for name in PLACEMENT_EXPORTS:
+        for rec in export_records(os.path.join(folder, name), _REF_KEYS):
+            _take_ref(out, rec, name == 'REFR.txt', owner, bases)
+    return out
+
+
+def forget_folder_tables() -> None:
+    """Drop every folder's `folder_tables`; called after the sidecar is staged."""
+    folder_tables.cache_clear()

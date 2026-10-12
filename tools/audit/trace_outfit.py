@@ -19,7 +19,6 @@ Usage:
     python -m tools.audit.trace_outfit export/DLCBattlehornCastle.esp Knight1
 """
 import argparse
-import os
 import sys
 
 import os as _os, sys as _sys
@@ -28,41 +27,8 @@ _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(
 from tes5_import.base.text_reader import parse_export_directory
 from tes5_import.actors import outfits as outfits
 from tes5_import.base.text_reader import get_int
+from tes5_import.overrides.nested import load_master_export
 
-
-def _load_master_export(export_dir: str) -> dict:
-    """The masters' export records, keyed by raw TES4 FormID.
-
-    Mirrors overrides.load_master_export so the trace indexes exactly what the
-    converter does. A dependent plugin dresses its actors out of its master's
-    wardrobe (DLCBattlehornCastle: 155 of 165 inventory entries), so without
-    this the trace shows every one of them as carried loot.
-    """
-    header = os.path.join(export_dir, '_HEADER.txt')
-    if not os.path.isfile(header):
-        return {}
-    names = []
-    with open(header, 'r', encoding='utf-8') as f:
-        for line in f:
-            if line.startswith('Master['):
-                _, _, val = line.partition('=')
-                if val.strip():
-                    names.append(val.strip())
-    from tes5_import.overrides.nested import export_root, master_export_dir
-    root = export_root(export_dir)
-    out = {}
-    for name in names:
-        mdir = master_export_dir(root, name)
-        if not os.path.isdir(mdir):
-            print(f'  WARNING: master export not found ({mdir}); '
-                  f'its items cannot be classified')
-            continue
-        print(f'  indexing master export: {name}')
-        for rec in parse_export_directory(mdir):
-            fid = rec.get('FormID')
-            if fid:
-                out[fid.upper()] = rec
-    return out
 
 # TES4 biped bit → human label (from constants.BIPED_SLOT_MAP).
 _SLOT_NAMES = {
@@ -102,7 +68,7 @@ def main() -> int:
         by_type.setdefault(r.get('Signature', ''), []).append(r)
 
     master_export = ({} if args.no_masters
-                     else _load_master_export(args.export_dir))
+                     else load_master_export(args.export_dir))
     outfits.load_item_index(by_type, master_export)
 
     actors = by_type.get('NPC_', []) + by_type.get('CREA', [])

@@ -13,6 +13,7 @@ themselves, so their refs are left as exported.
 
 import re
 
+from ..base.master_export import records_of
 from ..base.text_reader import get_int, get_str
 from ..dialogue.say_topics import collect_script_texts
 from ..record_types.world_falloutnv import is_fallout_source
@@ -34,8 +35,7 @@ def _unescape(text: str) -> str:
 
 def _master_records(master_export: dict, sigs: tuple):
     """(FormID, record) for each master record of `sigs`."""
-    return [(fid, r) for fid, r in (master_export or {}).items()
-            if r.get('Signature') in sigs]
+    return records_of(master_export, *sigs)
 
 
 def _dead_bases(by_type: dict, master_export: dict) -> dict:

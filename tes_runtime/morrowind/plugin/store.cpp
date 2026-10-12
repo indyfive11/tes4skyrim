@@ -3,10 +3,13 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <fstream>
+#include <list>
 #include <sstream>
 
+#include "components/esm3/infoorder.hpp"
 #include "log.h"
 #include "paths.h"
 #include "scope.h"
@@ -87,7 +90,8 @@ Info MakeInfo(const Record& rec) {
     Info info;
     info.id = Unescape(Get(rec, "EditorID"));
     info.topic = Unescape(Get(rec, "Topic"));
-    info.ordinal = GetInt(rec, "Ordinal", 0);
+    info.prev = Unescape(Get(rec, "Prev"));
+    info.deleted = GetInt(rec, "Deleted", 0) != 0;
     info.type = ParseDialType(Get(rec, "InfoType"));
     info.disposition = GetInt(rec, "Disposition", 0);
     info.journalIndex = GetInt(rec, "JournalIndex", 0);
@@ -109,14 +113,65 @@ Info MakeInfo(const Record& rec) {
     return info;
 }
 
-// Responses arrive per topic in file order; Ordinal is the authority, so a
-// sidecar concatenated out of order still filters correctly.
-void SortInfos() {
-    for (auto& entry : g_topics) {
-        std::stable_sort(entry.second.infos.begin(), entry.second.infos.end(),
-                         [](const Info& a, const Info& b) {
-                             return a.ordinal < b.ordinal;
-                         });
+// One response as OpenMW's InfoOrder holds it: the two ids it orders by.
+struct Ordered {
+    ESM::RefId mId;
+    ESM::RefId mPrev;
+    const Info* info = nullptr;
+};
+
+// Per view, the layers it sees; view 0 sees every layer. And per layer, its
+// view: layers that see the same sidecars share one merged order.
+std::vector<std::vector<bool>> g_views;
+std::vector<int> g_viewOf;
+
+void BuildViews() {
+    const std::size_t count = LayerCount();
+    g_views.assign(1, std::vector<bool>(count, true));
+    g_viewOf.assign(count, 0);
+    for (std::size_t layer = 0; layer < count; ++layer) {
+        std::vector<bool> sees(count);
+        for (std::size_t other = 0; other < count; ++other) {
+            sees[other] = LayersRelated(static_cast<int>(layer),
+                                        static_cast<int>(other));
+        }
+        const auto found = std::find(g_views.begin(), g_views.end(), sees);
+        g_viewOf[layer] = static_cast<int>(found - g_views.begin());
+        if (found == g_views.end()) g_views.push_back(std::move(sees));
+    }
+}
+
+// One view's order: Dialogue::readInfo per response, then setUp.
+std::vector<const Info*> MergeView(const std::vector<Ordered>& all,
+                                   const std::vector<bool>& sees) {
+    ESM::InfoOrder<Ordered> order;
+    for (const Ordered& entry : all) {
+        const int layer = entry.info->layer;
+        const bool seen = layer < 0 || static_cast<std::size_t>(layer) >= sees.size() ||
+                          sees[static_cast<std::size_t>(layer)];
+        if (seen) order.insertInfo(Ordered(entry), entry.info->deleted);
+    }
+    order.removeDeleted();
+    std::list<Ordered> merged;
+    order.extractOrderedInfo(merged);
+    std::vector<const Info*> out;
+    out.reserve(merged.size());
+    for (const Ordered& entry : merged) out.push_back(entry.info);
+    return out;
+}
+
+// A sidecar that predates `Prev` holds the whole merged list, ordered by
+// Ordinal: chaining each response to the one before it rebuilds that list.
+// DEPRECATED: remove once no sidecar without `Prev` remains.
+void ChainLegacy(std::vector<std::pair<int, Info>>& legacy,
+                 std::vector<Info>& infos) {
+    std::stable_sort(legacy.begin(), legacy.end(),
+                     [](const auto& a, const auto& b) { return a.first < b.first; });
+    std::string prev;
+    for (auto& entry : legacy) {
+        entry.second.prev = prev;
+        prev = entry.second.id;
+        infos.push_back(std::move(entry.second));
     }
 }
 
@@ -144,6 +199,7 @@ std::size_t LoadOne(int layer, const std::string& dir, const char* name,
     const std::string text = ReadFile(dir + name);
     if (text.empty()) return 0;
     const auto records = ParseExport(text);
+    std::unordered_map<Topic*, std::vector<std::pair<int, Info>>> legacy;
     for (const Record& rec : records) {
         const std::string sig = Get(rec, "Signature");
         if (sig == kSigTopic) {
@@ -154,10 +210,16 @@ std::size_t LoadOne(int layer, const std::string& dir, const char* name,
             const auto it = g_topics.find(Lower(info.topic));
             if (it == g_topics.end()) continue;
             if (!info.resultScript.empty()) ++stats.scripts;
-            it->second.infos.push_back(std::move(info));
+            if (rec.count("Prev")) {
+                it->second.infos.push_back(std::move(info));
+            } else {
+                legacy[&it->second].emplace_back(GetInt(rec, "Ordinal", 0),
+                                                 std::move(info));
+            }
             ++stats.infos;
         }
     }
+    for (auto& [topic, infos] : legacy) ChainLegacy(infos, topic->infos);
     return records.size();
 }
 
@@ -331,10 +393,20 @@ StoreStats LoadStoreFrom(const std::string& rootIn) {
     }
     ClearScriptTables();
     for (const std::string& plugin : plugins) {
-        LoadOne(LayerIndex(plugin), root + plugin + "\\", kFileInfos, stats);
         LoadScriptTables(root + plugin + "\\");
     }
-    SortInfos();
+    // Load order, masters first, as OpenMW reads its content files.
+    std::vector<std::string> byDepth = plugins;
+    std::stable_sort(byDepth.begin(), byDepth.end(),
+                     [](const std::string& a, const std::string& b) {
+                         return LayerDepth(LayerIndex(a)) <
+                                LayerDepth(LayerIndex(b));
+                     });
+    for (const std::string& plugin : byDepth) {
+        LoadOne(LayerIndex(plugin), root + plugin + "\\", kFileInfos, stats);
+    }
+    BuildViews();
+    for (auto& entry : g_topics) OrderTopic(entry.second);
     Log("store: %zu actor(s), %zu journal quest(s), %zu global(s), %zu "
         "script(s) with locals, %zu scripted object(s)%s", ActorCount(),
         QuestCount(), GlobalCount(), ScriptCount(), ActorScriptCount(),
@@ -351,6 +423,30 @@ bool TopicVisible(const Topic& topic) {
         if (LayerVisible(layer)) return true;
     }
     return false;
+}
+
+void OrderTopic(Topic& topic) {
+    if (g_views.empty()) BuildViews();
+    std::vector<Ordered> all;
+    all.reserve(topic.infos.size());
+    for (const Info& info : topic.infos) {
+        all.push_back({ESM::RefId::stringRefId(info.id),
+                       ESM::RefId::stringRefId(info.prev), &info});
+    }
+    topic.views.clear();
+    for (const std::vector<bool>& sees : g_views) {
+        topic.views.push_back(MergeView(all, sees));
+    }
+}
+
+const std::vector<const Info*>& ViewInfos(const Topic& topic) {
+    static const std::vector<const Info*> kNone;
+    const int layer = CurrentLayer();
+    const std::size_t view =
+        layer >= 0 && static_cast<std::size_t>(layer) < g_viewOf.size()
+            ? static_cast<std::size_t>(g_viewOf[static_cast<std::size_t>(layer)])
+            : 0;
+    return view < topic.views.size() ? topic.views[view] : kNone;
 }
 
 const Topic* FindTopic(const std::string& id) {

@@ -201,32 +201,72 @@ mode the vanilla records reach us through
 converted `Morrowind.esm` / `Tribunal.esm` / `Bloodmoon.esm` themselves. Either
 way the owner stages them and dependents reference them.
 
-### <a id="cumulative-gather-must-go"></a>TODO: the cumulative dialogue gather still duplicates
+### <a id="cumulative-gather-must-go"></a>Dialogue is staged per owner and merged at load
 
-**Not yet done.** `morrowind_sidecar.py:write_morrowind_sidecar` still calls
-`gather(plugin_chain(...))`, which reads every TES3 master BINARY and merges
-their dialogue into the dependent's own sidecar. Measured on TR_Mainland:
-`INFO.txt` is **76 MB against TR's own 51 MB**, so ~25 MB is its masters'
-dialogue copied in, and every dependent plugin re-copies it. The actor,
-faction, GMST and SKIL tables come from the same pass and duplicate the same
-way. **This must move to per-owner staging like the scripts did.**
+A sidecar holds only what its own plugin stages; no row is a copy of another
+sidecar's.
 
-🛑 **It cannot simply be deleted, and here is the blocker.** Dialogue is an
-ORDERED union: `export_INFO` assigns `Ordinal` by walking the merged PNAM/NNAM
-chain over the whole chain at once, and `store.cpp:SortInfos` sorts on
-`Ordinal` alone — **PNAM/NNAM are never exported**. Stage each plugin's
-dialogue separately today and ordinals restart per sidecar, so a master's
-greeting no longer correctly precedes a dependent's override and the filter
-silently picks the wrong response.
+**Dialogue.** Each TES3 plugin's `DIAL.txt`/`INFO.txt` holds only its OWN
+topics and responses (`morrowind_sidecar_source.py:own_dialogue_blocks`, read
+from the plugin's binary). Each response carries `Prev` (PNAM) and, for a
+deletion, `Deleted=1` -- the two things OpenMW orders by. NNAM and `Ordinal`
+are not staged: OpenMW reads neither.
 
-So the fix is two-part, in this order:
-1. Export `PNAM`/`NNAM` on each INFO (`morrowind_dialog.py:export_INFO`).
-2. Have the runtime merge the chains across sidecars at load
-   (`store.cpp`, OpenMW's `InfoOrder::insertInfo`, already mirrored in
-   `morrowind_sidecar_source.py:_place`), and stop trusting `Ordinal` across
-   plugin boundaries.
+The runtime merges them with the VENDORED OpenMW code, not a copy of it
+(`external/openmw/components/esm3/infoorder.hpp`): `store.cpp:OrderTopic`
+runs `ESM::InfoOrder::insertInfo` over every response in load order (masters
+first, by `LayerDepth`), then `removeDeleted`, exactly as OpenMW's
+`Dialogue::readInfo` and `setUp` do. It does this once per VIEW -- each set
+of sidecars a layer sees -- so a sibling's responses never enter another
+sibling's order; `ViewInfos` answers the current layer's. A sidecar written
+before `Prev` existed holds the whole merged list; each of its responses is
+chained to the one before it by `Ordinal` (DEPRECATED, remove once none
+remain).
 
-Only then may the `gather` call and `_stage_dialogue`'s merge branch go.
+Before this, every dependent re-staged its masters' dialogue (TR_Mainland's
+`INFO.txt` was 76 MB against its own 51 MB; a grass plugin carried 54 MB) and
+rebuilt every master actor from a possibly partial chain, so a dependent whose
+header omitted Morrowind.esm overrode TR's autocalc merchants with services 0
+(no Barter row).
+
+**The Morroblivion patch stages vanilla.** Morrowind_ob.esm is a TES4 plugin
+and stages no MorrowindRuntime sidecar, so everything Morrowind/Tribunal/
+Bloodmoon define is the compat patch's: `source_chain` hands it the three
+vanilla binaries, gathered whole (`gather(..., whole=True)`; 2,884 topics,
+36,954 responses), keeping its export-derived start scripts. A root TES3
+master (Morrowind.esm authored, Arktwend) is self-sufficient the same way.
+
+**Tables.** Actors, travel, factions, GMSTs and skills are the plugin's own
+records (`gather`'s `own` sets). Every table whose rows name a record's
+plugin (`...Plugin.esm|FormID`: items, bases, refs, spells, effects, soul
+gems, sounds, anchors, markers, worlds, teleports, crime) keeps, by
+`morrowind_sidecar.py:_row_keeper`, only the rows its own plugin owns; a
+row owned by a plugin with no sidecar of its own (Morrowind_ob, Oblivion,
+Skyrim) goes in the ROOT sidecar of the chain -- the patch, or a root TES3
+master. Cells name their WORLD, not their owner, so `_cell_lines` drops the
+rows a master's export repeats exactly (a renamed override stays: it is the
+plugin's own data). The runtime's layered tables answer from the deepest
+plugin defining a row, so a master's row still reaches every dependent.
+Masters are searched NEAREST first (`_loaded_dirs`), as a later plugin's record
+of an id overrides an earlier's: before, a TES3 id defined by both the patch
+and Morrowind_ob resolved to Morrowind_ob's, and the patch's `neesha` to an
+Oblivion.esm reference.
+
+**Journal QUSTs.** A journal is the QUST of the plugin that originates it
+(the one whose `quests_formid.txt` names it; for vanilla, the patch). A
+dependent that adds pages writes an OVERRIDE of that QUST -- the owner's
+FormID, every page of the chain -- and stages no row of its own
+(`quest_morrowind.py:write_journal_quests`). Measured when this landed:
+Tamriel_Data had re-minted 755 vanilla journals and TR_Mainland 757; they
+now live once, in the patch, and moved FormIDs (approved as the no-redundancy
+contract).
+
+**Saved state follows its record.** State is keyed by the id's origin
+(`StateKey`: the most-master sidecar defining it), and staging only a
+plugin's own records moves origins -- a vanilla topic was Tamriel_Data's when
+Tamriel_Data re-staged vanilla, and is the patch's now. `Deserialize`
+re-resolves every saved key in its own layer's view (`Requalify`), so a save
+from any older build keeps its known topics, journal and factions.
 
 ## <a id="messagebox"></a>`MessageBox` outside a conversation
 

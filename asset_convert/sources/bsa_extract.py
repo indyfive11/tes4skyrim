@@ -490,8 +490,9 @@ def _is_masterless(extract_dir, source_file) -> bool:
     """
     try:
         from output_layout import record_dir
-        from asset_convert.lod.terrain_lod import master_names
-        return not master_names(record_dir(str(extract_dir), source_file))
+        from core.plugin_masters import masters_from_export_header
+        return not masters_from_export_header(
+            str(record_dir(str(extract_dir), source_file)))
     except Exception:
         return False
 

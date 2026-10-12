@@ -6,7 +6,7 @@ import struct
 
 from tes5_import.base.text_reader import get_formid, set_formid_index_offset
 from tes5_import.base.writer import PluginWriter
-from tes5_import.navmesh.edge_links import NavMeshView, extract_nvnm
+from tes5_import.navmesh.edge_links import NavMeshView, build_edge_links, extract_nvnm
 from tes5_import.record_types.navm_falloutnv import parse_door_links, precompute_fallout_navmeshes
 
 
@@ -46,3 +46,24 @@ def test_an_authored_edge_link_reaches_the_converted_neighbour():
     assert view.links == [[0, meta_b['fid'], 0]]
     assert view.tris[0][4] == 0 and view.tris[0][6] & 0x2
     assert meta_a['edge_link_fids'] == [meta_b['fid']]
+
+
+def _links_of(cache_entry) -> list:
+    """The edge links of one converted NAVM cache entry."""
+    blob, _pre, _post = extract_nvnm(cache_entry[0])
+    return NavMeshView(cache_entry[1]['fid'], blob).links
+
+
+def test_links_between_two_meshes_in_one_exterior_cell_survive_the_seam_pass():
+    """Both meshes stay in the stitch pass, so neither's authored link to the other is pruned.
+
+    See: docs/commentary/tes5_import_navmesh.md#every-mesh-in-a-cell
+    """
+    recs = [_navm('00000A01', link_to='00000A02'), _navm('00000A02', link_to='00000A01')]
+    for rec in recs:
+        rec['ParentWRLD'] = '0000003C'
+    by_type = {'NAVM': recs, 'CELL': [{'FormID': '00106185', 'XCLC.X': '0', 'XCLC.Y': '0'}]}
+    cache = precompute_fallout_navmeshes(by_type, PluginWriter(masters=['Skyrim.esm']))
+    build_edge_links(cache, verbose=False)
+    a, b = cache[(0x00106185, 0xA01)], cache[(0x00106185, 0xA02)]
+    assert _links_of(a) == [[0, b[1]['fid'], 0]] and _links_of(b) == [[0, a[1]['fid'], 0]]

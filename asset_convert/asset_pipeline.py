@@ -20,6 +20,7 @@ import shutil
 from pathlib import Path
 
 from asset_convert import case_paths
+from core.plugin_masters import masters_from_export_header
 from asset_convert.game_paths import (namespace_for, owns_namespace,
                                        set_namespace)
 from asset_convert.sources import bsa_extract
@@ -363,13 +364,9 @@ def _master_tree_dirs(extract_dir, source_name) -> list:
     is read from the export header. The borrow takes the first dir holding a
     file, so the LAST header master comes first, as load order lets it win.
     """
-    header = record_dir(extract_dir, source_name) / '_HEADER.txt'
-    if not header.is_file():
-        return []
-    with open(header, encoding='utf-8', errors='replace') as fh:
-        names = [line.partition('=')[2].strip() for line in fh
-                 if line.startswith('Master[')]
-    dirs = [_asset_root(extract_dir, n) / 'trees' for n in reversed(names) if n]
+    names = masters_from_export_header(
+        str(record_dir(extract_dir, source_name)))
+    dirs = [_asset_root(extract_dir, n) / 'trees' for n in reversed(names)]
     return [d for d in dirs if d.is_dir()]
 
 

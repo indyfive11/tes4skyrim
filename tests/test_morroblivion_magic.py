@@ -8,7 +8,8 @@ from tes4_export import morroblivion_magic as mm
 from tes4_export.record_types.morrowind_magic import effect_editor_id
 from tes5_import.dialogue.morrowind_teleport import teleport_lines
 from tes5_import.record_types import magic_variants
-from tes5_import.record_types.magic_morrowind import MW_RUNTIME_EFFECTS, mw_converts
+from tes5_import.record_types.magic_morrowind import (MW_RUNTIME_EFFECTS, mw_converts,
+                                                      mw_needs_runtime)
 
 #: The TES4 actor value of Acrobatics, which lands on Skyrim's Stamina.
 _ACROBATICS = 26
@@ -19,13 +20,16 @@ def _corpus(*texts) -> mm._Corpus:
     corpus = object.__new__(mm._Corpus)
     corpus.scripts, corpus.texts, corpus.cited, corpus.forms = {}, list(texts), set(), {}
     corpus._written = {}
+    corpus.callers = mm._callers(corpus.texts)
     return corpus
 
 
 def test_an_effect_converts_when_skyrim_or_the_runtime_carries_it():
-    """Teleports convert through the runtime; Levitate waits for it; Fortify Health is native."""
+    """Teleports, SwiftSwim and Levitate convert; Disintegrate Weapon waits for the runtime; Fortify Health is native."""
     assert all(mw_converts(index, -1) for index in MW_RUNTIME_EFFECTS)
-    assert not mw_converts(10, -1)
+    assert mw_converts(1, -1) and mw_needs_runtime(1)
+    assert mw_converts(10, -1)
+    assert not mw_converts(37, -1)
     assert mw_converts(80, -1)
     assert not mw_converts(83, -1)
     assert mw_converts(83, _ACROBATICS)
@@ -71,6 +75,32 @@ def test_a_state_only_the_dropped_script_writes_must_stay():
 def test_a_script_that_stages_a_quest_always_stays():
     """Advancing a quest is content, however the quest is read."""
     assert not _corpus().unobserved('SetStage fbmwILGnisisBlight 50\n', set())
+
+
+def test_a_function_only_dropped_scripts_call_is_dropped_with_them():
+    """JDLevitate reads what the Levitate stand-ins write; it goes with them, and its own writes are checked."""
+    function = 'begin function {start}\nif JDLevitationData.accFact > 0\nendif\nset gLevitating to 1\nend\n'
+    spell = 'set JDLevitationData.accFact to 2\nCall JDLevitate 1 0\n'
+    corpus = _corpus(('jdlevitate', function), ('jdlevitationnormalscript', spell))
+    corpus.scripts = {'01F8CCCD': ('jdlevitate', function), '01F8CCCE': ('jdlevitationnormalscript', spell)}
+    dropped = corpus.with_callees({'jdlevitationnormalscript'})
+    assert dropped == {'jdlevitationnormalscript', 'jdlevitate'}
+    assert corpus.unobserved(spell, dropped)
+    assert corpus.reach([spell], dropped) == [spell, function]
+    assert corpus.with_callees(set()) == set()
+
+
+def test_a_stand_in_without_a_script_is_restored_only_for_a_runtime_effect(monkeypatch):
+    """Oblivion effects faking SwiftSwim are restored; one faking Fortify Health keeps Morroblivion's."""
+    records = [('SPEL', '0106001E', {'EffectCount': '1', 'Effect[0].EFID': 'WABR'}, 'ob'),
+               ('SPEL', '01060001', {'EffectCount': '1', 'Effect[0].EFID': 'FOHE'}, 'ob')]
+    monkeypatch.setattr(mm, 'master_records', lambda _ctx, _types: records)
+    vanilla = {('SPEL', '0106001E'): 1, ('SPEL', '01060001'): 80}
+    lines = {1: ['EffectCount=1', 'Effect[0].MorrowindIndex=1'],
+             80: ['EffectCount=1', 'Effect[0].MorrowindIndex=80']}
+    found, _folders = mm._candidates(vanilla, None, lambda index, _ctx: lines[index])
+    assert list(found) == [('SPEL', '0106001E')]
+    assert found[('SPEL', '0106001E')][2] == set()
 
 
 def test_the_effect_table_lists_each_runtime_effect_and_its_own_clones():

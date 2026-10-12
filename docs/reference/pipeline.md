@@ -239,6 +239,12 @@ picks the Morrowind export mode, so an agent can build Arktwend in authored mode
 and Tamriel Rebuilt in Morroblivion mode back to back without touching the
 saved setting; `--no-engine-branches` forces the Python SpeedTree generator.
 
+**The Morroblivion compatibility patch** is a normal `-f` target once
+`--build-morrowind-patch "<Morrowind>/Data Files"` has registered its source:
+`-f Morrowind-Morroblivion-Compatibility.esp --import-only` (or `--meshes-only`,
+`--creatures-only`, `--sounds-only`, `--scripts-only`, `--export-only`) reruns one step
+([details](../commentary/tes4_export_morrowind.md#the-patch-builds-its-own-plugin)).
+
 <a id="run-logs"></a>
 ### Run logs
 
@@ -642,6 +648,19 @@ export/ and output/ only agree because they all go through them:
 
 A plugin that is not an imported mod resolves to `<root>/<plugin>` from all
 three, so the game-Data path is byte-for-byte unchanged.
+
+#### <a id="master-resolution"></a>Masters resolve in one place
+
+A master's export is found only through `core/plugin_masters.py`:
+`masters_from_export_header` (names), `export_root`, `master_export_dir` /
+`master_dir` (one master's record folder), `master_dirs` (direct masters that
+exist) and `master_chain` (transitive). Every stage used to carry its own copy.
+The script stage's copy joined the master's name onto the dependent's PARENT.
+For `export/<Mod>/<plugin>/` that is the mod folder, so Oblivion.esm read as
+absent, was skipped silently, and Morrowind_ob.esm imported as a mod lost 939
+of 17,993 script compiles to `undefined identifier gold001` and similar.
+`tests/test_plugin_path_resolution.py` now also flags `x.parent / name` and
+`os.path.join(os.path.dirname(x), name)`.
 
 Two consequences worth knowing:
 

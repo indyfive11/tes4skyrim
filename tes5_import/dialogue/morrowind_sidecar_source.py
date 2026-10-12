@@ -1,17 +1,17 @@
 """
 What the MorrowindRuntime sidecar takes straight from the TES3 BINARIES.
 
-Two things cannot come from one plugin's text export:
+Three things cannot come from one plugin's text export:
 
-  * DIALOGUE IS CUMULATIVE. A plugin adds responses to its masters' topics,
-    and an NPC answers from the union -- "join the Fighters Guild" is almost
-    entirely Morrowind.esm's. Each INFO names the response it follows (PNAM)
-    and precedes (NNAM), and the merged order IS the filter precedence.
+  * DIALOGUE LINKS. Each INFO names the response it follows (PNAM); the
+    runtime merges the plugins' lists with OpenMW's own InfoOrder, so each
+    sidecar carries only its own responses, links and deletions.
   * THE AUTHORED STRINGS. An NPC's race, class and faction are names in TES3
     and the dialogue filter compares names; the export holds minted FormIDs.
+  * THE CLASS AND RACE TABLES an autocalc NPC's stats and services derive from.
 
 So the plugin and every TES3 master that can be found are read here, once
-each and in load order, and merged the way OpenMW's InfoOrder merges them.
+each and in load order.
 
 See: docs/commentary/morrowind_runtime.md#sidecar
 """
@@ -23,6 +23,7 @@ from asset_convert import case_paths
 from asset_convert.sources import source_registry
 from core.plugin_masters import get_masters_from_binary
 from tes4_export.export_morrowind import format_record
+from tes4_export.morrowind_patch import PATCH_NAME
 from tes4_export.record_types.morrowind_dialog import (DIAL_SIG, INFO_SIG,
                                                        export_DIAL,
                                                        export_INFO, info_id)
@@ -79,6 +80,23 @@ def source_binary(root: str, plugin: str):
     return str(found) if found else None
 
 
+#: The vanilla TES3 plugins; in Morroblivion mode their data is the compat patch's.
+VANILLA_PLUGINS = ('Morrowind.esm', 'Tribunal.esm', 'Bloodmoon.esm')
+
+
+def vanilla_chain(root: str) -> list:
+    """`(name, path)` for each vanilla TES3 plugin that can be found."""
+    found = [(name, source_binary(root, name)) for name in VANILLA_PLUGINS]
+    return [(name, path) for name, path in found if path]
+
+
+def source_chain(root: str, plugin: str) -> list:
+    """`plugin_chain`, or the vanilla plugins for the patch that stages them."""
+    if os.path.basename(plugin) == PATCH_NAME:
+        return vanilla_chain(root)
+    return plugin_chain(root, plugin)
+
+
 def plugin_chain(root: str, plugin: str) -> list:
     """`(name, path)` for each TES3 master that can be found, then `plugin`,
     in load order. A master that is not installed is reported and skipped."""
@@ -106,32 +124,6 @@ def _escape(text: str) -> str:
     """The export's escaping, which the runtime's `Unescape` reverses."""
     return (text.replace('\\', '\\\\').replace('\n', '\\n')
             .replace('\r', '\\r').replace('\t', '\\t'))
-
-
-def _place(order: list, entry: dict) -> None:
-    """InfoOrder::insertInfo: replace in place, else after PNAM, else before
-    NNAM, else first when it names no predecessor, else last."""
-    ids = [row['id'] for row in order]
-    if entry['id'] in ids:
-        order[ids.index(entry['id'])] = entry
-    elif entry['prev'] in ids:
-        order.insert(ids.index(entry['prev']) + 1, entry)
-    elif entry['next'] in ids:
-        order.insert(ids.index(entry['next']), entry)
-    elif not entry['prev']:
-        order.insert(0, entry)
-    else:
-        order.append(entry)
-
-
-def _merge_info(order: list, rec) -> None:
-    """One INFO into its topic's order; a deleted one leaves it."""
-    entry = {'id': info_id(rec), 'prev': _text(rec, 'PNAM'),
-             'next': _text(rec, 'NNAM'), 'rec': rec}
-    if rec.deleted:
-        order[:] = [row for row in order if row['id'] != entry['id']]
-    else:
-        _place(order, entry)
 
 
 def _npc_flags(rec) -> int:
@@ -279,15 +271,12 @@ _STAT_TABLES = {'RACE': ('races', parse_race), 'CLAS': ('classes', parse_class)}
 
 
 def _take_dial(out: dict, rec, topic: str) -> str:
-    """The DIAL/INFO half of `_take`, kept separate so neither nests deep."""
+    """The DIAL/INFO half of `_take`: the plugin's own topics and responses,
+    in file order. A deleted topic leaves its responses unowned."""
     if rec.type == 'DIAL':
-        topic = rec.record_id.lower()
-        if rec.deleted:
-            return topic
-        out['topics'][topic] = rec
-        out['infos'].setdefault(topic, [])
-    elif rec.type == 'INFO' and topic in out['infos']:
-        _merge_info(out['infos'][topic], rec)
+        topic = '' if rec.deleted else rec.record_id
+    if topic:
+        out['own_dialogue'].append((topic, rec))
     return topic
 
 
@@ -296,6 +285,7 @@ def _take_tables(out: dict, rec) -> None:
     key = rec.record_id.lower()
     if rec.type == 'NPC_':
         out['npcs'][key] = rec
+        out['own']['npcs'].add(key)
     elif rec.type in _STAT_TABLES:
         table, parse = _STAT_TABLES[rec.type]
         out[table][key] = parse(rec)
@@ -304,6 +294,7 @@ def _take_tables(out: dict, rec) -> None:
         line = line_of(rec)
         if line:
             out[table][key] = line
+            out['own'][table].add(key)
 
 
 def _take(out: dict, rec, topic: str) -> str:
@@ -312,11 +303,14 @@ def _take(out: dict, rec, topic: str) -> str:
         return _take_dial(out, rec, topic)
     if rec.type in ('CELL', 'REGN') and not rec.deleted:
         take_place(out, rec)
+        if rec.type == 'CELL' and rec.record_id:
+            out['cells'].add(rec.record_id.lower())
         return topic
     if rec.type == 'SKIL':
         index, skill = parse_skill(rec)
         if index is not None:
             out['skills'][index] = skill
+            out['own']['skills'].add(index)
         return topic
     if not rec.record_id or rec.deleted:
         return topic
@@ -334,42 +328,106 @@ def _take(out: dict, rec, topic: str) -> str:
     return topic
 
 
-def gather(chain: list) -> dict:
-    """The chain's tables, each plugin read ONCE and a later one overriding
-    an earlier: `topics` `{lower id: DIAL rec}`, `infos` `{lower id: [entry]}`
-    in merged order, `actors` / `factions` / `gmsts` `{lower id: line}`,
-    `skills` `{index: line}`, `items` / `objects` / `sounds` / `spells`
-    `{lower id: id}`. Actor lines are made LAST, once every race, class and
-    skill is known. `start_scripts` is the LAST plugin's SSCR alone: a master
-    stages, and so starts, its own.
+#: The tables `gather` stages as the plugin's own records alone; a master stages its own.
+_OWN_TABLES = ('npcs', 'factions', 'gmsts', 'skills')
+
+
+def _reset_own(out: dict) -> None:
+    """Forget which records the plugins read so far defined themselves."""
+    out['start_scripts'], out['own_dialogue'] = {}, []
+    out['own'] = {table: set() for table in _OWN_TABLES}
+
+
+def _own_rows(out: dict, table: str) -> dict:
+    """`out[table]` cut to the rows the plugin (each plugin, `whole`) defines."""
+    return {key: row for key, row in out[table].items()
+            if key in out['own'][table]}
+
+
+#: Record types `gather` keeps whole in `table_records`, for `read_tables`.
+TABLE_TYPES = frozenset({'SPEL', 'NPC_', 'CREA', 'RACE', 'CLAS', 'GMST',
+                         'SKIL', 'MGEF'})
+
+
+#: `gather`'s one kept answer, `{(chain, whole): tables}`.
+_GATHERED = {}
+
+
+def gather(chain: list, whole: bool = False) -> dict:
+    """`_gather`'s tables, read once per run; each call gets its own copy.
+
+    After `forget_gathered(keep)` only the kept tables remain.
     """
-    out = {'topics': {}, 'infos': {}, 'npcs': {}, 'races': {}, 'classes': {},
+    key = (tuple(chain), whole)
+    if key not in _GATHERED:
+        _GATHERED.clear()
+        _GATHERED[key] = _gather(*key)
+    return dict(_GATHERED[key])
+
+
+def forget_gathered(keep: tuple = ()) -> None:
+    """Drop `gather`'s tables but those named in `keep`, once nothing else reads them."""
+    for tables in _GATHERED.values():
+        for name in set(tables) - set(keep):
+            del tables[name]
+    if not keep:
+        _GATHERED.clear()
+
+
+def _gather(chain: tuple, whole: bool) -> dict:
+    """The chain's tables, each plugin read ONCE and a later one overriding
+    an earlier: `factions` / `gmsts` `{lower id: line}`, `items` / `objects`
+    / `sounds` / `spells` `{lower id: id}`, `cells` lower ids. `npcs` /
+    `actors`, `own_factions` / `own_gmsts`, `skills` `{index: line}`,
+    `own_dialogue` `[(topic, rec)]` and `start_scripts` are the LAST
+    plugin's own alone; `whole` keeps every plugin's. `table_records` is
+    the chain's `TABLE_TYPES` records in load order.
+    """
+    out = {'npcs': {}, 'races': {}, 'classes': {},
            'skills': {}, 'gmsts': {}, 'factions': {}, 'items': {},
            'objects': {}, 'sounds': {}, 'spells': {}, 'exteriors': {},
-           'regions': {}}
+           'regions': {}, 'cells': set(), 'table_records': []}
+    _reset_own(out)
     for _name, path in chain:
         topic = ''
-        out['start_scripts'] = {}
+        if not whole:
+            _reset_own(out)
         for rec in read_file(path)[1]:
             topic = _take(out, rec, topic)
+            if rec.type in TABLE_TYPES:
+                out['table_records'].append(rec)
+    out['npcs'] = _own_rows(out, 'npcs')
     out['actors'] = {key: _actor_line(rec, out)
                      for key, rec in out['npcs'].items()}
     out['skills'] = {index: _skill_line(index, skill)
-                     for index, skill in sorted(out['skills'].items())}
+                     for index, skill in sorted(_own_rows(out, 'skills').items())}
+    out['own_factions'] = _own_rows(out, 'factions')
+    out['own_gmsts'] = _own_rows(out, 'gmsts')
     return out
 
 
-def write_merged_dialogue(gathered: dict, out_dir: str) -> tuple:
-    """DIAL.txt and INFO.txt for the merged chain. Returns their counts."""
-    dial_blocks, info_blocks = [], []
-    for key, rec in gathered['topics'].items():
-        dial_blocks.append(format_record(DIAL_SIG, rec.record_id,
-                                         export_DIAL(rec)))
-        for ordinal, entry in enumerate(gathered['infos'].get(key, [])):
-            info_blocks.append(format_record(
-                INFO_SIG, entry['id'],
-                export_INFO(entry['rec'], ordinal, rec.record_id)))
-    for name, blocks in (('DIAL.txt', dial_blocks), ('INFO.txt', info_blocks)):
-        with open(os.path.join(out_dir, name), 'w', encoding='utf-8') as fh:
-            fh.write('\n\n'.join(blocks) + '\n')
-    return len(dial_blocks), len(info_blocks)
+def _link_lines(rec) -> list:
+    """InfoOrder's keys: `Prev` (PNAM), and `Deleted` for a deletion."""
+    lines = [f"Prev={_escape(_text(rec, 'PNAM'))}"]
+    return lines + ['Deleted=1'] if rec.deleted else lines
+
+
+def own_dialogue_blocks(gathered: dict) -> tuple:
+    """`(DIAL blocks, INFO blocks)` for the plugin's OWN topics and responses,
+    each response carrying its links in place of the export's `Ordinal`.
+
+    See: docs/plans/morrowind_object_scripts.md#cumulative-gather-must-go
+    """
+    dial_blocks, info_blocks, topics = [], [], set()
+    for topic, rec in gathered['own_dialogue']:
+        if rec.type == 'DIAL':
+            if topic.lower() not in topics:
+                topics.add(topic.lower())
+                dial_blocks.append(format_record(DIAL_SIG, topic,
+                                                 export_DIAL(rec)))
+            continue
+        lines = [line for line in export_INFO(rec, 0, topic)
+                 if not line.startswith('Ordinal=')]
+        info_blocks.append(format_record(INFO_SIG, info_id(rec),
+                                         lines + _link_lines(rec)))
+    return dial_blocks, info_blocks

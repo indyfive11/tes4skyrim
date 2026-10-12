@@ -12,6 +12,7 @@ import struct
 
 from tes4_export.morrowind_ids import encode_editor_id
 
+from ..base.master_export import records_of
 from ..base.text_reader import remap_formid
 from ..dialogue.morrowind_sidecar import is_tes3_export
 from ..overrides.adoption import generated_formid
@@ -64,10 +65,8 @@ def tome_items(actor_fid: int) -> list:
 def _indexes(by_type: dict, master_export: dict) -> dict:
     """{sig: {raw FormID: record}} for SPEL, MGEF and GMST, own records last."""
     out = {'SPEL': {}, 'MGEF': {}, 'GMST': {}}
-    for key, rec in master_export.items():
-        table = out.get(rec.get('Signature'))
-        if table is not None:
-            table[key.upper()] = rec
+    for key, rec in records_of(master_export, *out):
+        out[rec['Signature']][key.upper()] = rec
     for sig, table in out.items():
         table.update((rec.get('FormID', '').upper(), rec)
                      for rec in by_type.get(sig, []))

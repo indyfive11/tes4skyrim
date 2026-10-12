@@ -10,6 +10,7 @@ import struct
 from asset_convert.character.hair_plan import (mesh_name_family, output_model_path,
                                                output_tri_path, variant_edid,
                                                variant_tag)
+from ..base.master_export import values_of
 from ..actors import hair_variants
 from ..actors.combat_style import actor_combat_style
 from ..actors.confidence import flee_memberships, flee_spells
@@ -510,7 +511,7 @@ def emit_hair_variants(rec: dict, e: dict, writer) -> int:
 def emit_master_hair_variants(writer, master_export) -> int:
     """Emit the HDPTs this plugin adds to its masters' hairs; returns how many."""
     recs = {get_formid(r, 'FormID') & 0x00FFFFFF: r
-            for r in (master_export or {}).values() if r.get('Signature') == 'HAIR'}
+            for r in values_of(master_export, 'HAIR')}
     return sum(emit_hair_variants(recs[fid], e, writer)
                for fid, e in hair_variants.master_extras().items() if fid in recs)
 

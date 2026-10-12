@@ -6,10 +6,10 @@ plugin's own plus every master's, keyed on the model folder's leaf name.
 
 import os
 
+from core.plugin_masters import master_dir, masters_from_export_header
+from ..base.master_export import records_of
 from ..base.artifact_schema import read_artifact
 from ..base.text_reader import get_int, get_str
-from ..overrides.nested import (export_master_names, export_root,
-                                master_export_dir)
 
 
 def _usable(proj) -> bool:
@@ -35,11 +35,10 @@ def load_projects(export_dir: str) -> tuple:
         own = read_artifact(
             own_path, os.path.basename(os.path.normpath(export_dir)))
 
-    names = export_master_names(export_dir)
-    root = export_root(export_dir)
-    merged, owner_slot = {}, {}
+    names = masters_from_export_header(export_dir)
+    merged, owner_slot, rescued = {}, {}, []
     for slot, name in reversed(list(enumerate(names))):
-        mpath = os.path.join(master_export_dir(root, name),
+        mpath = os.path.join(master_dir(export_dir, name),
                              'creature_projects.json')
         if not os.path.exists(mpath):
             continue
@@ -102,9 +101,7 @@ def folders_built_by_master(master_export: dict, projects: dict,
     See: docs/commentary/tes5_import_mod_merge.md#inherited-creature-folders
     """
     built = set()
-    for key, rec in (master_export or {}).items():
-        if rec.get('Signature') != 'CREA':
-            continue
+    for key, rec in records_of(master_export, 'CREA'):
         folder = folder_of(rec)
         if (owner_slot.get(folder) == int(key[:2], 16)
                 and bodies_of(rec, projects[folder]) is not None):

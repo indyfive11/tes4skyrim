@@ -6,13 +6,21 @@ code the Oblivion tables use, so the mapping lives here rather than in
 Oblivion path: `magic.convert_MGEF` consults it only for a record carrying
 `MorrowindEffectIndex`.
 
-114 of the 143 land on a native Skyrim archetype.  The rest carry NATIVE_NONE:
-the four teleports are script-less Script effects MorrowindRuntime acts on,
-and the others convert as an inert Value Modifier until the runtime carries them.
+Most land on a native Skyrim archetype.  The rest carry NATIVE_NONE: the
+teleports, SwiftSwim, Levitate, SlowFall and Sanctuary are script-less Script effects
+MorrowindRuntime acts on, reading their magnitude from the active-effect list,
+and the others convert as an inert Value Modifier until the runtime carries
+them.  No effect parks its state on a vanilla actor value.
 
 See: docs/commentary/tes5_import_magic.md#morrowind-effects
+See: docs/commentary/tes5_import_magic.md#runtime-effects-read-the-active-effect-list
 """
 
+import struct
+
+from ..base.conditions import build_ctda
+from ..base.owned_records import FALL_DAMAGE_ENTRY, hidden_perk, multiply_entry
+from ..base.writer import pack_record, pack_string_subrecord, pack_subrecord
 from .magic import (A_ABSORB, A_BOUND_WEAPON, A_CALM, A_CLOAK,
                     A_COMMAND_SUMMONED, A_CURE_DISEASE, A_CURE_PARALYSIS,
                     A_CURE_POISON, A_DEMORALIZE, A_DETECT_LIFE, A_DISPEL,
@@ -57,7 +65,6 @@ MW_FLAG_TO_TES4 = (
 #: TES3 effect index -> (TES5 archetype, actor value | DERIVE_AV | NATIVE_NONE).
 MW_EFFECT_ARCHETYPES = {
     0: (A_PEAK_VALUE_MODIFIER, AV_WATER_BREATHING),
-    1: (A_PEAK_VALUE_MODIFIER, NATIVE_NONE),      # SwiftSwim
     2: (A_PEAK_VALUE_MODIFIER, AV_WATER_WALKING),
     3: (A_VALUE_MODIFIER, AV_DAMAGE_RESIST),      # Shield
     4: (A_CLOAK, AV_NONE),                        # FireShield
@@ -66,8 +73,6 @@ MW_EFFECT_ARCHETYPES = {
     7: (A_VALUE_MODIFIER, AV_CARRY_WEIGHT),       # Burden
     8: (A_VALUE_MODIFIER, AV_CARRY_WEIGHT),       # Feather
     9: (A_PEAK_VALUE_MODIFIER, AV_JUMPING_BONUS),
-    10: (A_PEAK_VALUE_MODIFIER, NATIVE_NONE),     # Levitate
-    11: (A_PEAK_VALUE_MODIFIER, NATIVE_NONE),     # SlowFall
     12: (A_LOCK, AV_NONE),
     13: (A_OPEN, AV_NONE),
     14: (A_VALUE_MODIFIER, AV_HEALTH),            # FireDamage
@@ -98,7 +103,6 @@ MW_EFFECT_ARCHETYPES = {
     39: (A_PEAK_VALUE_MODIFIER, AV_INVISIBILITY),
     40: (A_PEAK_VALUE_MODIFIER, AV_INVISIBILITY),  # Chameleon
     41: (A_LIGHT, AV_NONE),
-    42: (A_PEAK_VALUE_MODIFIER, NATIVE_NONE),     # Sanctuary
     43: (A_PEAK_VALUE_MODIFIER, AV_NIGHT_EYE),
     44: (A_CALM, AV_NONE),                        # Charm
     45: (A_PARALYSIS, AV_PARALYSIS),
@@ -176,16 +180,121 @@ MW_BOUND_ARMOR = tuple(range(127, 132))
 #: Mark, Recall, Divine and Almsivi Intervention: script-less Script effects MorrowindRuntime acts on.
 MW_TELEPORTS = (60, 61, 62, 63)
 
+#: SwiftSwim, Levitate, SlowFall, Sanctuary: script-less Script effects whose magnitude MorrowindRuntime reads.
+MW_SWIFT_SWIM, MW_LEVITATE, MW_SLOW_FALL, MW_SANCTUARY = 1, 10, 11, 42
+
 #: Every NATIVE_NONE effect MorrowindRuntime carries: add one via morrowind_runtime.md#adding-a-runtime-effect.
-MW_RUNTIME_EFFECTS = frozenset(MW_TELEPORTS)
+MW_RUNTIME_EFFECTS = frozenset(MW_TELEPORTS + (MW_SWIFT_SWIM, MW_LEVITATE, MW_SLOW_FALL, MW_SANCTUARY))
 
 MW_EFFECT_ARCHETYPES.update(
-    {index: (A_SCRIPT, NATIVE_NONE) for index in MW_TELEPORTS})
+    {index: (A_SCRIPT, NATIVE_NONE) for index in MW_RUNTIME_EFFECTS})
 MW_EFFECT_ARCHETYPES.update(
     {index: (A_SUMMON_CREATURE, AV_NONE) for index in MW_SUMMONS})
 MW_EFFECT_ARCHETYPES.update(
     {index: (A_BOUND_WEAPON, AV_NONE)
      for index in MW_BOUND_WEAPONS + MW_BOUND_ARMOR})
+
+#: CTDA functions: GetFactionRank, GetRandomPercent.
+FUNC_GET_FACTION_RANK, FUNC_GET_RANDOM_PERCENT = 73, 77
+
+#: CTDA comparison bits: less-than.
+_OP_LT = 0x80
+
+#: PERK entry point 36 Mod Incoming Damage, function 3 Multiply Value, 3 condition tabs (vanilla DeftMovement).
+_INCOMING_DAMAGE = bytes((36, 3, 3))
+
+#: A Sanctuary this strong or stronger dodges every hit (OpenMW caps it at 100).
+SANCTUARY_CAP = 100
+
+#: The conversion-owned FACT whose rank MorrowindRuntime keeps at an actor's summed Sanctuary.
+SANCTUARY_FACTION = 'MWSanctuaryFaction'
+
+#: FACT DATA flag Hidden From PC.
+_FACTION_HIDDEN = 0x1
+
+
+def _dodge_entry(faction: int, chance: int) -> bytes:
+    """Zeroes a weapon hit `chance`% of the time on an owner ranked `chance` in `faction`.
+
+    One entry per rank, the only way a random roll can follow a magnitude:
+    each tests its own rank, then rolls.
+    See: docs/commentary/tes5_import_magic.md#runtime-effects-read-the-active-effect-list
+    """
+    conditions = pack_subrecord('CTDA', build_ctda(
+        FUNC_GET_FACTION_RANK, param1=faction, comp_value=float(chance)))
+    if chance < SANCTUARY_CAP:
+        conditions += pack_subrecord('CTDA', build_ctda(
+            FUNC_GET_RANDOM_PERCENT, comp_value=float(chance), operator=_OP_LT))
+    return multiply_entry(_INCOMING_DAMAGE, conditions)
+
+
+def sanctuary_entries(faction: int) -> bytes:
+    """Every Sanctuary rank from 1 to the cap, each rolling its own chance."""
+    return b''.join(_dodge_entry(faction, chance) for chance in range(1, SANCTUARY_CAP + 1))
+
+
+#: TES3 index -> (EditorID, entries given the Sanctuary faction) of the PERK its MGEF applies while it lasts.
+MW_EFFECT_PERKS = {
+    MW_SLOW_FALL: ('MWSlowFallPerk', lambda _faction: FALL_DAMAGE_ENTRY),
+    MW_SANCTUARY: ('MWSanctuaryPerk', sanctuary_entries),
+}
+
+#: TES3 index -> the PERK FormID the plugin being converted applies for it.
+_effect_perks: dict = {}
+
+#: The output FormID of the Sanctuary faction the plugin being converted uses, once registered.
+_sanctuary_faction: list = []
+
+
+def _adopt_or_write(writer, master_index, sig: str, edid: str, build) -> tuple:
+    """(FormID, written): a master's record of `edid`, else ``build(fid)`` written as this plugin's."""
+    fid = master_index.find_by_edid(sig.encode(), edid) if master_index else 0
+    if fid:
+        return fid, False
+    fid = writer.derive_formid(sig, edid)
+    writer.add_record(sig, build(fid))
+    return fid, True
+
+
+def _faction_record(fid: int) -> bytes:
+    """The hidden, rankless FACT only MorrowindRuntime puts actors in."""
+    subs = pack_string_subrecord('EDID', SANCTUARY_FACTION)
+    subs += pack_subrecord('DATA', struct.pack('<I', _FACTION_HIDDEN))
+    return pack_record('FACT', fid, 0, subs)
+
+
+def register_effect_perks(writer, master_index=None) -> int:
+    """Adopt each effect perk and the Sanctuary faction a master has, else write them; returns how many were written."""
+    _effect_perks.clear()
+    faction, written = _adopt_or_write(writer, master_index, 'FACT', SANCTUARY_FACTION,
+                                       _faction_record)
+    _sanctuary_faction[:] = [faction]
+    for index, (edid, entries) in sorted(MW_EFFECT_PERKS.items()):
+        fid, wrote = _adopt_or_write(
+            writer, master_index, 'PERK', edid,
+            lambda new, edid=edid, entries=entries: hidden_perk(new, edid, entries(faction)))
+        written += wrote
+        _effect_perks[index] = fid
+    return written
+
+
+def effect_form_rows(plugin: str, masters: list) -> list:
+    """`sanctuary=plugin|FormID` naming the Sanctuary faction, for MorrowindRuntime.
+
+    `plugin` is the file being written and `masters` its master list, which
+    name the file a master's adopted faction lives in.
+    """
+    if not _sanctuary_faction:
+        return []
+    fid = _sanctuary_faction[0]
+    slot = fid >> 24
+    owner = masters[slot] if slot < len(masters) else plugin
+    return [f'sanctuary={owner}|{fid:08X}']
+
+
+def mw_effect_perk(index: int) -> int:
+    """The PERK FormID this TES3 effect applies, or 0."""
+    return _effect_perks.get(index, 0)
 
 
 def is_morrowind_effect(rec: dict) -> bool:

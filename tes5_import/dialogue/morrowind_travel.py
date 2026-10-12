@@ -11,17 +11,15 @@ See: docs/commentary/morrowind_runtime.md#travel
 """
 
 import math
-import os
 import struct
 
 from tes4_export.morrowind_travel import destinations, travel_editor_id
 from tes4_export.tes3_reader import get_string, get_subrecord
 
+from .morrowind_placements import folder_tables
+
 #: What the runtime reads: `npc id=name|interior|x|y|z|zRot degrees|marker;...`, the marker `Plugin|FormID` or empty.
 TRAVEL_TABLE = 'NPC_travel.txt'
-
-#: The export holding the markers.
-_MARKER_EXPORT = 'REFR.txt'
 
 #: A TES3 exterior cell is this many units across.
 _CELL_SIZE = 8192
@@ -57,17 +55,13 @@ def _exterior_name(out: dict, x: float, y: float) -> str:
     return name or out['regions'].get(region, '')
 
 
-def marker_index(folders: list, read_records) -> dict:
+def marker_index(folders: list) -> dict:
     """`{lower EditorID: 'Plugin|FormID'}` for every travel marker the
-    `(folder, plugin)` exports hold. `read_records` is the sidecar's export
-    reader, passed in because that module imports this one."""
+    `(folder, plugin)` exports hold, the nearest plugin's winning."""
     found = {}
     for folder, plugin in folders:
-        for rec in read_records(os.path.join(folder, _MARKER_EXPORT),
-                                ('FormID', 'EditorID')):
-            edid = rec.get('EditorID', '')
-            if edid.startswith('TES3Travel') and rec.get('FormID'):
-                found.setdefault(edid.lower(), f"{plugin}|{rec['FormID']}")
+        for edid, formid in folder_tables(folder)['travel'].items():
+            found.setdefault(edid, f'{plugin}|{formid}')
     return found
 
 

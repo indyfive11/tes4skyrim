@@ -86,6 +86,27 @@ void PublishState();
 // Mark, Recall and the two Interventions, on the VM's OnMagicEffectApply sink.
 // See: docs/commentary/morrowind_runtime.md#teleport-effects
 void InstallTeleportCalls();
+// The TES3 effect index of a runtime-carried MGEF (or delivery copy), or -1.
+int RuntimeEffectIndex(std::uint32_t effectId);
+// The TES3 indices of the duration effects the runtime carries.
+constexpr int kSwiftSwimEffect = 1;
+constexpr int kLevitateEffect = 10;
+constexpr int kSlowFallEffect = 11;
+constexpr int kSanctuaryEffect = 42;
+// Levitate and SlowFall on the InAir and OnGround states' simulate, SwiftSwim
+// on the Swimming state's, and Sanctuary's faction rank, all read from the
+// active-effect list.
+// See: docs/commentary/morrowind_runtime.md#levitate-and-slowfall
+void InstallFlightCalls(GameHooks& hooks);
+// The summed magnitude of every active instance of a runtime-carried effect
+// on `actor`, read off its active-effect list. Game thread.
+float ActiveMagnitude(void* actor, int tes3Index);
+// Game thread: `actorId` just had a Sanctuary applied, so the tick ranks it.
+void WatchSanctuary(std::uint32_t actorId);
+// Keeps the player's and each watched actor's Sanctuary faction rank at its
+// summed Sanctuary. game_calls_sanctuary.cpp.
+void TickSanctuary(void* player);
+void InstallSanctuaryCalls();
 // The seven player-control switches and Game.ShowRaceMenu.
 // See: docs/commentary/morrowind_runtime.md#the-control-switches
 void InstallControlCalls(GameHooks& hooks);

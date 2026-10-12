@@ -962,7 +962,7 @@ def test_a_master_inside_a_group_folder_still_resolves(tmp_path):
     silent-failure mode.
     """
     import os
-    from tes5_import.overrides.nested import export_root, master_export_dir
+    from core.plugin_masters import export_root, master_export_dir
 
     # A two-plugin mod, so its members nest inside the group folder.
     entries = _mod_entries('TWMP/Data/')

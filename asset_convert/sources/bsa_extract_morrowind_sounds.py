@@ -82,13 +82,12 @@ def owned_sounds(extract_dir, source_file) -> set:
     so an expansion ships exactly the files it adds.
     See: docs/commentary/tes4_export_morrowind.md#which-sounds-a-plugin-ships
     """
-    from asset_convert.lod.terrain_lod import master_names
     from asset_convert.sources.morrowind_sound_scope import owned_files
+    from core.plugin_masters import master_dir, masters_from_export_header
     from output_layout import record_dir
     own = str(record_dir(str(extract_dir), source_file))
-    masters = [str(record_dir(str(extract_dir), name))
-               for name in master_names(own)]
-    return owned_files(own, masters)
+    return owned_files(own, [master_dir(own, name)
+                             for name in masters_from_export_header(own)])
 
 
 def extract_loose_audio(data_path, extract_dir, asset_dir_name,

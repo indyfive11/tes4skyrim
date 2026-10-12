@@ -28,25 +28,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 from output_layout import paths
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 from output_layout import assets_for
-
-
-def master_names(export_dir: Path):
-    """Master plugin names from the export header, in order."""
-    out = []
-    h = export_dir / '_HEADER.txt'
-    if h.is_file():
-        for line in open(h, encoding='utf-8', errors='replace'):
-            if line.startswith('Master['):
-                name = line.partition('=')[2].strip()
-                if name:
-                    out.append(name)
-    return out
+from core.plugin_masters import masters_from_export_header
 
 
 def build_tex_index(export_dir: Path, export_root: Path) -> dict:
     """Texture index for this plugin, then its masters' nearest first (as the converter)."""
     idx = tex_index(assets_for(export_dir) / 'textures' / 'trees')
-    for m in reversed(master_names(export_dir)):
+    for m in reversed(masters_from_export_header(str(export_dir))):
         mtex = paths(m, export_root=export_root).assets / 'textures' / 'trees'
         if mtex.is_dir():
             for stem, sub in tex_index(mtex).items():

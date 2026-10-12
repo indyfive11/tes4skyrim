@@ -6,11 +6,11 @@ Measured over `export/Tamriel Rebuilt 25.08.12`: 508 registered command(s), 9055
 
 | Status | Commands | Call sites |
 |---|---:|---:|
-| ported | 350 | 87313 |
+| ported | 358 | 87398 |
 | no-op | 16 | 2688 |
-| STUB | 142 | 556 |
+| STUB | 134 | 471 |
 
-🛑 **102 of the 142 stubbed commands have ZERO call sites in either corpus** — OpenMW's console (`tgm`, `coc`, every `toggle*`), the chargen menu toggles, the Bloodmoon werewolf commands and OpenMW's own hooks (`reloadlua`, `setnavmeshnumber`). The real remaining work is the 40 command(s) below.
+🛑 **102 of the 134 stubbed commands have ZERO call sites in either corpus** — OpenMW's console (`tgm`, `coc`, every `toggle*`), the chargen menu toggles, the Bloodmoon werewolf commands and OpenMW's own hooks (`reloadlua`, `setnavmeshnumber`). The real remaining work is the 32 command(s) below.
 
 ## Stubbed, and something calls it
 
@@ -19,38 +19,30 @@ Measured over `export/Tamriel Rebuilt 25.08.12`: 508 registered command(s), 9055
 | `playgroup` | Animation | `c/l` | 178 |
 | `getattacked` | Misc | — → `l` | 45 |
 | `modwaterlevel` | Cell | `f` | 22 |
-| `enableteleporting` | Misc | — | 21 |
 | `getarmortype` | Container | `l` → `l` | 21 |
 | `getwindspeed` | Misc | — → `f` | 21 |
-| `gotojail` | Misc | — | 19 |
 | `getcommondisease` | Stats | — → `l` | 18 |
-| `payfinethief` | Misc | — | 18 |
 | `changeweather` | Sky | `Sl` | 15 |
 | `getwaterlevel` | Cell | — → `f` | 15 |
 | `getstandingactor` | Misc | — → `l` | 14 |
 | `loopgroup` | Animation | `cl/l` | 13 |
 | `removefromlevcreature` | Misc | `ccl` | 13 |
-| `disableteleporting` | Misc | — | 12 |
 | `setwaterlevel` | Cell | `f` | 12 |
 | `getpcjumping` | Misc | — → `l` | 11 |
 | `getstandingpc` | Misc | — → `l` | 10 |
 | `hurtcollidingactor` | Misc | `f` | 10 |
 | `getcollidingpc` | Misc | — → `l` | 9 |
-| `showrestmenu` | Gui | — | 9 |
 | `wakeuppc` | Misc | — | 9 |
 | `hurtstandingactor` | Misc | `f` | 5 |
 | `getweapontype` | Container | — → `l` | 4 |
-| `payfine` | Misc | — | 4 |
 | `togglemenus` | Gui | — | 4 |
 | `getblightdisease` | Stats | — → `l` | 3 |
 | `menutest` | Gui | `/l` | 3 |
 | `onknockout` | Stats | — → `l` | 3 |
 | `onmurder` | Stats | — → `l` | 3 |
 | `skipanim` | Animation | — | 3 |
-| `disablelevitation` | Misc | — | 1 |
 | `disableplayerjumping` | Control | — | 1 |
 | `disableplayermagic` | Control | — | 1 |
-| `enablelevitation` | Misc | — | 1 |
 | `enableplayerjumping` | Control | — | 1 |
 | `enableplayermagic` | Control | — | 1 |
 | `enablevanitymode` | Control | — | 1 |
@@ -188,12 +180,15 @@ Not opcodes, so no call site names them: a script declares `short OnPCEquip` and
 | `getpcsleep` | Misc | — → `l` | 26 |
 | `clearforcesneak` | Control | — | 25 |
 | `getfight` | Ai | — → `l` | 22 |
+| `enableteleporting` | Misc | — | 21 |
 | `hasitemequipped` | Container | `c` → `l` | 20 |
 | `getstrength` | Stats | — → `f` | 19 |
+| `gotojail` | Misc | — | 19 |
 | `playloopsound3d` | Sound | `cXX` | 19 |
 | `resurrect` | Stats | — | 19 |
 | `setatstart` | Transformation | — | 19 |
 | `getspellreadied` | Misc | — → `l` | 18 |
+| `payfinethief` | Misc | — | 18 |
 | `placeitem` | Transformation | `cffffX` | 18 |
 | `getsquareroot` | Misc | `f` → `f` | 16 |
 | `getlevel` | Stats | — → `l` | 15 |
@@ -202,6 +197,7 @@ Not opcodes, so no call site names them: a script declares `short OnPCEquip` and
 | `setspeed` | Stats | `f` | 15 |
 | `modfatigue` | Stats | `f` | 14 |
 | `getluck` | Stats | — → `f` | 13 |
+| `disableteleporting` | Misc | — | 12 |
 | `getmagicka` | Stats | `x` → `f` | 12 |
 | `modalteration` | Stats | `f` | 12 |
 | `pcjoinfaction` | Stats | `/S` | 12 |
@@ -217,6 +213,7 @@ Not opcodes, so no call site names them: a script declares `short OnPCEquip` and
 | `getsecurity` | Stats | — → `f` | 9 |
 | `pcclearexpelled` | Stats | `/S` | 9 |
 | `removespelleffects` | Stats | `c` | 9 |
+| `showrestmenu` | Gui | — | 9 |
 | `sethandtohand` | Stats | `f` | 8 |
 | `setmarksman` | Stats | `f` | 8 |
 | `setmercantile` | Stats | `f` | 8 |
@@ -241,6 +238,7 @@ Not opcodes, so no call site names them: a script declares `short OnPCEquip` and
 | `getcurrenttime` | Misc | — → `f` | 4 |
 | `getpersonality` | Stats | — → `f` | 4 |
 | `modscale` | Transformation | `f` | 4 |
+| `payfine` | Misc | — | 4 |
 | `pclowerrank` | Stats | `/S` | 4 |
 | `samefaction` | Dialogue | — → `l` | 4 |
 | `setathletics` | Stats | `f` | 4 |
@@ -275,7 +273,9 @@ Not opcodes, so no call site names them: a script declares `short OnPCEquip` and
 | `setblock` | Stats | `f` | 2 |
 | `setwaterbreathing` | Stats | `l` | 2 |
 | `aiescortcell` | Ai | `ccffff/l` | 1 |
+| `disablelevitation` | Misc | — | 1 |
 | `disableplayerfighting` | Control | — | 1 |
+| `enablelevitation` | Misc | — | 1 |
 | `enableplayerfighting` | Control | — | 1 |
 | `enableplayerviewswitch` | Control | — | 1 |
 | `getagility` | Stats | — → `f` | 1 |

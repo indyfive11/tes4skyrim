@@ -64,6 +64,7 @@ REM built only by `build.bat test`.
 echo [build] compiling plugin...
 cl %CXXFLAGS% %INCLUDES% plugin\plugin.cpp plugin\store.cpp plugin\scope.cpp ^
    "%COMMON%\log.cpp" "%COMMON%\paths.cpp" "%COMMON%\addresses.cpp" plugin\menu.cpp ^
+   plugin\menu_widgets.cpp plugin\scaleform_log.cpp ^
    "%COMMON%\ui_message.cpp" "%COMMON%\crafting_client.cpp" ^
    "%COMMON%\glide.cpp" "%COMMON%\main_tick.cpp" ^
    plugin\filter.cpp plugin\session.cpp plugin\activation.cpp ^
@@ -83,7 +84,8 @@ cl %CXXFLAGS% %INCLUDES% plugin\plugin.cpp plugin\store.cpp plugin\scope.cpp ^
    plugin\game_calls_query.cpp plugin\game_calls_spell.cpp ^
    plugin\game_calls_message.cpp plugin\game_calls_control.cpp ^
    plugin\game_calls_state.cpp plugin\game_calls_crime.cpp ^
-   plugin\game_calls_teleport.cpp ^
+   plugin\game_calls_teleport.cpp plugin\game_calls_flight.cpp ^
+   plugin\game_calls_sanctuary.cpp ^
    plugin\cosave.cpp plugin\main_thread.cpp /Fo:obj\
 if errorlevel 1 (
     echo [build] ERROR: plugin compilation failed
@@ -125,13 +127,14 @@ if errorlevel 1 (
     exit /b 1
 )
 link /nologo /OUT:store_test.exe objt\store.obj objt\scope.obj objt\log.obj objt\paths.obj ^
-     objt\script_tables.obj objt\store_test.obj kernel32.lib user32.lib shell32.lib ole32.lib
+     objt\script_tables.obj objt\store_test.obj obj\mw\*.obj ^
+     kernel32.lib user32.lib shell32.lib ole32.lib
 if errorlevel 1 (
     echo [build] ERROR: store_test link failed
     exit /b 1
 )
 link /nologo /OUT:filter_test.exe objt\store.obj objt\scope.obj objt\log.obj objt\paths.obj ^
-     objt\script_tables.obj objt\filter.obj objt\filter_test.obj ^
+     objt\script_tables.obj objt\filter.obj objt\filter_test.obj obj\mw\*.obj ^
      kernel32.lib user32.lib shell32.lib ole32.lib
 if errorlevel 1 (
     echo [build] ERROR: filter_test link failed

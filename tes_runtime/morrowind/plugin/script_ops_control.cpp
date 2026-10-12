@@ -77,6 +77,21 @@ private:
     bool mOn;
 };
 
+// `EnableLevitation` / `DisableLevitation`: whether Levitate lifts anyone.
+// No Skyrim flag gates it, so the runtime's own does.
+// See: docs/commentary/morrowind_runtime.md#levitate-and-slowfall
+class OpSetLevitation : public Interpreter::Opcode0 {
+public:
+    explicit OpSetLevitation(bool on) : mOn(on) {}
+
+    void execute(Interpreter::Runtime&) override {
+        State().levitation = mOn;
+    }
+
+private:
+    bool mOn;
+};
+
 // `EnableRaceMenu`: Skyrim's own race/sex menu.
 class OpShowRaceMenu : public Interpreter::Opcode0 {
     void execute(Interpreter::Runtime&) override {
@@ -100,6 +115,8 @@ void InstallControlOps(OpcodeInstaller& into) {
     into.Real<OpSetTeleporting>(Compiler::Misc::opcodeEnableTeleporting, true);
     into.Real<OpSetTeleporting>(Compiler::Misc::opcodeDisableTeleporting,
                                 false);
+    into.Real<OpSetLevitation>(Compiler::Misc::opcodeEnableLevitation, true);
+    into.Real<OpSetLevitation>(Compiler::Misc::opcodeDisableLevitation, false);
 }
 
 }  // namespace tesruntime::mw

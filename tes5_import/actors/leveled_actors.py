@@ -30,6 +30,7 @@ Pos/Rot, ParentCELL/ParentWRLD, RecordFlags), so no other pass needs to change.
 
 import struct
 
+from ..base.master_export import records_of
 from .creature_races import get_creature_race
 from ..base.equivalents import resolve_creature_race
 from ..base.race_lookup import tes4_race_edid
@@ -318,8 +319,7 @@ def register_from(by_type: dict, master_export: dict = None) -> int:
     """
     fids = {int(r['FormID'], 16) for r in by_type.get('LVLC', [])
             if r.get('FormID')}
-    fids |= {int(k, 16) for k, r in (master_export or {}).items()
-             if r.get('Signature') == 'LVLC'}
+    fids |= {int(k, 16) for k, _r in records_of(master_export, 'LVLC')}
     register_leveled_bases(fids)
     return len(fids)
 

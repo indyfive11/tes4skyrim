@@ -51,6 +51,9 @@ _DALC_FRESNEL = 1.0
 #: Source FormIDs whose own record type this run writes; FLST members must be in it.
 _CONVERTIBLE = set()
 
+#: The record types whose conversion asks `convertible` (FLST members, IPCT/EXPL links).
+_ASKS_CONVERTIBLE = ('FLST', 'IPCT', 'EXPL')
+
 
 def index_convertible_records(by_type: dict, dispatch, skip,
                               master_export: dict = None) -> int:
@@ -61,9 +64,13 @@ def index_convertible_records(by_type: dict, dispatch, skip,
     neither of which converts. Writing those members verbatim produces a
     dangling FormID, which the engine treats as a broken reference.
 
+    Built only when this plugin has a record type that asks `convertible`.
+
     See: docs/commentary/tes4_export_falloutnv.md#formlist-members
     """
     _CONVERTIBLE.clear()
+    if not any(by_type.get(sig) for sig in _ASKS_CONVERTIBLE):
+        return 0
     recs = [(sig, r) for sig, rs in by_type.items() for r in rs]
     recs += [(r.get('Signature'), r) for r in (master_export or {}).values()]
     for sig, rec in recs:

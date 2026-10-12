@@ -349,7 +349,14 @@ comes from what actually solved 46 recent bugs
   change that removes lines, or adds only a few, beats one that adds many. Keep
   cyclomatic complexity low.
 - **No duplicated code.** Check whether it's already built; point to it or pull
-  it into a shared function.
+  it into a shared function. **De-duplicating code that can drift is a
+  priority:** when a fix touches one of several copies of the same rule (path
+  resolution, header parsing, naming), fold them into one function in the same
+  change — the unfixed copy is the next silent bug.
+- **Use the vendored OpenMW (`external/openmw`) instead of hand-rolling what it
+  already does** (e.g. `ESM::InfoOrder` for dialogue order), so our behavior
+  can't drift from OpenMW's. Hand-roll only when calling it would make the code
+  more complex; vendor a missing header from `references/openmw` first.
 - Don't preserve backwards compatibility in code — delete what is no longer used.
   (Save-game compatibility is different: see [FormID drift](#formid-drift).)
 - <a id="end-user-state"></a>**Except what end users already have installed.**
@@ -386,6 +393,12 @@ comes from what actually solved 46 recent bugs
 
 ### Performance and memory
 
+- **Do each piece of work once per run.** Read a file, parse a binary, scan
+  the masters' records or build an index once, and share the result with
+  every step that needs it; never re-derive what an earlier step already
+  computed. Keep it in memory for that run only. A cache between runs is
+  justified only by a huge win (the navmesh cache).
+  ([shared readers](docs/commentary/performance.md#import-once-per-run))
 - Multiprocessing, not threads, for pure-Python work; `ThreadPoolExecutor` only for
   I/O and subprocesses. The output ESM must stay byte-reproducible. Rules and
   measurements: [docs/commentary/performance.md](docs/commentary/performance.md).

@@ -18,9 +18,7 @@ import pickle
 import sqlite3
 import threading
 
-from tes5_import.overrides.nested import (
-    export_master_names, export_root, master_export_dir,
-)
+from core.plugin_masters import master_dir, masters_from_export_header
 
 #: Tables small enough to load whole; the rest is per cell.
 SHARED = ('base_model', 'door_fids', 'cells')
@@ -184,12 +182,11 @@ def index_map(child, master):
 
     See: docs/commentary/tes5_import_navmesh.md#cellview-master-numbering
     """
-    root = export_root(child)
-    slots = {_dir_key(master_export_dir(root, n)): i
-             for i, n in enumerate(export_master_names(child))}
-    names = export_master_names(master)
+    slots = {_dir_key(master_dir(child, n)): i
+             for i, n in enumerate(masters_from_export_header(child))}
+    names = masters_from_export_header(master)
     out = {}
-    for i, d in enumerate([master_export_dir(root, n) for n in names] + [master]):
+    for i, d in enumerate([master_dir(child, n) for n in names] + [master]):
         if _dir_key(d) in slots:
             out[i] = slots[_dir_key(d)]
     return out
