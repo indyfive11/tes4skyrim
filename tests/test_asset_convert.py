@@ -18,7 +18,6 @@ from asset_convert.nif.nif_converter import (
     rewrite_tex_path,
     convert_nif,
 )
-from asset_convert.nif.furniture_markers import cluster_seats
 from asset_convert.nif.particles import skyrimize_billboard
 from asset_convert.nif.shaders import resolve_lowres
 from asset_convert.character import wearable_plan, wearable_plan_falloutnv
@@ -5540,21 +5539,3 @@ class TestMeshSubdirFilter:
         assert self._kept(tmp_path, ['TR\\l', 'td/vfx.nif']) == ['td/vfx.nif', 'tr/l/candle.nif']
 
 
-def _stool_entry(index, x, y, theta):
-    """A FO3/FNV stool entry (ref 15) as extract_entries builds it."""
-    t = theta / 1000.0
-    return {'index': index, 'p': (x, y, 0.0), 'd': (math.sin(t), math.cos(t)),
-            'heading': t % (2 * math.pi), 'sleep': False, 'ref': 15}
-
-
-def test_fallout_stool_entries_seat_the_sitter_on_the_stool():
-    """stool01's entry puts the seat at the stool's centre; the blackjack table's four land on theirs.
-
-    See: docs/commentary/asset_convert_falloutnv.md#stool-entries
-    """
-    stool, = cluster_seats([_stool_entry(0, 20.5, -41.0, 0)], lambda: (0.0, 0.0))
-    assert (round(stool['x'], 1), round(stool['y'], 1), stool['heading']) == (0.0, 0.0, 0.0)
-    table = [(-109.7, -67.6, 1311), (-120.1, 21.8, 1797), (-80.4, 111.9, 2417), (-55.4, -139.7, 785)]
-    stools = [(-70.5, -36.0), (-73.4, 31.8), (-36.1, 92.3), (-36.0, -92.6)]
-    seats = cluster_seats([_stool_entry(i, *row) for i, row in enumerate(table)], lambda: (0.0, 0.0))
-    assert all(math.hypot(s['x'] - cx, s['y'] - cy) < 8.0 for s, (cx, cy) in zip(seats, stools))

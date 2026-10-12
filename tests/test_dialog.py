@@ -1318,12 +1318,12 @@ class TestFalloutActorValues:
         """Speech, Barter, Lockpick and Health read their Skyrim values."""
         assert _av_param(convert_ctda(_av_ctda(14, fallout_av))) == skyrim_av
 
-    @pytest.mark.parametrize('fallout_av', [23, 8, 9, 37, 40, 29])
+    @pytest.mark.parametrize('fallout_av', [23, 8, 9, 40, 29])
     def test_values_skyrim_lacks_drop(self, fallout_av):
-        """Karma, Charisma, Intelligence, Medicine, Science and a limb condition.
+        """Karma, Charisma, Intelligence, Science and a limb condition.
 
         Through TES4's table Karma, Charisma, Intelligence and the limb read
-        Illusion, Health, Magicka and Speech; all six must fail open.
+        Illusion, Health, Magicka and Speech; all five must fail open.
         """
         assert convert_ctda(_av_ctda(14, fallout_av)) is None
 

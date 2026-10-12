@@ -99,16 +99,17 @@ def test_without_a_marker_the_parent_is_the_root(tmp_path):
 
 
 def test_every_export_root_helper_agrees(tmp_path):
-    """Four modules once each answered this separately."""
-    from asset_convert.game_paths import _export_root
-    from asset_convert.lod.terrain_lod import _master_record_dir
+    """Four modules once each answered this separately; one function does now."""
+    from core.plugin_masters import export_root as central_root, master_dir
+    from output_layout import export_root_of
     from tes5_import.dialogue.morrowind_sidecar import export_root as mw_root
     from tes5_import.overrides.nested import export_root
     exp, rec = _export(tmp_path)
+    assert Path(central_root(str(rec))) == exp
     assert Path(export_root(str(rec))) == exp
     assert Path(mw_root(str(rec))) == exp
-    assert _export_root(rec) == exp
-    assert Path(_master_record_dir(rec, 'Base.esm')) == exp / 'Base.esm'
+    assert export_root_of(rec) == exp
+    assert Path(master_dir(rec, 'Base.esm')) == exp / 'Base.esm'
 
 
 # ---------------------------------------------------------------------------

@@ -62,7 +62,7 @@ from script_convert.pipeline import (
     build_vmad_info_fragment,
     convert_all_scripts,
     build_script_context,
-    _script_worker_init,
+    script_worker_init,
     _WORKER_CTX,
 )
 
@@ -1973,10 +1973,10 @@ class TestIntegration:
             initargs = ctx['initargs']
             # The plan is PRESENT in the tuple the worker pool is seeded with.
             assert initargs[-1] == {'testquest': ['TestOwner']}
-            # And _script_worker_init reads that position into the class attr --
+            # And script_worker_init reads that position into the class attr --
             # with the parent attr cleared, proving it comes from initargs.
             ScriptConverter.forcegreet_reeval_owners = {}
-            _script_worker_init(*initargs)
+            script_worker_init(*initargs)
             assert ScriptConverter.forcegreet_reeval_owners == {
                 'testquest': ['TestOwner']}
         finally:
@@ -4532,7 +4532,7 @@ class TestCarriedScriptKeepsItsRecordType:
                '\nbegin onstartcombat\n\tstopcombat\nend\n')
         _conv, _header, out = self._convert(['NPC_', 'DOOR'], src)
         assert 'akKiller.' not in out and 'akTarget.' not in out
-        assert '(Self as Actor).StopCombat()' in out
+        assert 'TES4Polyfill.EndCombatApproach((Self as Actor), ' in out
         assert out.count('(Self as Actor).SetGhost(1)') == 2
 
     def test_actor_only_event_is_about_self_in_any_script(self):
@@ -4666,8 +4666,8 @@ class TestCarriedScriptKeepsItsRecordType:
             seen.append(conv._script_extends)
             return out
         monkeypatch.setattr(ScriptConverter, 'convert_standalone', spy)
-        props = _resolve_props(self.SRC, 'T', 'ObjectReference',
-                               self._graph(['ACTI']), {}, 0)
+        props = _resolve_props(('T', self.SRC, 'ObjectReference', set()),
+                               self._graph(['ACTI']), 0)
         assert seen == ['ObjectReference']
         assert 'GameHour' in props
 
@@ -5155,13 +5155,16 @@ end
     def test_trigger_actor_admits_only_actors(self, converter):
         """OnTriggerActor's body runs only for an actor, not for clutter settling in the zone.
 
+        The test is asked at the gate, ahead of the one-at-a-time latch.
         See: docs/commentary/script_convert.md#block-type-guards
+        See: docs/commentary/script_convert.md#one-trigger-at-a-time
         """
         src = "scn T\nshort x\nbegin onTriggerActor\n  set x to 1\nend\n"
         out = converter.convert_standalone('T', src, 'ObjectReference', 'T')
+        event = out.split('Event OnTrigger(')[1].split('EndEvent')[0]
+        assert 'If !(akActionRef as Actor) || TES4_TriggerBusy' in event
         body = out.split('Function TES4_OnTriggerBody(')[1].split('EndFunction')[0]
-        assert body.split('\n')[1].strip() == 'If akActionRef as Actor'
-        assert 'x = 1' in body
+        assert 'x = 1' in body and 'as Actor' not in body
 
     def test_plain_trigger_stays_unguarded(self, converter):
         """A plain OnTrigger fires for any object, as in TES4."""

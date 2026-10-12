@@ -157,13 +157,13 @@ def test_a_bodyless_later_project_never_shadows_a_usable_one(tmp_path):
 
 
 def test_papyrus_header_chain_is_nearest_first(tmp_path):
-    """The `-h` master dirs put the patch before the root."""
-    from papyrus_compile import _master_chain
+    """The `-h` master dirs put the patch before the root: the master chain, reversed."""
+    from core.plugin_masters import master_chain
     for n in ('Base.esm', 'Patch.esp'):
         (tmp_path / n).mkdir()
     _header(tmp_path / 'Patch.esp', ['Base.esm'])
-    _header(tmp_path / 'Mod.esp', ['Base.esm', 'Patch.esp'])
-    assert _master_chain('Mod.esp', str(tmp_path)) == ['Patch.esp', 'Base.esm']
+    rec = _header(tmp_path / 'Mod.esp', ['Base.esm', 'Patch.esp'])
+    assert list(reversed(master_chain(str(rec)))) == ['Patch.esp', 'Base.esm']
 
 
 def test_a_later_masters_worldspace_edid_wins(tmp_path):

@@ -203,7 +203,7 @@ def test_the_prescans_end_with_the_census(monkeypatch, capsys):
     state = SimpleNamespace(
         by_type={'REFR': [_refr('00000003', x=50000.0, cell='00018093')]},
         ctx=SimpleNamespace(master_export=masters), writer=None,
-        plugin_out_dir='', output_path='', output_root='')
+        plugin_out_dir='', output_path='', output_root='', num_tes4_masters=0)
     pipeline._run_prescans(state, [], 0, '', lambda *_: None)
     out = capsys.readouterr().out
     assert 'WARNING: 1 interior reference(s) in 1 cell(s)' in out
