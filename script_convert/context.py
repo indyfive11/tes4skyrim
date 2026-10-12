@@ -118,6 +118,8 @@ class ScriptContext:
     #: this script, and whether the helpers are due.
     msgbox_used: set = field(default_factory=set)
     uses_msg_buttons: bool = False
+    #: A `Message` converted to TES4_Notify, so the helper is due.
+    uses_notify: bool = False
 
     #: Chargen-menu call sites converted here, and whether the re-entrancy
     #: latch declaration is due.

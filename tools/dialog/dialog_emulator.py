@@ -162,6 +162,15 @@ def _verify_function_indices():
         'FUNC_GETPCISRACE': 'GetPCIsRace',
         'FUNC_GETISVOICETYPE': 'GetIsVoiceType',
         'FUNC_GETRELATIONSHIPRANK': 'GetRelationshipRank',
+        'FUNC_GETITEMCOUNT': 'GetItemCount',
+        'FUNC_GETGOLD': 'GetGold',
+        'FUNC_GETSCRIPTVARIABLE': 'GetScriptVariable',
+        'FUNC_GETEQUIPPED': 'GetEquipped',
+        'FUNC_GETIGNORECRIME': 'GetIgnoreCrime',
+        'FUNC_GETPCEXPELLED': 'GetPCExpelled',
+        'FUNC_GETOFFERSSERVICESNOW': 'GetOffersServicesNow',
+        'FUNC_ISININTERIOR': 'IsInInterior',
+        'FUNC_GETINWORLDSPACE': 'GetInWorldspace',
     }
     wrong = []
     for const, want in expected.items():
@@ -181,6 +190,15 @@ FUNC_GETISCURRENTPACKAGE = 161
 FUNC_GETISPLAYABLERACE = 254
 FUNC_ISSNEAKING = 286
 FUNC_GETISVOICETYPE = 426
+FUNC_GETITEMCOUNT = 47
+FUNC_GETGOLD = 48
+FUNC_GETSCRIPTVARIABLE = 53
+FUNC_GETEQUIPPED = 182
+FUNC_GETIGNORECRIME = 192
+FUNC_GETPCEXPELLED = 193
+FUNC_GETOFFERSSERVICESNOW = 255
+FUNC_ISININTERIOR = 300
+FUNC_GETINWORLDSPACE = 310
 
 _verify_function_indices()
 
@@ -654,6 +672,49 @@ class DialogDB:
 # Condition Evaluator
 # ---------------------------------------------------------------------------
 
+#: Quest functions: RunOn=Target does not make them player conditions.
+_QUEST_FUNCS = frozenset({FUNC_GETSTAGE, FUNC_GETQUESTRUNNING,
+                          FUNC_GETQUESTCOMPLETED, FUNC_GETSTAGEDONE})
+
+#: Player (RunOn=Target) values: a fresh level-1 male of no known race; unlisted functions read 0.
+_PLAYER_VALUES = {
+    FUNC_GETRANDOMPERC: 50.0,
+    FUNC_GETLEVEL: 1.0,
+}
+
+#: Functions a static emulation fixes at game start: no scripts run, merchants are open.
+_FIXED_VALUES = {
+    FUNC_GETRANDOMPERC: 50.0,
+    FUNC_GETACTORVALUE: 50.0,
+    FUNC_GETISPLAYABLERACE: 1.0,
+    FUNC_GETOFFERSSERVICESNOW: 1.0,
+}
+
+#: Functions read from the subject NPC or the modelled game state, as (evaluator, subject, cond).
+_SUBJECT_VALUES = {
+    FUNC_GETISID: lambda ev, s, c: float(s.form_id == c.param1),
+    FUNC_GETISVOICETYPE: lambda ev, s, c: float(s.voice_type == c.param1),
+    FUNC_GETISRACE: lambda ev, s, c: float(s.race == c.param1),
+    FUNC_GETISSEX: lambda ev, s, c: float(s.is_female),
+    FUNC_GETINFACTION: lambda ev, s, c: float(c.param1 in s.factions),
+    FUNC_GETFACTIONRANK: lambda ev, s, c: float(s.factions.get(c.param1, -1)),
+    FUNC_GETLEVEL: lambda ev, s, c: float(s.level),
+    FUNC_GETINCELL: lambda ev, s, c: float(c.param1 in s.cell_fids),
+    FUNC_GETINWORLDSPACE: lambda ev, s, c: float(c.param1 in s.wrld_fids),
+    FUNC_ISININTERIOR: lambda ev, s, c: float(s.is_interior),
+    FUNC_ISGUARD: lambda ev, s, c: float(ev.is_guard(s)),
+    FUNC_GETSTAGE: lambda ev, s, c: float(ev.game_state.get(f'stage_{c.param1}', 0)),
+    FUNC_GETQUESTRUNNING: lambda ev, s, c: float(c.param1 in ev.running_quests),
+    FUNC_GETQUESTCOMPLETED: lambda ev, s, c: float(
+        bool(ev.game_state.get(f'completed_{c.param1}'))),
+    FUNC_GETSTAGEDONE: lambda ev, s, c: float(ev.stage_done(c.param1, c.param2)),
+    FUNC_GETGLOBALVALUE: lambda ev, s, c: ev.global_value(c.param1),
+    FUNC_GETRELATIONSHIPRANK: lambda ev, s, c: float(
+        ev.game_state.get('relationship_rank', 0)),
+    FUNC_GETTALKEDTOPC: lambda ev, s, c: float(
+        bool(ev.game_state.get('talked_to_pc'))),
+}
+
 class ConditionEvaluator:
     """Evaluates Skyrim dialog conditions against an NPC."""
 
@@ -683,187 +744,59 @@ class ConditionEvaluator:
                     pass
 
     def evaluate_condition(self, cond: Condition) -> bool | None:
-        """Evaluate a single condition. Returns True, False, or None (unknown)."""
-        func = cond.func_idx
-        p1 = cond.param1
-        p2 = cond.param2
-        cv = cond.comp_value
-        comp = cond.comp_type
+        """Evaluate a single condition. Returns True, False, or None (unknown comparator)."""
+        return self._compare(self._value(cond), cond.comp_type, cond.comp_value)
 
-        # Determine the subject for RunOn
-        if cond.run_on == 0:  # Subject = NPC being talked to
-            subject = self.npc
-        elif cond.run_on == 1:  # Target = Player
-            # Player-specific conditions with sensible defaults
-            if func == FUNC_GETISID:
-                # Player is never an NPC — always false
-                return self._compare(0.0, comp, cv)
-            elif func == FUNC_GETISVOICETYPE:
-                return self._compare(0.0, comp, cv)
-            elif func == FUNC_GETISRACE:
-                return self._compare(0.0, comp, cv)  # Player race unknown, assume no match
-            elif func == FUNC_GETPCISRACE:
-                return self._compare(0.0, comp, cv)  # Player race unknown, assume no match
-            elif func == FUNC_GETQUESTVARIABLE:
-                return self._compare(0.0, comp, cv)  # Quest vars never set
-            elif func == FUNC_GETRANDOMPERC:
-                return self._compare(50.0, comp, cv)  # Mid-range
-            elif func == FUNC_GETINFACTION:
-                # Player factions are modelled via --player-faction so that
-                # guild-membership-gated dialogue (join/contract flows) can be
-                # reproduced faithfully; default is "not a member".
-                pf = self.game_state.get('player_factions', {})
-                return self._compare(1.0 if p1 in pf else 0.0, comp, cv)
-            elif func == FUNC_GETFACTIONRANK:
-                pf = self.game_state.get('player_factions', {})
-                return self._compare(float(pf.get(p1, -1)), comp, cv)
-            elif func == FUNC_GETDEAD:
-                return self._compare(0.0, comp, cv)  # Player alive
-            elif func == FUNC_GETLEVEL:
-                return self._compare(1.0, comp, cv)  # Player level 1 at start
-            elif func == FUNC_GETISSEX:
-                return self._compare(0.0, comp, cv)  # Assume male player (sex=0)
-            # For quest functions, subject doesn't matter
-            elif func in (FUNC_GETSTAGE, FUNC_GETQUESTRUNNING,
-                          FUNC_GETQUESTCOMPLETED, FUNC_GETSTAGEDONE):
-                subject = self.npc  # dummy, quest funcs don't use subject
-            else:
-                return self._compare(0.0, comp, cv)  # Unknown player condition → 0
-        elif cond.run_on == 2:  # Reference
-            # Look up the reference NPC
-            ref_npc = self.db.npcs.get(cond.reference)
-            if ref_npc:
-                subject = ref_npc
-            else:
-                # Reference NPC not found — assume condition fails
-                return self._compare(0.0, comp, cv)
-        else:
-            # Unknown RunOn type — assume condition fails
-            return self._compare(0.0, comp, cv)
+    def _value(self, cond: Condition) -> float:
+        """The condition function's value on its RunOn subject; 0 when unknowable.
 
+        RunOn=Target is the player, except that quest functions ignore the
+        subject. An unknown reference or RunOn type reads as 0.
+        """
+        if cond.run_on == 1 and cond.func_idx not in _QUEST_FUNCS:
+            return self._player_value(cond)
+        subject = self._subject(cond)
         if subject is None:
-            return self._compare(0.0, comp, cv)  # No subject → assume fails
+            return 0.0
+        handler = _SUBJECT_VALUES.get(cond.func_idx)
+        if handler:
+            return handler(self, subject, cond)
+        return _FIXED_VALUES.get(cond.func_idx, 0.0)
 
-        # Evaluate based on function
-        if func == FUNC_GETISID:
-            actual = 1.0 if subject.form_id == p1 else 0.0
-        elif func == FUNC_GETISVOICETYPE:
-            actual = 1.0 if subject.voice_type == p1 else 0.0
-        elif func == FUNC_GETISRACE:
-            actual = 1.0 if subject.race == p1 else 0.0
-        elif func == FUNC_GETISSEX:
-            # p1: 0=Male, 1=Female
-            actual = 1.0 if subject.is_female == (cv == 1.0) else 0.0
-            # For GetIsSex, comparison with cv
-            return self._compare(actual, comp, cv)
-        elif func == FUNC_GETINFACTION:
-            actual = 1.0 if p1 in subject.factions else 0.0
-        elif func == FUNC_GETFACTIONRANK:
-            actual = float(subject.factions.get(p1, -1))
-        elif func == FUNC_GETDEAD:
-            actual = 0.0  # Assume alive
-        elif func == FUNC_GETLEVEL:
-            actual = float(subject.level)
-        elif func == FUNC_GETSTAGE:
-            stage = self.game_state.get(f'stage_{p1}', 0)
-            actual = float(stage)
-        elif func == FUNC_GETQUESTRUNNING:
-            actual = 1.0 if p1 in self.running_quests else 0.0
-        elif func == FUNC_GETQUESTCOMPLETED:
-            completed = self.game_state.get(f'completed_{p1}', False)
-            actual = 1.0 if completed else 0.0
-        elif func == FUNC_GETSTAGEDONE:
-            # GetStageDone(quest, stage): param1=quest, param2=stage number.
-            # An explicit stagedone_ entry wins; otherwise a quest that has been
-            # advanced to stage N has necessarily run every stage up to N, so
-            # asking about an earlier stage answers yes.
-            key = f'stagedone_{p1}_{p2}'
-            if key in self.game_state:
-                done = self.game_state[key]
-            else:
-                done = p2 <= self.game_state.get(f'stage_{p1}', 0)
-            actual = 1.0 if done else 0.0
-        elif func == FUNC_GETRELATIONSHIPRANK:
-            # Both games start an NPC neutral: Oblivion at disposition 50,
-            # Skyrim at rank 0 (Acquaintance). --relationship-rank moves it.
-            actual = float(self.game_state.get('relationship_rank', 0))
-        elif func == FUNC_GETGLOBALVALUE:
-            # Condition function 74 (engine opcode 0x104A). The converter's
-            # AddTopic gates are globals, so this is what decides whether a
-            # topic has been unlocked. An explicit override wins; otherwise the
-            # global's authored starting value applies.
-            key = f'global_{p1}'
-            if key in self.game_state:
-                actual = float(self.game_state[key])
-            else:
-                actual = float(self.db.glob_values.get(p1, 0.0))
-        elif func == FUNC_GETQUESTVARIABLE:
-            actual = 0.0  # Quest variables never set (TES4 scripts don't run)
-        elif func == 53:  # GetScriptVariable
-            actual = 0.0  # Script variables never set
-        elif func == FUNC_GETTALKEDTOPC:
-            # Flips 0->1 the first time the NPC has spoken to the player, and
-            # stays 1 for the rest of the session — the ONE piece of state that
-            # changes between a first and a repeat conversation. Settable via
-            # --talked-to-pc so the "re-enter dialogue" case can be reproduced.
-            actual = 1.0 if self.game_state.get('talked_to_pc') else 0.0
-        elif func == FUNC_GETDISEASE:
-            actual = 0.0  # No disease
-        elif func == FUNC_GETISCLASS:
-            actual = 0.0  # Class data not loaded — assume no match
-        elif func == FUNC_ISGUARD:
-            # Check if NPC is a guard — ACBS flag or guard faction name
-            is_guard = subject.is_guard
-            if not is_guard:
-                for fid in subject.factions:
-                    fname = self.db.facts.get(fid, '')
-                    if 'guard' in fname.lower():
-                        is_guard = True
-                        break
-            actual = 1.0 if is_guard else 0.0
-        elif func == FUNC_GETTRESPASSWARNINGLEVEL:
-            actual = 0.0  # Default: no warning
-        elif func == FUNC_ISTRESPASSING:
-            actual = 0.0  # Not trespassing
-        elif func == FUNC_ISINMYOWNEDCELL:
-            actual = 0.0  # Not in owned cell at game start
-        elif func == FUNC_GETISCURRENTPACKAGE:
-            actual = 0.0  # Not in any specific package at dialog time
-        elif func == FUNC_GETISPLAYABLERACE:
-            actual = 1.0  # Most NPCs are playable races
-        elif func == FUNC_ISSNEAKING:
-            actual = 0.0  # Not sneaking
-        elif func == FUNC_GETINCELL:
-            # Check if the NPC is placed in the specified cell
-            actual = 1.0 if p1 in subject.cell_fids else 0.0
-        elif func == FUNC_GETCURRENTAIPROCEDURE:
-            actual = 0.0  # Default procedure (wander/stand)
-        elif func == FUNC_GETRANDOMPERC:
-            actual = 50.0  # Mid-range; most thresholds will pass
-        elif func == FUNC_GETACTORVALUE:
-            actual = 50.0  # Default actor value (mid-range)
-        elif func == 47:  # GetItemCount
-            actual = 0.0  # No items at game start
-        elif func == 48:  # GetGold
-            actual = 0.0  # No gold tracked
-        elif func == 84:  # GetDeadCount
-            actual = 0.0  # Nobody dead at game start
-        elif func == 182:  # GetEquipped
-            actual = 0.0  # Can't determine equipment
-        elif func == 14:  # GetActorValue
-            actual = 50.0  # Default mid-range
-        elif func == 192:  # GetIgnoreCrime
-            actual = 0.0
-        elif func == 193:  # GetPCExpelled
-            actual = 0.0  # Not expelled from any faction
-        elif func == 300:  # IsInInterior
-            actual = 1.0 if subject.is_interior else 0.0
-        elif func == 310:  # GetInWorldspace
-            actual = 1.0 if p1 in subject.wrld_fids else 0.0
-        else:
-            actual = 0.0  # Unknown function — assume 0 (safe default)
+    def _subject(self, cond: Condition):
+        """The NPC a condition runs on: the speaker, a reference NPC, or None."""
+        if cond.run_on in (0, 1):
+            return self.npc
+        if cond.run_on == 2:
+            return self.db.npcs.get(cond.reference)
+        return None
 
-        return self._compare(actual, comp, cv)
+    def _player_value(self, cond: Condition) -> float:
+        """A player condition: --player-faction membership, else a fresh level-1 male."""
+        factions = self.game_state.get('player_factions', {})
+        if cond.func_idx == FUNC_GETINFACTION:
+            return float(cond.param1 in factions)
+        if cond.func_idx == FUNC_GETFACTIONRANK:
+            return float(factions.get(cond.param1, -1))
+        return _PLAYER_VALUES.get(cond.func_idx, 0.0)
+
+    def stage_done(self, quest: int, stage: int) -> bool:
+        """GetStageDone: an explicit override, else any stage up to the quest's current one."""
+        key = f'stagedone_{quest}_{stage}'
+        if key in self.game_state:
+            return bool(self.game_state[key])
+        return stage <= self.game_state.get(f'stage_{quest}', 0)
+
+    def global_value(self, glob: int) -> float:
+        """GetGlobalValue: an explicit override, else the global's authored starting value."""
+        return float(self.game_state.get(f'global_{glob}',
+                                         self.db.glob_values.get(glob, 0.0)))
+
+    def is_guard(self, subject: NPCData) -> bool:
+        """IsGuard: the ACBS guard flag, or membership of a faction named like a guard's."""
+        return subject.is_guard or any(
+            'guard' in self.db.facts.get(fid, '').lower()
+            for fid in subject.factions)
 
     def _compare(self, actual: float, comp: int, expected: float) -> bool:
         if comp == 0: return actual == expected

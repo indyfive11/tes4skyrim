@@ -462,80 +462,82 @@ def export_ROAD(rec: Record) -> list:
     return lines
 
 
+def _pgrp_lines(rec: Record, lines: list) -> list:
+    """Emit PGRP points (16 bytes: X/Y/Z floats, U8 connections, 3 pad); return connection counts."""
+    conn_counts = []
+    pgrp = get_subrecord(rec, "PGRP")
+    if not pgrp:
+        return conn_counts
+    for i in range(len(pgrp.data) // 16):
+        off = i * 16
+        x, y, z = struct.unpack_from('<fff', pgrp.data, off)
+        conn = pgrp.data[off + 12]
+        conn_counts.append(conn)
+        lines.append(f"Point[{i}].X={x}")
+        lines.append(f"Point[{i}].Y={y}")
+        lines.append(f"Point[{i}].Z={z}")
+        lines.append(f"Point[{i}].Connections={conn}")
+    return conn_counts
+
+
+def _pgrr_lines(rec: Record, conn_counts: list, lines: list) -> None:
+    """Emit PGRR: a flat S16 array holding conn_counts[i] neighbour indices per point i."""
+    pgrr = get_subrecord(rec, "PGRR")
+    if not (pgrr and conn_counts):
+        return
+    total_available = len(pgrr.data) // 2
+    s16_values = struct.unpack_from(f'<{total_available}h', pgrr.data)
+    flat_idx = 0
+    for i, count in enumerate(conn_counts):
+        for j in range(min(count, total_available - flat_idx)):
+            lines.append(f"Point[{i}].Edge[{j}]={s16_values[flat_idx]}")
+            flat_idx += 1
+
+
+def _pgri_lines(rec: Record, lines: list) -> None:
+    """Emit PGRI inter-cell links: U16 local point, 2 unused bytes, foreign node X/Y/Z.
+
+    The unused bytes hold uninitialised CS memory, so the point is read as U16 only.
+    See: docs/commentary/tes5_import_navmesh.md#-corridor-redesign-regressed-edge-links--the-ribbons-never-reach-the-seam-found-2026-07-23
+    """
+    pgri = get_subrecord(rec, "PGRI")
+    entry_count = len(pgri.data) // 16 if pgri else 0
+    if entry_count == 0:
+        return
+    lines.append(f"InterCellCount={entry_count}")
+    for i in range(entry_count):
+        local_pt, x, y, z = struct.unpack_from('<H2xfff', pgri.data, i * 16)
+        lines.append(f"InterCell[{i}].LocalPoint={local_pt}")
+        lines.append(f"InterCell[{i}].X={x}")
+        lines.append(f"InterCell[{i}].Y={y}")
+        lines.append(f"InterCell[{i}].Z={z}")
+
+
+def _pgrl_lines(rec: Record, lines: list) -> None:
+    """Emit PGRL point-to-reference maps (reference FormID, then U32 point indices)."""
+    pgrl_subs = get_all_subrecords(rec, "PGRL")
+    if not pgrl_subs:
+        return
+    lines.append(f"RefMapCount={len(pgrl_subs)}")
+    for i, pgrl in enumerate(pgrl_subs):
+        if len(pgrl.data) < 4:
+            continue
+        ref_fid = struct.unpack_from('<I', pgrl.data, 0)[0]
+        lines.append(f"RefMap[{i}].Reference={get_formid_str(ref_fid)}")
+        for j in range((len(pgrl.data) - 4) // 4):
+            pt_idx = struct.unpack_from('<I', pgrl.data, 4 + j * 4)[0]
+            lines.append(f"RefMap[{i}].Point[{j}]={pt_idx}")
+
+
 def export_PGRD(rec: Record) -> list:
+    """Dump a pathgrid: point count, points, edges, inter-cell links, reference maps."""
     lines = []
     data = get_subrecord(rec, "DATA")
-    point_count = 0
     if data and len(data.data) >= 2:
         point_count = struct.unpack_from('<H', data.data, 0)[0]
         lines.append(f"DATA.PointCount={point_count}")
-
-    # PGRP — pathgrid points (each 16 bytes: X(f), Y(f), Z(f), Connections(u8), pad(3))
-    # Collect connection counts so we can parse PGRR correctly
-    conn_counts = []
-    pgrp = get_subrecord(rec, "PGRP")
-    if pgrp:
-        actual_count = len(pgrp.data) // 16
-        for i in range(actual_count):
-            off = i * 16
-            if off + 16 <= len(pgrp.data):
-                x, y, z = struct.unpack_from('<fff', pgrp.data, off)
-                conn = pgrp.data[off + 12]
-                conn_counts.append(conn)
-                lines.append(f"Point[{i}].X={x}")
-                lines.append(f"Point[{i}].Y={y}")
-                lines.append(f"Point[{i}].Z={z}")
-                lines.append(f"Point[{i}].Connections={conn}")
-
-    # PGRR — point-to-point connections (flat S16 array, grouped by PGRP.Connections count)
-    # For point i, PGRR contains conn_counts[i] consecutive S16 neighbour indices.
-    pgrr = get_subrecord(rec, "PGRR")
-    if pgrr and conn_counts:
-        total_available = len(pgrr.data) // 2
-        s16_values = list(struct.unpack_from(f'<{total_available}h', pgrr.data))
-        flat_idx = 0
-        for i, count in enumerate(conn_counts):
-            for j in range(count):
-                if flat_idx < total_available:
-                    target = s16_values[flat_idx]
-                    lines.append(f"Point[{i}].Edge[{j}]={target}")
-                    flat_idx += 1
-
-    # PGRI — inter-cell connections (16 bytes each; UESP TES4 PGRD ref).
-    # Offset 0: U32 local node number, offset 4/8/12: float X/Y/Z of the FOREIGN
-    # node (world coords in the neighbouring cell).  The earlier 14-byte /
-    # U16-local reading was WRONG on both count and field type: it misaligned
-    # every entry after the first into uninitialised memory (denormal floats,
-    # out-of-range node indices).  Used to build edge links between cell-border
-    # navmeshes.
-    pgri = get_subrecord(rec, "PGRI")
-    if pgri:
-        entry_count = len(pgri.data) // 16
-        if entry_count > 0:
-            lines.append(f"InterCellCount={entry_count}")
-            for i in range(entry_count):
-                off = i * 16
-                if off + 16 <= len(pgri.data):
-                    local_pt = struct.unpack_from('<I', pgri.data, off)[0]
-                    x, y, z = struct.unpack_from('<fff', pgri.data, off + 4)
-                    lines.append(f"InterCell[{i}].LocalPoint={local_pt}")
-                    lines.append(f"InterCell[{i}].X={x}")
-                    lines.append(f"InterCell[{i}].Y={y}")
-                    lines.append(f"InterCell[{i}].Z={z}")
-
-    # PGRL — point-to-reference mappings (FormID + array of U32 point indices)
-    # Maps placed object references to the pathgrid points near them.
-    # Used to populate NAVM.ONAM and to identify door-adjacent nodes.
-    pgrl_subs = get_all_subrecords(rec, "PGRL")
-    if pgrl_subs:
-        lines.append(f"RefMapCount={len(pgrl_subs)}")
-        for i, pgrl in enumerate(pgrl_subs):
-            if len(pgrl.data) >= 4:
-                ref_fid = struct.unpack_from('<I', pgrl.data, 0)[0]
-                lines.append(f"RefMap[{i}].Reference={get_formid_str(ref_fid)}")
-                pt_count = (len(pgrl.data) - 4) // 4
-                for j in range(pt_count):
-                    pt_idx = struct.unpack_from('<I', pgrl.data, 4 + j * 4)[0]
-                    lines.append(f"RefMap[{i}].Point[{j}]={pt_idx}")
-
+    conn_counts = _pgrp_lines(rec, lines)
+    _pgrr_lines(rec, conn_counts, lines)
+    _pgri_lines(rec, lines)
+    _pgrl_lines(rec, lines)
     return lines

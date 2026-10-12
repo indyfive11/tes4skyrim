@@ -42,9 +42,8 @@ from tes5_import.base.text_reader import info_result_script
 from tes5_import.dialogue.conversations import (build_conversation_plan,
                                                 build_script_chain_map,
                                                 generate_driver_psc)
-from tes5_import.dialogue.converter import (DIAL_TYPE_SERVICE,
-                                            SERVICE_MENU_TOPICS)
 from tes5_import.dialogue.say_topics import build_force_greet_slots
+from tes5_import.dialogue.say_topics import build_force_flee_slots
 from tes5_import.dialogue.unlocks import build_unlock_plan
 from tes5_import.packages.aliases import forcegreet_reeval_owners
 
@@ -131,6 +130,7 @@ def _script_worker_init(xref, output_dir, info_reveals, service_topics,
                         music_cues=None, namespace=None,
                         quest_delays=None, quest_objectives=None,
                         conversation_chains=None, force_greet_slots=None,
+                        force_flee_slots=None,
                         forcegreet_reeval_owners=None):
     """Seed one worker with the parent state that spawning does not carry.
 
@@ -173,6 +173,7 @@ def _script_worker_init(xref, output_dir, info_reveals, service_topics,
     ScriptConverter.topic_unlock_globals = topic_unlock_globals or {}
     ScriptConverter.conversation_chains = conversation_chains or {}
     ScriptConverter.force_greet_slots = force_greet_slots or {}
+    ScriptConverter.force_flee_slots = force_flee_slots or {}
     # gating-quest edid -> [force-greet owner edids] (Piece 1 coverage).  Windows
     # SPAWNS and this box FORKSERVERS workers, so a class-attr mutation in the
     # parent does NOT reach a worker -- it must ride initargs like the lines
@@ -295,8 +296,7 @@ def build_script_context(export_dir: str, output_dir: str) -> dict:
     fg_reeval = forcegreet_reeval_owners(by_type)
     _report_forcegreet_coverage(fg_reeval, xref)
     initargs = (xref, output_dir, unlock_plan['info_reveals'],
-                service_menu_topics(by_type, SERVICE_MENU_TOPICS,
-                                    DIAL_TYPE_SERVICE),
+                service_menu_topics(by_type),
                 unlock_plan['stage_reveals'], say_durations,
                 quest_script_vars, quest_edids_by_fid(by_type),
                 topic_unlock_globals(by_type, unlock_plan), message_menus,
@@ -306,6 +306,7 @@ def build_script_context(export_dir: str, output_dir: str) -> dict:
                 quest_objective_indices(by_type),
                 build_script_chain_map(by_type),
                 build_force_greet_slots(by_type),
+                build_force_flee_slots(by_type),
                 fg_reeval)
     return {'initargs': initargs, 'scpt_work': scpt_work,
             'info_work': info_work, 'qust_work': qust_work, 'stats': stats}

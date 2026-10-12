@@ -15,6 +15,8 @@ See: docs/commentary/tes5_import_quest.md#quest-conversion
 import re
 import struct
 
+from script_convert.constants import STAGE_PACKAGE_ALIAS_SCRIPT
+from script_convert.pipeline import build_vmad_quest_fragments
 from ..base.constants import ENGINE_GLOBAL_FORMIDS
 from ..base.conditions import (CTDA_OR, CTDA_RUN_ON_TARGET,
                                 convert_ctda,
@@ -868,46 +870,54 @@ def convert_QUST(rec: dict, fid_to_edid: dict = None,
     Order: EDID [VMAD] FULL DNAM NEXT [stages] [objectives] ANAM [aliases].
     unlock_plan/unlock_globals bind the AddTopic unlock GLOB properties for
     stage result scripts that reveal topics; script_vars names the quest
-    variables authored objective targets are gated on.
+    variables authored objective targets are gated on. Objectives convert
+    first, so authored targets take their alias ids before packages do.
 
     See: docs/commentary/tes5_import_quest.md#quest-conversion
     """
-    subs = b''
     edid = get_str(rec, 'EditorID')
-    if edid:
-        subs += pack_string_subrecord('EDID', edid)
+    qfid = get_formid(rec, 'FormID')
+    alias_by_fid, targets = quest_targets(rec)
+    objectives = (authored_objectives(rec, alias_by_fid, script_vars or {},
+                                      get_formid_index_offset())
+                  if has_authored_objectives(rec)
+                  else quest_objectives(rec, targets, script_vars))
+    alias_packages = _quest_alias_packages(pack_plan, qfid, alias_by_fid)
 
-    stage_frags = quest_stage_fragments(rec)
-    from ..base.object_scripts import get_quest_script
-    attached = get_quest_script(get_formid(rec, 'FormID'))
-    if (stage_frags or attached) and edid:
-        from script_convert.pipeline import build_vmad_quest_fragments
-        prop_vals = _quest_vmad_properties(rec, edid, fid_to_edid,
-                                           well_known_props, unlock_plan,
-                                           unlock_globals, xref)
-        subs += pack_subrecord('VMAD', build_vmad_quest_fragments(
-            edid, stage_frags, property_values=prop_vals or None,
-            attached_script=attached))
-
+    subs = pack_string_subrecord('EDID', edid) if edid else b''
+    subs += _quest_vmad(rec, edid, alias_packages, (fid_to_edid, well_known_props, unlock_plan,
+                                                    unlock_globals, xref))
     full = get_str(rec, 'FULL')
     if full:
         subs += pack_string_subrecord('FULL', full)
     subs += pack_subrecord('DNAM', _quest_dnam(rec))
     subs += pack_subrecord('NEXT', b'')
-
-    stage_count = get_int(rec, 'StageCount')
-    subs += _quest_stages(rec, stage_count, script_vars)
-    alias_by_fid, targets = quest_targets(rec)
-    subs += (authored_objectives(rec, alias_by_fid, script_vars or {},
-                                 get_formid_index_offset())
-             if has_authored_objectives(rec)
-             else quest_objectives(rec, targets, script_vars))
-
-    qfid = get_formid(rec, 'FormID')
-    alias_packages = _quest_alias_packages(pack_plan, qfid, alias_by_fid)
+    subs += _quest_stages(rec, get_int(rec, 'StageCount'), script_vars)
+    subs += objectives
     subs += pack_uint32_subrecord('ANAM', len(alias_by_fid))
     subs += quest_aliases(alias_by_fid, alias_packages, fid_to_edid)
     return pack_record('QUST', qfid, get_int(rec, 'RecordFlags'), subs)
+
+
+def _quest_vmad(rec: dict, edid: str, alias_packages: dict, prop_args: tuple) -> bytes:
+    """The VMAD subrecord: stage fragments, attached quest script, package-alias scripts; b'' if none.
+
+    `prop_args` is `_quest_vmad_properties`'s (fid_to_edid, well_known_props,
+    unlock_plan, unlock_globals, xref). Imports object_scripts here: it reaches
+    this module through overrides.builder.
+    See: docs/commentary/script_convert.md#setstage-re-evaluates-alias-packages
+    """
+    from ..base.object_scripts import get_quest_script
+    qfid = get_formid(rec, 'FormID')
+    stage_frags = quest_stage_fragments(rec)
+    attached = get_quest_script(qfid)
+    if not ((stage_frags or attached or alias_packages) and edid):
+        return b''
+    prop_vals = _quest_vmad_properties(rec, edid, *prop_args)
+    alias_scripts = [(alias_id, [(STAGE_PACKAGE_ALIAS_SCRIPT, {})]) for alias_id in sorted(alias_packages)]
+    return pack_subrecord('VMAD', build_vmad_quest_fragments(
+        edid, stage_frags, property_values=prop_vals or None, attached_script=attached,
+        alias_scripts=alias_scripts, quest_fid=qfid))
 
 
 def _alias_name(ref_fid: int, alias_id: int, fid_to_edid: dict) -> str:

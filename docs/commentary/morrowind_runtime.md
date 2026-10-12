@@ -946,31 +946,21 @@ and clamps NaN or anything outside int32 to int32's lowest. `_global_value`
 matches that, so the sidecar writes `WearingOrdinatorUni=s,0`. Writing the raw
 float instead would leave the global nonzero at load.
 
-### <a id="sidecar-root"></a>🛑 The root comes from the GAME, not from this DLL
+### 🛑 The root comes from the GAME EXE, not this module
 
-`PluginsDir()` (`common/paths.cpp`) is the game's folder plus
-`Data\SKSE\Plugins\`, and `SidecarDir()` appends the runtime's own name
-(`MorrowindRuntime\`, `TESRuntime\`). Every runtime DLL and the Address Library
-loader share it.
+`PluginsDir()` (`tes_runtime/common/paths.cpp`) is the game exe's folder plus
+`Data\SKSE\Plugins\`; `SidecarDir()` appends the runtime's own name. Every
+runtime DLL and the Address Library lookup share it.
 
-It used to come from the DLL's own path, on the theory that an SKSE plugin is
-always loaded from the folder holding the sidecars. Under Mod Organizer 2 that
-is false: MO2 merges every mod into `Data\` only for paths opened through the
-game's folder, and a DLL's own path is its real mod folder. Measured in
-`CreatureRuntime.log`: `compose: 0 fragment(s) under
-C:\Modlists\...\mods\TESRuntime\SKSE\Plugins\CreatureRuntime\animation`, while
-`Oblivion.json` sat in the Oblivion mod. `TESRuntime.log` said `no character
-data staged` and `jails NOT installed` for the same reason. Every sidecar
-feature was silently off for every MO2 user, whose converted plugins are never
-in the same mod as the DLLs.
-
-The game's folder is right by construction: SKSE itself loads plugins only from
-`<game>\Data\SKSE\Plugins\` (its log prints that `plugin directory`), and the
-Address Library file, which always ships as a mod of its own, loaded from it
-under MO2 all along.
-
-When the root is wrong the failure is silent: `0 sidecar(s)`, no dialogue, and
-every activation falling through to vanilla.
+Asking the DLL for its own path (`GetModuleHandleEx(FROM_ADDRESS)`) breaks
+under Mod Organizer 2: the DLL's real path is `MO2\mods\<its mod>\SKSE\Plugins\`,
+and MO2 merges mods only under the game's `Data` folder. A search of the mod's
+real folder sees only that one mod's files, so sidecars shipped with the
+converted plugin's mod are invisible. The runtime split shipped that way, and
+CreatureRuntime logged `compose: 0 fragment(s) under
+...\MO2\mods\TESRuntime\SKSE\Plugins\CreatureRuntime\animation` with
+`Oblivion.json` installed in another mod. The failure is silent:
+`0 sidecar(s)`, no dialogue, no converted creature animations.
 
 The loader logs the resolved root and a per-file result, so a miss names the
 path it looked in rather than only its own disappointment.
@@ -2809,9 +2799,13 @@ rows `index=attribute|specialization|use0,use1,use2,use3`, for the skill-use
 credit a persuasion pays.
 
 The `player` NPC_ record -- Morrowind's own chargen actor -- is in the table
-too, and it is where the PLAYER's Personality and Luck come from: Skyrim has
+too, and it is where the PLAYER's Personality and Luck START: Skyrim has
 neither attribute, and that record is the only authored value a TES3 player
-ever starts with. Speechcraft and Mercantile both read Skyrim's `Speechcraft`
+ever starts with. Both sides read them through the stat store
+(`ActorAttribute`), so a script's `SetPersonality`/`ModLuck` moves persuasion
+too; the actor line's own column answers only when the store reads 0, which
+is a sidecar older than its attribute column. See
+[the character sheet plan](../plans/character_sheet.md#bug-persuasion). Speechcraft and Mercantile both read Skyrim's `Speechcraft`
 actor value (the importer folds TES4 Mercantile onto it), level reads
 `Actor.GetLevel`, and the fatigue term reads `GetActorValuePercentage("Stamina")`
 for both sides.
@@ -2880,9 +2874,12 @@ commands to 307, and the stubbed call sites from 4,045 to 3,581.
   attributes and 27 skills comma-joined in TES3's own order.
 - The weapon and armor folds are the import's (`MW_SKILL_TO_TES4` then
   `TES4_SKILL_TO_TES5`), so a command reads the value the converted NPC was
-  given. Two depart from it on purpose: Enchant is Skyrim's Enchanting, and
-  Mercantile is Speechcraft, which is what persuasion and the fare formula
-  already read.
+  given; Enchant is Skyrim's Enchanting on both sides.
+- A skill Skyrim split in two reads the **higher** of both and writes the
+  first: Long Blade, Axe and Blunt Weapon read One-Handed/Two-Handed, Medium
+  Armor Heavy/Light Armor, and Spear reads Two-Handed (spears export as
+  two-handed blades). Mysticism reads Alteration, where its spells convert. See
+  [the character sheet plan](../plans/character_sheet.md#bug-blade-blunt).
 - The magic-effect family is typed `long` by the compiler, so it pushes and
   pops integers.
 

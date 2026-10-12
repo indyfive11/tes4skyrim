@@ -12,6 +12,7 @@ See: docs/commentary/tes5_import_actors.md
 import re
 import struct
 
+from ..actors.confidence import confidence_tier
 from ..base.constants import (DEFAULT_RACE, RACE_MAP, TES4_SKILL_TO_TES5,
                          TES5_SKILL_ORDER)
 from ..base.equivalents import ATTRIBUTE_SKILL_MAP, VOICE_TYPE_MAP
@@ -130,17 +131,38 @@ def _load_crime_factions(by_type: dict) -> None:
                     TES4_CRIME_FACTIONS.add(m.group(1).lower())
 
 
-def load_faction_player_reactions(by_type: dict) -> None:
+def _load_evil_factions(by_type: dict, master_export: dict) -> None:
+    """Index the raw FormIDs of every Evil FACT, this plugin's and its masters'."""
+    _EVIL_FACTIONS.clear()
+    rows = [(r.get('FormID', ''), r) for r in by_type.get('FACT', [])]
+    rows += [(k, r) for k, r in (master_export or {}).items()
+             if r.get('Signature') == 'FACT']
+    for key, rec in rows:
+        if get_int(rec, 'DATA.Flags') & _FACT_EVIL:
+            _EVIL_FACTIONS.add(int(key, 16))
+
+
+def in_evil_faction(rec: dict) -> bool:
+    """Whether this actor belongs to an Evil faction: no victim of a crime.
+
+    See: docs/commentary/tes5_import_actors.md#evil-factions
+    """
+    return any(int(rec.get(f'Faction[{i}].FormID') or '0', 16) in _EVIL_FACTIONS
+               for i in range(get_int(rec, 'FactionCount')))
+
+
+def load_faction_player_reactions(by_type: dict, master_export: dict = None) -> None:
     """Index each FACT's disposition modifier toward the player faction.
 
-    Also indexes the prey factions and, via `_load_crime_factions`, the
-    factions this plugin's scripts treat as crime factions.
+    Also indexes the prey and Evil factions and, via `_load_crime_factions`,
+    the factions this plugin's scripts treat as crime factions.
 
     See: docs/commentary/tes5_import_actors.md#faction-player-disposition
     """
     _FACTION_PLAYER_DISP.clear()
     _PREY_FACTIONS.clear()
     _load_crime_factions(by_type)
+    _load_evil_factions(by_type, master_export)
     for rec in by_type.get('FACT', []):
         fid = get_formid(rec, 'FormID') & 0xFFFFFF
         edid = (get_str(rec, 'EditorID') or '').lower()
@@ -158,14 +180,17 @@ def load_faction_player_reactions(by_type: dict) -> None:
 #: fid_low24 of every faction whose EditorID marks its members as prey.
 _PREY_FACTIONS = set()
 
+#: Raw FormIDs of TES4/FO3/FNV factions flagged Evil: crimes against members carry no bounty.
+_EVIL_FACTIONS = set()
+
+#: TES4/FO3/FNV FACT DATA.Flags Evil.
+_FACT_EVIL = 0x02
+
 #: Player's mid-range starting Personality across races/classes.
 _PLAYER_PERSONALITY = 40
 
 #: AIDT Mood: 0 Neutral. TES4 has no equivalent field.
 _MOOD_NEUTRAL = 0
-
-#: TES4 confidence floor -> TES5 wbConfidenceEnum tier, highest first.
-_CONFIDENCE_TIERS = ((100, 4), (70, 3), (40, 2), (15, 1))
 
 #: Attack margin (aggression-5)-disposition an actor needs to earn tier 2.
 _ONSIGHT_MARGIN = 10
@@ -227,17 +252,6 @@ def attacks_player_on_sight(rec: dict) -> bool:
         get_int(rec, 'DATA.Personality', 50)) >= 2)
 
 
-def _confidence_tier(conf: int) -> int:
-    """TES4 confidence 0-100 as a TES5 tier; only tier 4 never flees.
-
-    See: docs/commentary/tes5_import_actors.md#confidence-tiers
-    """
-    for threshold, tier in _CONFIDENCE_TIERS:
-        if conf >= threshold:
-            return tier
-    return 0
-
-
 def build_aidt(rec: dict) -> bytes:
     """Build TES5 AIDT subrecord (20 bytes).
 
@@ -257,7 +271,7 @@ def build_aidt(rec: dict) -> bytes:
     else:
         pers = get_int(rec, 'DATA.Personality', 50)
         tes5_aggr = _aggression_tier(rec, get_int(rec, 'AIDT.Aggression'), pers)
-        tes5_conf = _confidence_tier(get_int(rec, 'AIDT.Confidence'))
+        tes5_conf = confidence_tier(rec)
     tes5_moral = 3 if resp >= 80 else (2 if resp >= 50 else (1 if resp >= 30 else 0))
     tes5_assist = 1 if resp >= 30 else 0
 

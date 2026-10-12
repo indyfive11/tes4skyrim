@@ -10,21 +10,24 @@ Two things still come from vanilla:
 * DPLT — the default package LIST every vanilla actor carries underneath its
   own packages (the fallback that keeps an actor doing *something* when none of
   its own packages apply).
-* Creatures — creature AI is driven by the generated behaviour graph, not by
-  TES4 packages (see docs/commentary/asset_convert_creature.md), and every vanilla creature
-  carries exactly one package: DefaultMasterPackageCreature.  Keep that.
+* Creatures — their own packages come first, like an NPC's, then
+  DefaultMasterPackageCreature, the one package every vanilla creature carries,
+  for when none of their own apply.
 
 Quest packages are NOT in the actor's PKID list: they hang off a QUST reference
 alias (ALPC), which is how they outrank the standing schedule.  See pack_aliases.
 """
 
-from ..base.text_reader import get_int
+from ..base.text_reader import get_formid, get_int
 
 # Vanilla Skyrim.esm records (master index 0 — written unremapped)
 PKID_CREATURE_MASTER = 0x0010F2A5   # PACK DefaultMasterPackageCreature
 DPLT_CREATURE_LIST = 0x0010F2A6     # FLST DefaultMasterPackageListCreature
 PKID_NPC_SANDBOX = 0x000BFB6B       # PACK DefaultSandboxCurrentLocation1024
 DPLT_NPC_LIST = 0x00021E81          # FLST DefaultMasterPackageList
+
+#: Skyrim.esm FLST DefaultHoldPositionCurrentLoc64List: DefaultHoldPositionCurrentLoc64 alone.
+DPLT_HOLD_LIST = 0x000A6853
 CSTY_DEFAULT = 0x0000003D           # CSTY DefaultCombatstyle
 CSTY_ANIMAL = 0x00057BE8            # CSTY csWolf (vanilla wolf/dog ZNAM)
 CLAS_CREATURE_PREDATOR = 0x000131E6  # CLAS EncClassAnimalPredator (wolf...)
@@ -52,7 +55,6 @@ def load_package_types(by_type: dict, master_export: dict = None) -> None:
     Keys are the REMAPPED FormID, matching `PackagePlan.owner_quest` and the
     actor's converted AIPackage list (both come from get_formid()).
     """
-    from ..base.text_reader import get_formid
     _PACK_TYPES.clear()
     sources = [by_type.get('PACK', [])]
     if master_export:
@@ -102,6 +104,24 @@ _PACKAGE_CHAINS = {}
 def set_package_chains(chains: dict) -> None:
     _PACKAGE_CHAINS.clear()
     _PACKAGE_CHAINS.update(chains)
+
+
+def authored_packages(rec: dict) -> list:
+    """The actor's TES4 AIPackage list, in authored order."""
+    return [get_formid(rec, f'AIPackage[{i}]')
+            for i in range(get_int(rec, 'AIPackageCount'))]
+
+
+def default_package_list(pack_fids, standing_list: int) -> int:
+    """DPLT: hold in place when every authored package is quest-owned, else `standing_list`.
+
+    Oblivion leaves an actor with no valid package standing where it is.
+    See: docs/commentary/tes5_import_package.md#quest-only-actors-hold-in-place
+    """
+    fids = [f for f in pack_fids if f]
+    if fids and all(f in _QUEST_PACKAGES for f in fids):
+        return DPLT_HOLD_LIST
+    return standing_list
 
 
 def npc_packages(pack_fids) -> list:

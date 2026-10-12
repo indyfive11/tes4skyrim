@@ -45,7 +45,9 @@ from itertools import zip_longest
 from ..base.text_reader import get_float, get_formid, get_int
 from ..base.tes5_reader import subrecords
 from ..dialogue.quest import quest_objectives, quest_targets
+from ..actors.combat_style import actor_combat_style
 from ..actors.outfits import split_inventory
+from ..packages.actor_wiring import CSTY_DEFAULT
 from .vmad_swap import SCRIPT_SWAP_KEY, SCRIPTED_TYPES, swap_vmad_script
 from .ref_state import REF_SIGS
 
@@ -145,7 +147,6 @@ _REF_STATE_KEYS = frozenset({'RecordFlags', 'ParentCELL'})
 # names why.
 _INEXPRESSIBLE = frozenset({
     ('*', 'Model.MODB'),          # TES4 bound radius; TES5 has no MODB
-    ('*', 'ZNAM.CombatStyle'),    # CSTY is a skipped type; ref would dangle
     ('*', 'LNAM.HairLength'),     # TES5 NPC_ has no hair length field
     ('*', 'ACBS.Fatigue'),        # TES5 derives stamina; converter drops it
     ('*', 'ACBS.SpellPoints'),    # TES5 derives magicka; converter drops it
@@ -369,6 +370,8 @@ _RB_CREA_ACBS = _Rebuild(b'ACBS', _build_crea_acbs)
 # TES5 NPC_ order; anchor off NAM5 so an override that ADDS the subrecord
 # puts it in the right place.
 _RB_CREA_NAM6 = _Rebuild(b'NAM6', _build_crea_nam6, (('after', b'NAM5'),))
+_RB_ZNAM = _Rebuild(b'ZNAM', lambda rec: struct.pack('<I', actor_combat_style(rec) or CSTY_DEFAULT),
+                    (('after', b'HCLF'), ('after', b'DNAM')))
 _RB_BOD2 = _Rebuild(b'BOD2', _build_bod2)
 _RB_XCLL = _Rebuild(b'XCLL', _build_xcll, (('before', b'LTMP'),))
 _RB_XCLW = _Rebuild(b'XCLW', _build_xclw,
@@ -459,6 +462,8 @@ _reg('NPC_', ('DATA.Endurance', 'ACBS.Flags', 'ACBS.Level', 'ACBS.CalcMin',
 _reg('CREA', ('ACBS.Flags', 'ACBS.Level', 'ACBS.CalcMin', 'ACBS.CalcMax'),
      _RB_CREA_ACBS)
 _reg('CREA', 'BNAM.BaseScale', _RB_CREA_NAM6)
+_reg('NPC_', 'ZNAM.CombatStyle', _RB_ZNAM)
+_reg('CREA', 'ZNAM.CombatStyle', _RB_ZNAM)
 _reg('ARMO', ('BMDT.GeneralFlags', 'BMDT.BipedFlags'), _RB_BOD2)
 _reg('CLOT', ('BMDT.GeneralFlags', 'BMDT.BipedFlags'), _RB_BOD2)
 _reg('CELL', _XCLL_KEYS, _RB_XCLL)

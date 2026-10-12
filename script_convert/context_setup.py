@@ -16,6 +16,7 @@ from script_convert.cross_ref import CrossRefGraph, master_names
 from script_convert.message_menus import build_chargen_menus
 from tes5_import.base.mesh_bounds import load_mesh_bounds
 from tes5_import.base.text_reader import parse_export_file
+from tes5_import.dialogue.converter import service_menu_kind
 
 #: Static Papyrus sources deployed beside the generated scripts of a masterless plugin.
 _STATIC_DIR = os.path.join(os.path.dirname(__file__), 'static_scripts')
@@ -27,13 +28,22 @@ def prepare_output_dir(output_dir: str) -> None:
     See: docs/commentary/script_convert.md#wipe-output-dir
     """
     if os.path.isdir(output_dir):
-        shutil.rmtree(output_dir)
+        shutil.rmtree(output_dir, onexc=_keep_held_dir)
     pex_dir = os.path.dirname(output_dir)
     if os.path.isdir(pex_dir):
         for name in os.listdir(pex_dir):
             if name.lower().endswith('.pex'):
                 _remove_quietly(os.path.join(pex_dir, name))
     os.makedirs(output_dir, exist_ok=True)
+
+
+def _keep_held_dir(func, path: str, exc: BaseException) -> None:
+    """rmtree hook: keep an emptied dir another process holds; else raise.
+
+    See: docs/commentary/script_convert.md#wipe-output-dir
+    """
+    if func is not os.rmdir or not isinstance(exc, PermissionError):
+        raise exc
 
 
 def _remove_quietly(path: str) -> None:
@@ -116,15 +126,10 @@ def load_records(export_dir: str, sigs: tuple) -> dict:
     return out
 
 
-def service_menu_topics(by_type: dict, menu_topics: dict,
-                        service_type: int) -> dict:
+def service_menu_topics(by_type: dict) -> dict:
     """DIAL FormID -> service menu name, for the service-typed menu topics."""
-    out = {}
-    for rec in by_type.get('DIAL', []):
-        edid = rec.get('EditorID', '')
-        if edid in menu_topics and rec.get('DATA.Type', '') == str(service_type):
-            out[rec.get('FormID', '')] = menu_topics[edid][0]
-    return out
+    return {rec.get('FormID', ''): service_menu_kind(rec)
+            for rec in by_type.get('DIAL', []) if service_menu_kind(rec)}
 
 
 def topic_unlock_globals(by_type: dict, unlock_plan: dict) -> dict:

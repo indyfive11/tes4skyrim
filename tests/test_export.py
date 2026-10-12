@@ -615,6 +615,29 @@ if __name__ == "__main__":
     unittest.main(verbosity=2)
 
 
+class TestSkillData:
+    """SKIL DATA starts with the skill's own Action index, before the governing attribute.
+
+    See: docs/plans/character_sheet.md#bug-skil-shift
+    """
+
+    #: SkillAlchemy (Oblivion.esm SKIL 00000044) DATA, verbatim.
+    RAW = bytes.fromhex('1300000001000000010000000000a0400000003f')
+
+    def test_fields_land_on_their_own_names(self):
+        """Alchemy: Action 19, Intelligence, Magic, use values 5.0 and 0.5."""
+        from tes4_export.tes4_reader import Record, Subrecord
+        from tes4_export.record_types.actors import export_SKIL
+        rec = Record(type='SKIL', data_size=0, flags=0, form_id=0x44,
+                     subrecords=[Subrecord('EDID', b'SkillAlchemy\x00'), Subrecord('DATA', self.RAW)])
+        got = dict(line.partition('=')[::2] for line in export_SKIL(rec))
+        assert got['DATA.Action'] == '19'
+        assert got['DATA.Attribute'] == '1'
+        assert got['DATA.Specialization'] == '1'
+        assert float(got['DATA.UseValue1']) == 5.0
+        assert float(got['DATA.UseValue2']) == 0.5
+
+
 class TestFalloutActorAcbs:
     """FO3/FNV ACBS drops TES4's SpellPoints, shifting every later field.
 
@@ -792,3 +815,22 @@ class TestFalloutTriggerPrimitive(unittest.TestCase):
         _emit_refr_deltas(lines, rec)
         self.assertIn('XPRM.Raw=' + raw.hex().upper(), lines)
         self.assertTrue(any(l.startswith('XPRM.BoundX=') for l in lines))
+
+
+class TestPGRDInterCell(unittest.TestCase):
+    """PGRI local point is U16; the 2 bytes after it are CS garbage.
+
+    See: docs/commentary/tes5_import_navmesh.md#-corridor-redesign-regressed-edge-links--the-ribbons-never-reach-the-seam-found-2026-07-23
+    """
+
+    def test_local_point_ignores_unused_high_bytes(self):
+        """Nehrim (-16,-9) node 1 was written 0x2F620001 and dropped as out of range."""
+        import struct
+        from tes4_export.tes4_reader import Record, Subrecord
+        from tes4_export.record_types.world import export_PGRD
+        pgri = struct.pack('<HHfff', 1, 0x2F62, -61342.2265625, -34966.16015625, 2254.0)
+        rec = Record(type='PGRD', data_size=0, flags=0, form_id=1,
+                     subrecords=[Subrecord('PGRI', pgri)])
+        lines = export_PGRD(rec)
+        self.assertIn('InterCell[0].LocalPoint=1', lines)
+        self.assertIn('InterCell[0].X=-61342.2265625', lines)

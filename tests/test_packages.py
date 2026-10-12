@@ -650,6 +650,29 @@ def test_addscriptpackage_reaches_the_actors_quest_alias():
     assert 0x000011CA in plan.needed_aliases[0x00000811]
 
 
+def test_every_placed_copy_gets_its_quest_package():
+    """A base placed three times carries its quest package on all three aliases (Nehrim's exit trolls).
+
+    See: docs/commentary/tes5_import_package.md#every-placed-copy-gets-its-quest-package
+    """
+    getstage = struct.pack('<BBBBfIIIiI', 0x60, 0, 0, 0, 35.0,
+                           58, 0x00000811, 0, 0, 0xFFFFFFFF)
+    refs = ('00001E9D', '00001E9F', '001F3562')
+    by_type = {
+        'PACK': [{'FormID': '001AAEEC', 'EditorID': 'MQ00TrollTravel',
+                  'Condition[0].Raw': getstage.hex()}],
+        'QUST': [{'FormID': '00000811', 'EditorID': 'MQ00'}],
+        'CREA': [{'FormID': '00001E9C', 'EditorID': 'MQ00troll01Ausgang',
+                  'AIPackageCount': '1', 'AIPackage[0]': '001AAEEC'}],
+        'ACRE': [{'FormID': r, 'NAME': '00001E9C'} for r in refs],
+    }
+    plan = PackagePlan()
+    plan.build(by_type, {0x00000811}, {}, None, {})
+    for ref in refs:
+        assert plan.quest_packages[0x00000811][int(ref, 16)] == [0x001AAEEC], ref
+        assert int(ref, 16) in plan.needed_aliases[0x00000811]
+
+
 def test_commented_out_addscriptpackage_is_not_resurrected():
     """A disabled call must stay disabled.
 
@@ -1235,3 +1258,19 @@ def test_prescan_wires_escort_drive_into_the_context():
     # the driver is the second record and is a Follow instance
     driver_fid = ctx.escort_drive[0x00E5C001][0]
     assert struct.unpack_from('<I', records[1], 12)[0] == driver_fid
+
+
+def test_quest_only_actor_holds_in_place():
+    """An NPC whose every package is quest-owned stands where it is; others keep the sandbox list.
+
+    See: docs/commentary/tes5_import_package.md#quest-only-actors-hold-in-place
+    """
+    from tes5_import.packages.actor_wiring import (DPLT_HOLD_LIST, DPLT_NPC_LIST,
+                                                   default_package_list, set_quest_packages)
+    set_quest_packages({0x011EF2D5, 0x010011DD})
+    try:
+        assert default_package_list([0x011EF2D5], DPLT_NPC_LIST) == DPLT_HOLD_LIST == 0x000A6853
+        assert default_package_list([0x011EF2D5, 0x01000D95], DPLT_NPC_LIST) == DPLT_NPC_LIST
+        assert default_package_list([], DPLT_NPC_LIST) == DPLT_NPC_LIST
+    finally:
+        set_quest_packages(())

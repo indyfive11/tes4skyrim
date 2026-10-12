@@ -22,6 +22,7 @@ converters then splice the VMAD in right after EDID (Skyrim order: EDID VMAD OBN
 import re
 import struct
 
+from script_convert.assemble import variable_properties
 from script_convert.converter import ScriptConverter, sctx_onactivate_consumes
 from script_convert.constants import (safe_property_name, papyrus_script_name,
                                       resolve_property_formid,
@@ -40,6 +41,7 @@ from .equivalents import (DEFAULT_RACE, RACE_MAP,
                                TES4_ITEM_FORMID_TO_SKYRIM,
                                TES4_RACE_FID_TO_EDID)
 from .owned_records import WELL_KNOWN_PROPERTIES
+from ..registry import TYPE_MAP
 
 # Papyrus property types that are literal-valued (not bound to a FormID).
 _VALUE_TYPES = {'Int', 'Float', 'Bool'}
@@ -158,35 +160,18 @@ def attach_scripts_to_record(record_fid: int, scris) -> int:
     """
     if not _PLAN_CTX:
         return 0
-    from .writer import pack_subrecord
-
     packed = b''
     n = 0
     seen = set()
     for scri in scris:
         scri = (scri or '').strip()
-        if not scri or scri in seen:
-            continue
         entry = _PLAN_CTX['scpt_by_fid'].get(scri)
-        if entry is None:
+        if entry is None or scri in seen:
             continue
         seen.add(scri)
-        edid, sctx, extends = entry
-        script_name = papyrus_script_name(edid or f'Script_{scri}')
-
-        memo = _PLAN_CTX['props_memo']
-        obj_props = memo.get(scri)
-        if obj_props is None:
-            try:
-                obj_props = _resolve_props(sctx, edid, extends,
-                                           _PLAN_CTX['xref'],
-                                           _PLAN_CTX['fid_to_edid'],
-                                           _PLAN_CTX['offset'])
-            except Exception:
-                obj_props = {}
-            memo[scri] = obj_props
-
-        packed = append_vmad_object_script(packed, script_name, obj_props)
+        packed = append_vmad_object_script(
+            packed, papyrus_script_name(entry[0] or f'Script_{scri}'),
+            _memo_props(scri))
         n += 1
 
     if n:
@@ -213,22 +198,19 @@ def _remap(fid: int, offset: int) -> int:
     return remap_formid(fid, offset)
 
 
+def _scro_forms(rec: dict) -> frozenset:
+    """Low 24 bits of every form the compiled script references (its SCRO list)."""
+    return frozenset(int(v, 16) & 0x00FFFFFF for k, v in rec.items()
+                     if k.startswith('SCRO[') and v)
+
+
 def _collect_scpts(by_type: dict, xref, master_export: dict = None) -> dict:
-    """SCPT FormID -> (EditorID, SCTX source, extends class).
+    """SCPT FormID -> (EditorID, SCTX source, extends class, SCRO forms).
 
-    `master_export` is the MASTERS' export records and is REQUIRED for a plugin
-    with masters: a dependent plugin routinely attaches one of ITS MASTER'S
-    scripts to its own records (33 of ElsweyrAnequina.esp's, every one of them
-    resolvable only from the master), and every consumer here drops a record
-    whose SCRI misses this index — so the record gets NO VMAD at all and nothing
-    is logged.  The masters go in FIRST so an override of a master script wins.
+    Masters' scripts are included (first, so an override wins), keyed on their
+    `master_export` key, which is in this plugin's FormID space.
 
-    **Key a master's record on its master_export KEY, not on rec['FormID'].**
-    The record was parsed from the master's OWN export, so its `FormID` field is
-    in THAT file's index space, while every `SCRI` looked up against this index
-    is in THIS plugin's space — the space `load_master_export` re-keyed the dict
-    into.  Keying on the raw field would miss whenever a master has a different
-    master count than we do (and could collide with an unrelated record).
+    See: docs/commentary/script_convert.md#master-scpt-keying
     """
     scpt_by_fid: dict[str, tuple] = {}
     sources = []
@@ -241,7 +223,7 @@ def _collect_scpts(by_type: dict, xref, master_export: dict = None) -> dict:
         if not fid or not sctx or not sctx.strip():
             continue
         scpt_by_fid[fid] = (rec.get('EditorID', ''), sctx,
-                            xref.get_extends_class(fid))
+                            xref.get_extends_class(fid), _scro_forms(rec))
     return scpt_by_fid
 
 
@@ -271,8 +253,7 @@ def build_quest_script_plan(by_type: dict, xref, fid_to_edid: dict,
             rec_fid = _remap(int(rec_fid_str, 16), offset)
         except ValueError:
             continue
-        _QUEST_SCRIPT[rec_fid] = _script_plan(scri, scpt_by_fid, xref,
-                                              fid_to_edid, offset)
+        _QUEST_SCRIPT[rec_fid] = _script_plan(scri, scpt_by_fid, xref, offset)
 
     _UDF_HOSTS.clear()
     for rec in by_type.get('SCPT', []):
@@ -280,20 +261,19 @@ def build_quest_script_plan(by_type: dict, xref, fid_to_edid: dict,
         if fid in scpt_by_fid and is_function_script(rec.get('SCTX', '')):
             _UDF_HOSTS[_remap(int(fid, 16), offset)] = (
                 scpt_by_fid[fid][0],
-                *_script_plan(fid, scpt_by_fid, xref, fid_to_edid, offset))
+                *_script_plan(fid, scpt_by_fid, xref, offset))
 
     return len(_QUEST_SCRIPT)
 
 
-def _script_plan(scpt_fid: str, scpt_by_fid: dict, xref, fid_to_edid: dict,
-                 offset: int) -> tuple:
+def _script_plan(scpt_fid: str, scpt_by_fid: dict, xref, offset: int) -> tuple:
     """(script_name, bound props) for one indexed SCPT."""
-    edid, sctx, extends = scpt_by_fid[scpt_fid]
+    entry = scpt_by_fid[scpt_fid]
     try:
-        props = _resolve_props(sctx, edid, extends, xref, fid_to_edid, offset)
+        props = _resolve_props(entry, xref, offset)
     except Exception:
         props = {}
-    return papyrus_script_name(edid or f'Script_{scpt_fid}'), props
+    return papyrus_script_name(entry[0] or f'Script_{scpt_fid}'), props
 
 
 def write_udf_host_quests(writer) -> int:
@@ -355,10 +335,10 @@ def build_magic_effect_script_plan(by_type: dict, xref, fid_to_edid: dict,
 
     from .writer import pack_subrecord
     for scpt_fid in sorted(wanted):
-        edid, sctx, extends = scpt_by_fid[scpt_fid]
-        script_name = papyrus_script_name(edid or f'Script_{scpt_fid}')
+        entry = scpt_by_fid[scpt_fid]
+        script_name = papyrus_script_name(entry[0] or f'Script_{scpt_fid}')
         try:
-            props = _resolve_props(sctx, edid, extends, xref, fid_to_edid, offset)
+            props = _resolve_props(entry, xref, offset)
         except Exception:
             props = {}
         _MAGIC_EFFECT_VMAD[scpt_fid] = pack_subrecord(
@@ -382,91 +362,12 @@ def build_object_script_plan(by_type: dict, xref, fid_to_edid: dict,
     _GETPARENTREF_BASES.clear()
     _CONSUME_DOOR_BASES.clear()
     offset = get_formid_index_offset()
-    scpt_by_fid = _collect_scpts(by_type, xref, master_export)
-
-    from ..registry import TYPE_MAP
-
-    # Property resolution runs a full ScriptConverter pass over the script
-    # source — the dominant cost here — and depends only on the SCPT, not the
-    # record it is attached to. Many records share one script (3297 scripted
-    # records / 2090 unique scripts in Oblivion.esm), so memoise per SCRI.
-    props_memo: dict[str, dict] = {}
-
     _PLAN_CTX.clear()
-    _PLAN_CTX.update(scpt_by_fid=scpt_by_fid, props_memo=props_memo, xref=xref,
-                     fid_to_edid=fid_to_edid, offset=offset)
+    _PLAN_CTX.update(scpt_by_fid=_collect_scpts(by_type, xref, master_export),
+                     props_memo={}, xref=xref, offset=offset)
 
-    count = 0
-    for sig in SCRIPTABLE_TYPES:
-        # Skip types whose Skyrim output record has no VMAD field in its def;
-        # binding a script there only produces an "unexpected subrecord" error
-        # (ALCH, SLGM, STAT, AMMO, and SGST→SCRL / SBSP→STAT map here).
-        out_sig = TYPE_MAP.get(sig, sig)
-        if out_sig not in VMAD_SUPPORTED_OUTPUT_TYPES:
-            continue
-        for rec in by_type.get(sig, []):
-            scri = rec.get('SCRI', '')
-            if not scri or scri not in scpt_by_fid:
-                continue
-            rec_fid_str = rec.get('FormID', '')
-            if not rec_fid_str:
-                continue
-            try:
-                raw_fid = int(rec_fid_str, 16)
-            except ValueError:
-                continue
-            # The PLAYER base carries no VMAD: our shifted copy of NPC_ 0x07 is
-            # a record no actor ever instantiates (the acting player is
-            # PlayerRef 0x14, whose base is Skyrim's own 0x07), so a script
-            # bound here is inert.  It is rehosted on a quest's PlayerRef alias
-            # by build_player_alias_plan below.
-            if sig == 'NPC_' and (raw_fid & 0x00FFFFFF) == _PLAYER_BASE_FORMID:
-                continue
-            rec_fid = _remap(raw_fid, offset)
-
-            edid, sctx, extends = scpt_by_fid[scri]
-            script_name = papyrus_script_name(edid or f'Script_{scri}')
-
-            # Remember bases whose script reads the enable parent, so
-            # convert_REFR can mirror XESP into XLKR on their placed refs.
-            # Scoped to scripts that actually call it: XESP is ordinary
-            # enable-parenting on 9157 Oblivion refs and only 2660 of those
-            # belong to a base that reads it back as a linked ref.
-            if re.search(r'\bgetparentref\b', sctx, re.IGNORECASE):
-                _GETPARENTREF_BASES.add(rec_fid_str)
-
-            # An OBLIVION GATE also needs its enable parent reachable at
-            # runtime, even when its own script never reads it.  Skyrim
-            # REFUSES Disable() on a reference that has an enable-state parent
-            # ("cannot disable an object with an enable state parent" -- the
-            # live Papyrus error from the Kvatch gate, 2026-08-27), so
-            # TES4Polyfill's TurnGateOff has to switch the PARENT off instead,
-            # and the only runtime route to it is XLKR.  Without this a closed
-            # gate is correctly destroyed and still stands in Tamriel.
-            # MS48OblivionGateScript is exactly that case: it closes a gate
-            # but never calls GetParentRef.
-            if re.search(r'close(?:current)?obliviongate', sctx,
-                         re.IGNORECASE):
-                _GETPARENTREF_BASES.add(rec_fid_str)
-
-            # See _CONSUME_DOOR_BASES: their keyless level-100 locks must
-            # stay AI-passable (Master), not Requires Key.
-            if sig == 'DOOR' and sctx_onactivate_consumes(sctx):
-                _CONSUME_DOOR_BASES.add(rec_fid_str)
-
-            obj_props = props_memo.get(scri)
-            if obj_props is None:
-                try:
-                    obj_props = _resolve_props(sctx, edid, extends, xref,
-                                               fid_to_edid, offset)
-                except Exception:
-                    obj_props = {}
-                props_memo[scri] = obj_props
-
-            from .writer import pack_subrecord
-            _OBJECT_VMAD[rec_fid] = pack_subrecord(
-                'VMAD', build_vmad_object_script(script_name, obj_props))
-            count += 1
+    count = sum(_plan_record(sig, rec) for sig in _vmad_signatures()
+                for rec in by_type.get(sig, []))
 
     n_player = build_player_alias_plan(by_type, xref, fid_to_edid, master_export)
     if n_player:
@@ -479,6 +380,59 @@ def build_object_script_plan(by_type: dict, xref, fid_to_edid: dict,
               f"self-ref calls / "
               f"GetVMScriptVariable package gates): {n_moved}")
     return count
+
+
+def _vmad_signatures() -> list:
+    """The SCRIPTABLE_TYPES whose Skyrim output record defines a VMAD."""
+    return sorted(sig for sig in SCRIPTABLE_TYPES
+                  if TYPE_MAP.get(sig, sig) in VMAD_SUPPORTED_OUTPUT_TYPES)
+
+
+def _plan_record(sig: str, rec: dict) -> int:
+    """Plan one record's VMAD from `_PLAN_CTX`; 1 when it got one.
+
+    The PLAYER base is skipped: no actor instantiates our copy of NPC_ 0x07,
+    so build_player_alias_plan rehosts its script on a PlayerRef alias.
+    """
+    scri = rec.get('SCRI', '')
+    entry = _PLAN_CTX['scpt_by_fid'].get(scri)
+    fid_str = rec.get('FormID', '')
+    if entry is None or not re.fullmatch(r'[0-9A-Fa-f]+', fid_str):
+        return 0
+    raw_fid = int(fid_str, 16)
+    if sig == 'NPC_' and (raw_fid & 0x00FFFFFF) == _PLAYER_BASE_FORMID:
+        return 0
+    rec_fid = _remap(raw_fid, _PLAN_CTX['offset'])
+    _note_base_flags(sig, fid_str, entry[1])
+    _OBJECT_VMAD[rec_fid] = pack_subrecord('VMAD', build_vmad_object_script(
+        papyrus_script_name(entry[0] or f'Script_{scri}'), _memo_props(scri)))
+    return 1
+
+
+def _note_base_flags(sig: str, fid_str: str, sctx: str) -> None:
+    """Record a base in `_GETPARENTREF_BASES` / `_CONSUME_DOOR_BASES` when its script needs it.
+
+    A gate closer counts as reading its enable parent: Skyrim refuses Disable()
+    on a reference with an enable-state parent, so TurnGateOff switches the
+    parent off through XLKR (MS48OblivionGateScript never calls GetParentRef).
+    """
+    if re.search(r'\bgetparentref\b|close(?:current)?obliviongate', sctx,
+                 re.IGNORECASE):
+        _GETPARENTREF_BASES.add(fid_str)
+    if sig == 'DOOR' and sctx_onactivate_consumes(sctx):
+        _CONSUME_DOOR_BASES.add(fid_str)
+
+
+def _memo_props(scri: str) -> dict:
+    """Indexed SCPT `scri`'s bound properties, resolved once per script (each is a converter pass)."""
+    memo = _PLAN_CTX['props_memo']
+    if scri not in memo:
+        try:
+            memo[scri] = _resolve_props(_PLAN_CTX['scpt_by_fid'][scri],
+                                        _PLAN_CTX['xref'], _PLAN_CTX['offset'])
+        except Exception:
+            memo[scri] = {}
+    return memo[scri]
 
 
 def build_player_alias_plan(by_type: dict, xref, fid_to_edid: dict,
@@ -521,11 +475,10 @@ def build_player_alias_plan(by_type: dict, xref, fid_to_edid: dict,
         scri = rec.get('SCRI', '')
         if not scri or scri not in scpt_by_fid:
             continue
-        edid, sctx, _extends = scpt_by_fid[scri]
-        script_name = papyrus_script_name(edid or f'Script_{scri}')
+        entry = scpt_by_fid[scri]
+        script_name = papyrus_script_name(entry[0] or f'Script_{scri}')
         try:
-            props = _resolve_props(sctx, edid, PLAYER_ALIAS_EXTENDS, xref,
-                                   fid_to_edid, offset)
+            props = _resolve_props(entry, xref, offset, PLAYER_ALIAS_EXTENDS)
         except Exception:
             props = {}
         _PLAYER_ALIAS_SCRIPTS.append((script_name, props))
@@ -713,87 +666,73 @@ def _relocate_actor_scripts_to_refs(by_type: dict, offset: int,
     return moved
 
 
-def _resolve_props(sctx: str, edid: str, extends: str, xref,
-                   fid_to_edid: dict, offset: int) -> dict:
-    """Run the converter to learn the script's property refs, then bind the
-    Object-typed ones to their target record FormIDs (output space).
+def _fixed_property(pname: str, ptype: str):
+    """The FormID a property binds to whatever the export says, or None.
 
-    Value-typed properties (Int/Float/Bool locals) are left unbound — the engine
-    defaults them to zero, which matches the TES4 script's initial state.
+    The player, engine globals, and SYNTHESIZED records (TES4Fame,
+    TES4GoldFenced, TES4Unlock_*): those exist only in the output, so xref
+    misses them and the property read None (every TGStolenGoodsScript rank
+    gate threw).
     """
+    low = pname.lower()
+    if low in ('player', 'playerref'):
+        return _PLAYER_BASE_FID if ptype == 'ActorBase' else _PLAYER_FORMID
+    if low in ENGINE_GLOBAL_FORMIDS:
+        return ENGINE_GLOBAL_FORMIDS[low]
+    return WELL_KNOWN_PROPERTIES.get(pname)
+
+
+def _resolve_props(entry: tuple, xref, offset: int, extends: str = '') -> dict:
+    """Bind a `_collect_scpts` entry's Object-typed properties to output FormIDs.
+
+    Candidates are the body's property table plus the declared variables.
+    Value-typed ones stay unbound (zero, the TES4 initial state). `extends`
+    overrides the entry's.
+
+    See: docs/commentary/script_convert.md#object-script-binder
+    """
+    edid, sctx, own_extends, scros = entry
     conv = ScriptConverter(xref)
-    name = safe_property_name(edid or 'Script')
-    conv.convert_standalone(name, sctx, extends, edid)
-
-    well_known = WELL_KNOWN_PROPERTIES
-
+    conv.convert_standalone(safe_property_name(edid or 'Script'), sctx,
+                            extends or own_extends, edid)
+    candidates = {p.lower(): (p, t) for p, t in conv.get_property_refs().items()}
+    candidates.update((p.lower(), (p, t))
+                      for p, t in variable_properties(conv, conv._tree))
     obj_props: dict[str, int] = {}
-    for pname, ptype in conv.get_property_refs().items():
+    for low, (pname, ptype) in candidates.items():
         if ptype in _VALUE_TYPES:
             continue
-        safe = safe_property_name(pname)
-        low = pname.lower()
-        if low in ('player', 'playerref'):
-            obj_props[safe] = (_PLAYER_BASE_FID if ptype == 'ActorBase'
-                               else _PLAYER_FORMID)
-            continue
-        if low in ENGINE_GLOBAL_FORMIDS:
-            obj_props[safe] = ENGINE_GLOBAL_FORMIDS[low]
-            continue
-        # SYNTHESIZED records (TES4Fame/TES4Infamy/TES4GoldFenced/
-        # TES4CyrodiilCrimeFaction/TES4Unlock_*) stand in for TES4 concepts
-        # Skyrim has no record for, so they exist only in the OUTPUT and are
-        # absent from xref.edid_to_formid — which is built from the TES4
-        # export. resolve_property_formid() therefore misses every one, and the
-        # property was silently left unbound (None at runtime).
-        #
-        # The dialogue and quest VMAD builders already inject the same registry
-        # (`well_known_props`), so QF_/TIF_ fragments bound correctly and only
-        # OBJECT scripts were affected — which is why this survived the round-2
-        # verification that counted the 4,762 dialogue bindings.
-        #
-        # It is not cosmetic: TGStolenGoodsScript is the Thieves Guild rank
-        # driver and all ten of its gates read `TES4GoldFenced.GetValue()`, so
-        # a None property threw on the first tick and no TG rank ever advanced.
-        if pname in well_known:
-            obj_props[safe] = well_known[pname]
-            continue
-        fid_hex = resolve_property_formid(xref, pname)
-        if not fid_hex:
-            continue
-        # A reference-typed property naming a BASE means the placed instance
-        # (Oblivion resolves `ArenaMouth.Say ...` through the NPC_ EditorID);
-        # the VM refuses an NPC_/CREA/ACTI/LIGH base into it and the property
-        # reads None. Bind the base's one placed ref instead.
-        if wants_placed_reference(ptype) and \
-                xref.record_type.get(fid_hex, '') in ('NPC_', 'CREA',
-                                                      'ACTI', 'LIGH'):
-            ref_hex = xref.unique_placed_ref(fid_hex)
-            if ref_hex:
-                fid_hex = ref_hex
-        try:
-            raw = int(fid_hex, 16)
-        except ValueError:
-            continue
-        if raw == 0:
-            continue
-        # Engine-hardcoded base objects (Gold001) must bind to SKYRIM's record,
-        # not our remapped copy — a scripted `player.AddItem Gold001 200` quest
-        # reward otherwise hands out inert Oblivion gold that cannot be spent.
-        # get_formid() applies this for export-driven references; a script
-        # PROPERTY resolves through xref instead, so it needs it here too.
-        #
-        # The PLAYABLE RACES are the same case: they are not converted at all,
-        # every actor is retargeted onto Skyrim's own RACE (see
-        # _resolve_npc_race), so remapping a race reference by load order points
-        # at a record that does not exist.  The CK reports one "Property <Race>
-        # on script X is pointing at an invalid object" per bound property — 22
-        # of them on DAHermaeusStaff/DABoethiaPortal alone, whose scripts branch
-        # on the player's race and so silently do nothing.
-        obj_props[safe] = (TES4_ITEM_FORMID_TO_SKYRIM.get(raw)
-                           or _skyrim_race_formid(raw)
-                           or _remap(raw, offset))
+        fid = _fixed_property(pname, ptype)
+        if fid is None:
+            fid = _bound_formid(xref, pname, ptype, offset,
+                                scros if low in conv.sc.local_vars else None)
+        if fid is not None:
+            obj_props[safe_property_name(pname)] = fid
     return obj_props
+
+
+def _bound_formid(xref, pname: str, ptype: str, offset: int, scros) -> 'int | None':
+    """Output FormID the record named `pname` binds to, or None to leave it unbound.
+
+    `scros` is given for a script's own variable: it binds only a form the
+    compiled script referenced. A base named by a reference-typed property binds
+    its one placed ref; engine-hardcoded items and races bind to Skyrim's.
+
+    See: docs/commentary/script_convert.md#local-shadows-form
+    See: docs/commentary/script_convert.md#base-name-binds-placed-ref
+    See: docs/commentary/script_convert.md#engine-hardcoded-bindings
+    """
+    fid_hex = resolve_property_formid(xref, pname)
+    if not re.fullmatch(r'[0-9A-Fa-f]+', fid_hex or '') or not int(fid_hex, 16):
+        return None
+    if scros is not None and int(fid_hex, 16) & 0x00FFFFFF not in scros:
+        return None
+    if wants_placed_reference(ptype) and xref.record_type.get(
+            fid_hex, '') in ('NPC_', 'CREA', 'ACTI', 'LIGH'):
+        fid_hex = xref.unique_placed_ref(fid_hex) or fid_hex
+    raw = int(fid_hex, 16)
+    return (TES4_ITEM_FORMID_TO_SKYRIM.get(raw) or _skyrim_race_formid(raw)
+            or _remap(raw, offset))
 
 
 def _skyrim_race_formid(raw: int) -> int:

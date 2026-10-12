@@ -44,27 +44,11 @@ Function RunTakeover()
     Return
   EndIf
 
-  ; Before anything else: another game's opening may already be pulling the
-  ; player into its own start.
-  Selector.HoldOpeningMovers()
-
   ; Freeze the (not yet started) opening: no controls, no saving.
   Game.DisablePlayerControls()
   Game.SetInChargen(true, true, false)
 
-  Actor player = Game.GetPlayer()
-  If HoldingCellMarker != None
-    player.MoveTo(HoldingCellMarker)
-  EndIf
-
-  ; Wait out the initial load: a Message.Show() issued during it is drawn
-  ; twice. Utility.Wait only elapses while the game is unpaused. Capped so a
-  ; pathological load can never wedge the takeover.
-  Int guard = 0
-  While !player.Is3DLoaded() && guard < 200
-    Utility.Wait(0.1)
-    guard += 1
-  EndWhile
+  ParkPlayer(Game.GetPlayer())
 
   Selector.RunSelection()
   Selector.HoldOpeningsFor(Selector.ChosenGame)
@@ -95,6 +79,37 @@ Function RunTakeover()
   If Travel != None
     Travel.Arrive(Selector.ChosenGame)
   EndIf
+EndFunction
+
+; Hold the player in the holding cell until the prompt may show: loaded there,
+; and left there for ParkSettleTicks in a row. Another game's Start-Game-Enabled
+; opening starts AFTER this fragment (Nehrim's Charactergen moves the player
+; half a second later), so every tick holds the openings again and brings the
+; player back. The settle also waits out the initial load: a Message.Show()
+; issued during it is drawn twice. Utility.Wait only elapses while the game is
+; unpaused. Capped so a pathological load can never wedge the takeover.
+; See docs/commentary/tesgameselect.md#opening-hold
+Int Property ParkSettleTicks = 10 AutoReadOnly
+
+Function ParkPlayer(Actor player)
+  Cell holding = None
+  If HoldingCellMarker != None
+    holding = HoldingCellMarker.GetParentCell()
+  EndIf
+  Int settled = 0
+  Int guard = 0
+  While settled < ParkSettleTicks && guard < 300
+    Selector.HoldOpeningMovers()
+    If holding != None && player.GetParentCell() != holding
+      Debug.Trace("[TESGameSelect] player left the holding cell; bringing them back")
+      player.MoveTo(HoldingCellMarker)
+      settled = 0
+    ElseIf player.Is3DLoaded()
+      settled += 1
+    EndIf
+    Utility.Wait(0.1)
+    guard += 1
+  EndWhile
 EndFunction
 
 ; Vanilla QF_MQ101_0003372B.Fragment_2, verbatim: the whole normal-start

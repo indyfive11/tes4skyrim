@@ -32,9 +32,9 @@ _STATE_WRITE_RE = re.compile(
     r'^\s*(?P<lhs>\w[\w.]*)\s*=\s*'
     r'(?:[-+]?[\d.]+|(?P<base>\w[\w.]*)\s*[-+]\s*[\d.]+)\s*(;.*)?$')
 
-#: A top-level `<quest>.SetStage(<literal>)` or its TES4SetStage form, the advance that must survive.
+#: A top-level `TES4Polyfill.SetStage(<quest>, <literal>)` or TES4SetStage form, the advance that must survive.
 _STAGE_ADVANCE_RE = re.compile(
-    r'^(\s*)(?P<call>(?:(?P<quest>[A-Za-z_]\w*)\.SetStage\('
+    r'^(\s*)(?P<call>(?:TES4Polyfill\.SetStage\((?P<quest>[A-Za-z_]\w*), '
     r'|\w+\.TES4SetStage\((?P<wrapped>[A-Za-z_]\w*) as \w+, )(?P<stage>\d+)\))'
     r'\s*(?P<comment>;.*)?$', re.IGNORECASE)
 

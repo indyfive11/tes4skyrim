@@ -13,8 +13,8 @@ later phase's state.
 import re
 from dataclasses import replace
 
-from script_convert.blocks import (BLOCK_MAP, BLOCK_TYPE_TESTS,
-                                   COMBAT_EVENT_HEADER, COMBAT_STATE_GUARDS,
+from script_convert.blocks import (BLOCK_MAP, BLOCK_TYPE_GUARDS,
+                                   COMBAT_EVENT_HEADER,
                                    block_filter_guard)
 from script_convert.constants import (
     LAST_ACTIVATOR_VAR, MENU_ID_NAMES, SLEEP_WAIT_MENU_ID,
@@ -438,12 +438,13 @@ def properties(conv, tree) -> list:
 def quest_restart(conv, tree, extends: str, name: str) -> list:
     """`TES4Start(quest)` and `TES4SetStage(quest, stage)`, keeping TES4 variables.
 
-    Skyrim's `Start()` on a stopped quest re-initialises its scripts, and so
-    does a `SetStage` that starts it; TES4 kept every quest variable across
-    both.  Global, so the saved values live in the caller's frame rather than
-    the instance Start replaces.
+    Skyrim's `Start()` on a stopped quest re-initialises its scripts, as does
+    a `SetStage` that starts it; TES4 kept every quest variable across both.
+    Global, so the saved values live in the caller's frame.  The stage then
+    re-checks the alias packages.
     See: docs/commentary/script_convert.md#stopquest-converts-stop-run-bit
     See: docs/commentary/script_convert.md#setstage-start-keeps-variables
+    See: docs/commentary/script_convert.md#setstage-re-evaluates-alias-packages
     """
     if extends != 'Quest':
         return []
@@ -457,14 +458,11 @@ def quest_restart(conv, tree, extends: str, name: str) -> list:
             f'Bool Function TES4SetStage({script} akQuest, Int aiStage) Global',
             '  If !akQuest.IsRunning()',
             '    TES4Start(akQuest)',
-            '  EndIf']
-    actors = _quest_actor_props(conv, name)
-    if actors:
-        out.append('  Bool tes4_stageResult = akQuest.SetStage(aiStage)')
-        out += _reeval_actors(actors)
-        out.append('  Return tes4_stageResult')
-    else:
-        out.append('  Return akQuest.SetStage(aiStage)')
+            '  EndIf',
+            '  Bool done = akQuest.SetStage(aiStage)',
+            '  TES4Polyfill.StageSet(akQuest)']
+    out += _reeval_actors(_quest_actor_props(conv, name))
+    out.append('  Return done')
     return out + ['EndFunction']
 
 
@@ -774,7 +772,7 @@ def events(conv, tree, extends: str, skip_poll: bool = False) -> list:
     _package_trace(extends, merged, order)
     out = (_carried_read(conv, tree, extends, merged, order)
            + _record_last_activator(conv, merged, order)
-           + _track_holder(conv, merged, order))
+           + _track_holder(conv, tree, merged, order))
     for header in order:
         opener, closer = header
         if opener == BLOCK_MAP['ontrigger'][0]:
@@ -916,13 +914,14 @@ def _carried_read(conv, tree, extends: str, merged: dict, order: list) -> list:
     return [f'Bool {_READ_BY_ACTIVATE_VAR}', '']
 
 
-def _track_holder(conv, merged: dict, order: list) -> list:
+def _track_holder(conv, tree, merged: dict, order: list) -> list:
     """Declare the holder variable; every `_HOLDER_EVENTS` event records it and re-arms the poll.
 
     TES4 ran a carried item's GameMode block from the holder's inventory, so a
     body that finishes only after pickup (read, then take) still runs, and a
     poll that died while carried restarts on the next equip (a read: see
-    `_carried_read`).
+    `_carried_read`).  A bare MenuMode block then runs in-event while the menu
+    stays open (`_menu_pass_loop`).
 
     See: docs/commentary/script_convert.md#carried-items-and-read-books
     """
@@ -935,11 +934,13 @@ def _track_holder(conv, merged: dict, order: list) -> list:
     # solely from OnLoad/OnCellAttach, where Self is a bound world ref.
     arm = [] if _true_carried(conv) else _arm(
         conv, conv._get_update_interval(), True)
+    passes = [f'  {_MENU_PASSES}()'] if _menu_passes(conv, tree) else []
     for header, holder in _HOLDER_EVENTS:
         if header not in merged:
             merged[header] = []
             order.append(header)
         merged[header][:0] = list(holder) + arm
+        merged[header] += passes
     return [f'ObjectReference {_HOLDER_VAR}', '']
 
 
@@ -949,7 +950,37 @@ def helpers(conv) -> list:
     out += conv.get_cell_family_helpers()
     out += conv._emit_button_helpers()
     out += start_pose.helpers(conv.sc, _HOLDER_VAR if _carried(conv) else '')
+    out += notify_helper(conv)
     return out
+
+
+#: Seconds a Skyrim notification stays up: hudmenu.swf's MessageText clip is 80 frames at 24 fps.
+NOTIFICATION_SECONDS = 80 / 24
+
+
+def notify_helper(conv) -> list:
+    """TES4_Notify: a `Message` re-sent while its text is still on screen is dropped.
+
+    TES4 `Message` rewrites the one HUD line; Skyrim queues every notification.
+
+    See: docs/commentary/script_convert.md#message-rewrites-one-line
+    """
+    if not conv.sc.uses_notify:
+        return []
+    return [
+        '',
+        'String TES4_NoteText',
+        'Float TES4_NoteAt',
+        '',
+        'Function TES4_Notify(String asText)',
+        '  Float TES4_since = Utility.GetCurrentRealTime() - TES4_NoteAt',
+        f'  If asText != TES4_NoteText || TES4_since >= {NOTIFICATION_SECONDS:.2f} || TES4_since < 0.0',
+        '    TES4_NoteText = asText',
+        '    TES4_NoteAt = Utility.GetCurrentRealTime()',
+        '    Debug.Notification(asText)',
+        '  EndIf',
+        'EndFunction',
+    ]
 
 
 #: The insurance arm's interval.  Long ON PURPOSE -- see `poll`.
@@ -1026,16 +1057,46 @@ def poll(conv, tree, extends: str) -> list:
     # finishes replaces it with the real interval.
     out += _arm(conv, _INSURANCE_SECS, load_gated)
 
-    # A TES4 `return` inside the polled body ends THIS pass only, so the
-    # converted `Return` must re-arm at the real interval itself: it skips the
-    # bottom arm and the top arm is the long one.
-    if pacing:
-        sc.poll_return_prefix = '\n'.join(
-            _adaptive_arm(conv, interval, extends, indent='')) + '\n'
-    else:
-        sc.poll_return_prefix = '\n'.join(
-            _arm(conv, interval, load_gated, indent='')) + '\n'
+    passes = _menu_passes(conv, tree)
+    sc.poll_return_prefix = _return_arm(conv, interval, extends, load_gated,
+                                        passes, pacing)
+    body = _poll_body(conv, tree, extends, interval, load_gated, pacing)
+    sc.poll_return_prefix = ''
+    sc.glide_secs = ''
+    arm = _bottom_arm(conv, interval, extends, load_gated, pacing)
+    if not passes:
+        return out + body + arm + ['EndEvent', '']
+    return (out + [f'  {_POLL_PASS}()'] + arm + ['EndEvent', '', f'Function {_POLL_PASS}()']
+            + body + ['EndFunction', ''] + _menu_pass_loop(interval))
 
+
+def _bottom_arm(conv, interval: str, extends: str, load_gated: bool,
+                pacing: bool, indent: str = '  ') -> list:
+    """The poll's real re-arm: adaptive for a pacing quest, the plain interval otherwise."""
+    if pacing:
+        return _adaptive_arm(conv, interval, extends, indent=indent)
+    return _arm(conv, interval, load_gated, indent=indent)
+
+
+def _return_arm(conv, interval: str, extends: str, load_gated: bool,
+                passes: bool, pacing: bool) -> str:
+    """A poll `return`'s re-arm; none when the pass is a function (OnUpdate re-arms).
+
+    A TES4 `return` inside the polled body ends THIS pass only, so the
+    converted `Return` re-arms at the real interval itself: it skips the
+    bottom arm and the top arm is the long one.
+    """
+    if passes:
+        return ''
+    return '\n'.join(_bottom_arm(conv, interval, extends, load_gated, pacing,
+                                 indent='')) + '\n'
+
+
+def _poll_body(conv, tree, extends: str, interval: str, load_gated: bool,
+               pacing: bool = False) -> list:
+    """One poll pass: the quest and dialogue gates, the prologues, every polled block, then the stage latches."""
+    sc = conv.sc
+    out = []
     if extends == 'Quest':
         # Not running: skip the body, but the poll keeps ticking so the loop
         # resumes once the quest is started.
@@ -1060,15 +1121,40 @@ def poll(conv, tree, extends: str) -> list:
     for _, var in sorted(sc.stage_latches.items()):
         quest = var[len('TES4_LastStage_'):]
         out.append(f'  {var} = {quest}.GetStage()')
-
-    sc.poll_return_prefix = ''
-    sc.glide_secs = ''
-    if pacing:
-        out += _adaptive_arm(conv, interval, extends)
-    else:
-        out += _arm(conv, interval, load_gated)
-    out += ['EndEvent', '']
     return out
+
+
+#: The poll body as a function, for a script whose MenuMode must run in-event; see `_menu_passes`.
+_POLL_PASS = 'TES4_PollPass'
+
+#: Runs the poll body while a menu is open; a newer run ends an older one.
+_MENU_PASSES = 'TES4_MenuPasses'
+
+
+def _menu_passes(conv, tree) -> bool:
+    """Must a carried item's bare MenuMode block run from its own events?"""
+    return _carried(conv) and any(
+        b.btype.lower() == 'menumode' and _menumode_kind(b) == 'poll'
+        for b in (tree.blocks if tree else ()))
+
+
+def _menu_pass_loop(interval: str) -> list:
+    """TES4_MenuPasses: a poll pass every `interval` seconds while any menu is open.
+
+    A script on an item in a container has no native object, so it cannot
+    register for updates; TES4 ran MenuMode on those menu frames anyway.
+
+    See: docs/commentary/script_convert.md#carried-menumode-runs-in-event
+    """
+    return ['Int TES4_MenuPassRun', '',
+            f'Function {_MENU_PASSES}()',
+            '  TES4_MenuPassRun += 1',
+            '  Int TES4_mine = TES4_MenuPassRun',
+            '  While TES4_mine == TES4_MenuPassRun && Utility.IsInMenuMode()',
+            f'    {_POLL_PASS}()',
+            f'    Utility.WaitMenuMode({interval})',
+            '  EndWhile',
+            'EndFunction', '']
 
 
 def _carried(conv) -> bool:
@@ -1591,11 +1677,9 @@ def _guarded(conv, block, body: list, arms: dict = None) -> list:
     """
     btype = block.btype.lower()
     guard = block_filter_guard(conv, btype, block.filter or '')
-    state = COMBAT_STATE_GUARDS.get(btype)
+    state = BLOCK_TYPE_GUARDS.get(btype)
     if state and guard is not None:
         guard = f'{state} && {guard}' if guard else state
-    if guard == '':
-        guard = BLOCK_TYPE_TESTS.get(btype, '')
     if arms is not None:
         arms.setdefault(BLOCK_MAP.get(btype), []).append((guard, body))
 

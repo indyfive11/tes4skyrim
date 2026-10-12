@@ -9,7 +9,7 @@ See: docs/commentary/tes5_import_dialogue.md#branches-views-topic-ownership
 
 import re
 import struct
-from collections import defaultdict
+from collections import Counter, defaultdict
 from ..base.text_reader import get_formid_index_offset, info_result_script
 from .quest import (bark_choice_gate_bytes, compute_quest_priorities,
                     has_quest_state_condition, quest_state_ctdas)
@@ -39,11 +39,12 @@ from ..base.conditions import (
 )
 
 from .converter import (DIAL_TYPE_CONVERSATION, SERVICE_MENU_SCRIPTS,
-    SERVICE_MENU_TOPICS, CONV_KEEP_EDIDS,
+    CONV_KEEP_EDIDS,
     is_npc_to_npc_conversation, make_conversation_quest,
     make_generic_quest, register_conversation_chains,
     SCENE_TOPIC, classify_topic, collect_tclt_target_fids,
-    convert_DIAL, convert_INFO, make_dlbr, make_dlvw, service_menu_kind,
+    convert_DIAL, convert_INFO, make_dlbr, make_dlvw, service_menu_entry,
+    service_menu_kind,
     should_skip_dial, voice_file_prefix,
     GREET_TOPIC_BY_QUEST, EMPTY_DIAL_FIDS, lip_texts, startable_quests)
 from .say_topics import (FORCE_GREET_SLOTS, SAY_TOPIC_DISPOSITIONS,
@@ -146,7 +147,8 @@ def _branch_is_linked(dial_rec, dial_fid, tclt_targets, bark_choice_targets,
 
     A TCLT target or a StartConversation force-greet topic never explicitly
     AddTopic'd stays off the menu; a TCLT target reached from a bark/greeting
-    choice does not.  Script-driven Conversation topics are forced Normal.
+    choice does not.  Script-driven Conversation topics and topics nothing
+    ever adds are forced Normal.
 
     See: docs/commentary/tes5_import_dialogue.md#branches-views-topic-ownership
     """
@@ -156,7 +158,8 @@ def _branch_is_linked(dial_rec, dial_fid, tclt_targets, bark_choice_targets,
     forced = get_str(dial_rec, 'EditorID', '').lower() in FORCE_GREET_SLOTS
     return ((never_added and (forced or (dial_fid in tclt_targets
                                          and dial_fid not in bark_choice_targets)))
-            or _is_script_topic(dial_rec, dial_fid))
+            or _is_script_topic(dial_rec, dial_fid)
+            or fid24 in unlock_plan.get('unreachable', ()))
 
 
 def _topic_branch(dial_rec, writer, owner_qfid, tclt_targets,
@@ -214,6 +217,24 @@ def _bark_dial_fids(dials) -> set:
     return out
 
 
+def _fill_say_dispositions(by_type: dict) -> None:
+    """Fill SAY_TOPIC_DISPOSITIONS; must run before the first should_skip_dial.
+
+    is_npc_to_npc_conversation reads it to spare script-spoken Type-1 topics.
+    Engine bark topics keep their non-identity RunOn=Target conditions.
+    See: docs/commentary/tes5_import_dialogue.md#engine-fired-say-topics
+    """
+    engine_fired = frozenset(
+        get_formid(d, 'FormID') & 0xFFFFFF for d in by_type.get('DIAL', [])
+        if classify_topic(get_str(d, 'EditorID', ''), get_int(d, 'DATA.Type'))[3])
+    SAY_TOPIC_DISPOSITIONS.clear()
+    SAY_TOPIC_DISPOSITIONS.update(build_say_topic_dispositions(by_type, engine_fired))
+    kinds = Counter(v[0] for v in SAY_TOPIC_DISPOSITIONS.values())
+    print(f"    say-driven topics: {len(SAY_TOPIC_DISPOSITIONS)} "
+          f"({kinds['ref']} retargeted to a unique ref, {kinds['drop']} drop "
+          f"target-conditions, {kinds['target']} engine-fired drop identity only)")
+
+
 def _scan_bark_choice_links(dials, infos, offset, script_vars):
     """Bark topics and the conversation topics their choices reveal.
 
@@ -263,8 +284,10 @@ def _scan_bark_choice_links(dials, infos, offset, script_vars):
 def _quest_npc_sets(dials, info_by_dial) -> dict:
     """Per-quest NPC FormID sets, for fallback identity gating.
 
-    Service-menu topics are excluded: their per-merchant GetIsIDs would widen
-    the identity gate on every other topic the quest owns.
+    Each line counts toward its own QSTI quest, so a shared topic such as
+    GREETING credits every quest it serves.  Service-menu topics are excluded:
+    their per-merchant GetIsIDs would widen the identity gate on every other
+    topic the quest owns.
 
     See: docs/commentary/tes5_import_dialogue.md#voice-types-conditions
     """
@@ -272,13 +295,12 @@ def _quest_npc_sets(dials, info_by_dial) -> dict:
     for d in dials:
         if should_skip_dial(d) or service_menu_kind(d):
             continue
-        qfid = get_formid(d, 'Quest[0]')
-        if not qfid:
-            continue
-        npcs = read_getisid_fids_for_topic(
-            info_by_dial.get(get_formid(d, 'FormID'), []))
-        if npcs:
-            quest_npc_fids[qfid] |= npcs
+        topic_qfid = get_formid(d, 'Quest[0]')
+        for info_rec in info_by_dial.get(get_formid(d, 'FormID'), []):
+            qfid = get_formid(info_rec, 'QSTI.Quest') or topic_qfid
+            if qfid:
+                quest_npc_fids[qfid] |= read_getisid_fids(info_rec,
+                                                          positive_only=True)
     return quest_npc_fids
 
 
@@ -380,18 +402,7 @@ def build_dialog_groups(by_type: dict, writer, npc_to_vtyp: dict,
     # Populated on demand by _build_bark_topics_per_quest; drained into SGE.
     bark_generic_quests = {}   # source DIAL EditorID -> synthetic quest FID
 
-    # --- Pre-scan ---
-    # Say-driven topics MUST be resolved before the first should_skip_dial call:
-    # is_npc_to_npc_conversation consults _SAY_TOPIC_DISPOSITIONS to spare the
-    # 293 scripted Type-1 topics (CharGen, Announcers, Daedric speeches) from
-    # the NPC-to-NPC drop. With an empty map every one of them would be skipped
-    # and the tutorial would lose its dialogue.
-    SAY_TOPIC_DISPOSITIONS.clear()
-    SAY_TOPIC_DISPOSITIONS.update(build_say_topic_dispositions(by_type))
-    n_ref = sum(1 for v in SAY_TOPIC_DISPOSITIONS.values() if v[0] == 'ref')
-    print(f"    say-driven topics: {len(SAY_TOPIC_DISPOSITIONS)} "
-          f"({n_ref} retargeted to a unique ref, "
-          f"{len(SAY_TOPIC_DISPOSITIONS) - n_ref} drop target-conditions)")
+    _fill_say_dispositions(by_type)
 
     # --- NPC-to-NPC conversation chains ------------------------------------
     # Quest-advancing engine-scheduled conversations (CharacterGen 26→27,
@@ -779,13 +790,13 @@ def _build_one_topic(dial_rec, info_by_dial, writer, offset,
     (dial_group_bytes, dlbr_bytes, owner_quest_fid, dial_fid, dlbr_fid)."""
     dial_fid = get_formid(dial_rec, 'FormID')
     edid = get_str(dial_rec, 'EditorID', '')
-    service_kind = service_menu_kind(dial_rec)
+    service_kind, service_prompt = service_menu_entry(dial_rec)
     service_gate_bytes = b''
     if service_kind:
         service_gate_bytes = _service_gate(service_kind)
         if not service_gate_bytes:
             return b'', b'', 0, 0, 0
-        dial_rec['FULL'] = SERVICE_MENU_TOPICS[edid][1]
+        dial_rec['FULL'] = service_prompt
 
     child_infos = sorted(
         info_by_dial.get(dial_fid, []),

@@ -409,8 +409,9 @@ exist:
 - `PKID` = the actor's converted packages, **in TES4 order** (Skyrim, like
   Oblivion, takes the first package whose conditions pass — order is behavior).
 - Keep `DPLT` (`DefaultMasterPackageList`) as the fallback beneath them.
-- Keep the creature path (`DefaultMasterPackageCreature`) — creature AI is driven
-  by the behavior-graph work, not by TES4 packages.
+- Creatures get the same list, with `DefaultMasterPackageCreature` appended as
+  the fallback. Dropping their authored packages stranded scripted creatures
+  ([why](tes5_import_actors.md#creature-class-and-package)).
 - `packages.py` shrinks to the creature default + a fallback for actors whose
   packages all failed to convert.
 
@@ -888,3 +889,54 @@ Morrowind `AIEscort` — and falls back to vanilla `Escort` only when no root is
 installed (a master built before this change). Adding the root moved no
 FormID (1,187,406 records before, the same plus one after). Test:
 `tests/test_escort_when_near.py`.
+
+## Every placed copy gets its quest package
+<a id="every-placed-copy-gets-its-quest-package"></a>
+
+Oblivion runs a base actor's AI packages on every copy placed from it. A
+quest-gated package reaches a Skyrim actor only through a quest alias, and an
+alias fills one reference, so `PackagePlan._build_base_to_refs`
+(`packages/aliases.py`) maps each base to **all** its placements and each one
+gets its own alias carrying the package. It used to keep only the first
+placement, so the other copies never ran the package.
+
+Nehrim's mine-exit trolls are the visible case: `MQ00TrollTravel`, the march
+into the fire at MQ00 stage 35, is authored on the shared base
+`MQ00troll01Ausgang` placed twelve times, and only `MQ00TrollA01` got it
+(MQ00 went from 13 to 24 aliases). The same fix reached 15 Nehrim quests (the
+largest, the tower-defense wave quest NQ15W02, gained 177 aliases) and 20
+Oblivion quests (DASheogorath's sheep, SE08Xed's knights, Charactergen's
+ambush assassins). Confirmed in game on the Nehrim exit and Charactergen.
+
+A script's `AddScriptPackage` on a BASE still goes to its first placement.
+Quests that gained aliases renumber existing ones, so a save made midway
+through one may hold a stale alias fill. Test:
+`tests/test_packages.py::test_every_placed_copy_gets_its_quest_package`.
+
+## Quest-only actors hold in place
+<a id="quest-only-actors-hold-in-place"></a>
+
+**Code:** `default_package_list` in `packages/actor_wiring.py`
+
+When none of an actor's packages is valid, Oblivion leaves it standing where it
+is (UESP: Kiara "never moves because she has no AI packages"; the Blackwood
+Company guards "stand in place when not engaged in combat"). Skyrim instead runs
+the NPC's Default Package List (`DPLT`), and every converted NPC carried
+vanilla's `DefaultMasterPackageList`, which sandboxes. A sandboxing actor is
+placed at a sandbox spot when its cell loads, so an actor authored to stand on
+one spot turned up somewhere else each time.
+
+Nehrim's nightmare shows it. `Celebro02`'s only packages are MQ00's
+(`MQ00Cel02ZumTroll` and the `AddScriptPackage`d `MQ00CalebroPackage04`, both
+`GetStage MQ00 == 20`), so before stage 20 he had nothing valid. In game he
+loaded 257 units to the left of his placement, once in the entrance doorway,
+instead of in front of the player where the scene expects him.
+
+An NPC whose every authored package is quest-owned (it reaches the actor through
+a quest alias, so the author gave it AI only for quest moments) now carries
+vanilla's `DefaultHoldPositionCurrentLoc64List` (Skyrim.esm `000A6853`, holding
+`DefaultHoldPositionCurrentLoc64`: HoldPosition, "near package start location",
+radius 64) instead. It holds wherever the actor is when the fallback takes
+over, so it neither pulls back an actor a script `MoveTo`'d nor lets one wander.
+Other NPCs keep `DefaultMasterPackageList`. Creatures are unchanged, since their
+PKID always ends in vanilla's always-valid `DefaultMasterPackageCreature`.

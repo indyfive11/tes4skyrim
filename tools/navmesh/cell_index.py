@@ -18,11 +18,18 @@ import pickle
 import sqlite3
 import threading
 
+from tes5_import.overrides.nested import (
+    export_master_names, export_root, master_export_dir,
+)
+
 #: Tables small enough to load whole; the rest is per cell.
 SHARED = ('base_model', 'door_fids', 'cells')
 
 #: Schema marker; a mismatch rebuilds rather than serving stale shapes.
 SCHEMA = 5
+
+#: Version of the stored `base_model` table; a mismatch rewrites that row alone.
+BASES = 2
 
 
 def db_path(export):
@@ -55,7 +62,8 @@ def write(export, tables):
     con.execute('CREATE TABLE cell (fid TEXT PRIMARY KEY, blob BLOB, '
                 'has_pgrd INTEGER)')
     con.execute('CREATE TABLE shared (k TEXT PRIMARY KEY, blob BLOB)')
-    con.execute('INSERT INTO meta VALUES (?, ?)', ('schema', SCHEMA))
+    con.executemany('INSERT INTO meta VALUES (?, ?)',
+                    (('schema', SCHEMA), ('bases', BASES)))
     fids = set(refr) | set(pgrd) | set(land)
     con.executemany('INSERT INTO cell VALUES (?, ?, ?)', (
         (f, pickle.dumps((refr.get(f, []), pgrd.get(f), land.get(f)),
@@ -72,18 +80,41 @@ def write(export, tables):
     return path
 
 
-def is_current(export):
-    """True when a per-cell index exists at the current schema."""
+def _meta(export, key):
+    """One `meta` value of `export`'s index, or None when absent or unreadable."""
     path = db_path(export)
     if not os.path.isfile(path):
-        return False
+        return None
     try:
         con = _connect(path)
-        row = con.execute("SELECT v FROM meta WHERE k='schema'").fetchone()
+        row = con.execute('SELECT v FROM meta WHERE k=?', (key,)).fetchone()
         con.close()
-        return bool(row) and row[0] == SCHEMA
     except sqlite3.DatabaseError:
-        return False
+        return None
+    return row[0] if row else None
+
+
+def is_current(export):
+    """True when a per-cell index exists at the current schema."""
+    return _meta(export, 'schema') == SCHEMA
+
+
+def bases_current(export):
+    """True when the stored `base_model` table is at the current `BASES` version."""
+    return _meta(export, 'bases') == BASES
+
+
+def write_base_model(export, base_model):
+    """Replace only the stored `base_model` table, leaving every cell row as it is.
+
+    See: docs/commentary/tes5_import_navmesh.md#frozen-corner-takes-the-vertex
+    """
+    con = _connect(db_path(export))
+    con.execute('UPDATE shared SET blob=? WHERE k=?',
+                (pickle.dumps(base_model, pickle.HIGHEST_PROTOCOL), 'base_model'))
+    con.execute('INSERT OR REPLACE INTO meta VALUES (?, ?)', ('bases', BASES))
+    con.commit()
+    con.close()
 
 
 class _Store(object):
@@ -139,6 +170,54 @@ class _Store(object):
             self._local.con = None
 
 
+def _dir_key(path):
+    """A directory path normalized for comparison."""
+    return os.path.normcase(os.path.normpath(path))
+
+
+def index_map(child, master):
+    """`{index byte in master's export: index byte in child's}`.
+
+    Each plugin numbers FormIDs by its OWN master list, so one record is
+    010C084C in Morrowind_ob.esm and 000C084C in TR_Mainland.esm.  A byte the
+    child cannot address (a master it does not declare) is absent.
+
+    See: docs/commentary/tes5_import_navmesh.md#cellview-master-numbering
+    """
+    root = export_root(child)
+    slots = {_dir_key(master_export_dir(root, n)): i
+             for i, n in enumerate(export_master_names(child))}
+    names = export_master_names(master)
+    out = {}
+    for i, d in enumerate([master_export_dir(root, n) for n in names] + [master]):
+        if _dir_key(d) in slots:
+            out[i] = slots[_dir_key(d)]
+    return out
+
+
+def shift_fid(fid, imap):
+    """`fid` moved into the child's numbering by `index_map`, or None."""
+    got = imap.get(fid >> 24)
+    return None if got is None else (got << 24) | (fid & 0xFFFFFF)
+
+
+def _rebased_refr(refr, imap):
+    """A copy of `refr` whose base NAME uses the child's numbering ('' if unaddressable)."""
+    try:
+        new = shift_fid(int(refr.get('NAME') or '', 16), imap)
+    except ValueError:
+        return refr
+    return dict(refr, NAME='%08X' % new if new is not None else '')
+
+
+def _rebased_table(table, imap, out):
+    """Merge a master's FormID-keyed table into `out`, keys rebased; `out` wins."""
+    for k, v in table.items():
+        new = shift_fid(k, imap)
+        if new is not None:
+            out.setdefault(new, v)
+
+
 class CellIndex(object):
     """One plugin's index plus its masters', queried as a chain.
 
@@ -155,33 +234,33 @@ class CellIndex(object):
         self._master_dirs = [d for d in master_dirs
                              if os.path.isdir(d) and is_current(d)]
         self._masters = None
+        self._maps = [index_map(export, d) for d in self._master_dirs]
         self._shared = None
 
     def _open_masters(self):
-        """The master stores, opened on first need, nearest master first."""
+        """`(store, index_map)` per master, opened on first need, nearest first."""
         if self._masters is None:
             self._masters = [_Store(d) for d in self._master_dirs]
-        return self._masters
+        return list(zip(self._masters, self._maps))
 
     def _merged(self):
         """Base models, door bases and CELL records across the chain.
 
         Built on FIRST USE, not at open: merging 61,181 CELL records across
         four masters measured 23s, and a caller that only wants one cell's
-        geometry never needs it.
+        geometry never needs it.  Base and door ids are rebased into THIS
+        plugin's numbering, the numbering its REFRs name them by.
 
-        See: docs/commentary/tes5_import_navmesh.md#cellview-cell-index
+        See: docs/commentary/tes5_import_navmesh.md#cellview-master-numbering
         """
         if self._shared is None:
             base = dict(self._own.base_model)
             doors = dict(self._own.door_fids)
             cells = list(self._own.cells)
             seen = {(c.get('FormID') or '').upper() for c in cells}
-            for store in self._open_masters():
-                for k, v in store.base_model.items():
-                    base.setdefault(k, v)
-                for k, v in store.door_fids.items():
-                    doors.setdefault(k, v)
+            for store, imap in self._open_masters():
+                _rebased_table(store.base_model, imap, base)
+                _rebased_table(store.door_fids, imap, doors)
                 for rec in store.cells:
                     fid = (rec.get('FormID') or '').upper()
                     if fid not in seen:
@@ -206,14 +285,15 @@ class CellIndex(object):
         return self._merged()[2]
 
     def of_cell(self, fid):
-        """`(refrs, pgrd, land)` for one cell, ours or a master's."""
+        """`(refrs, pgrd, land)` for one cell, ours or a master's (bases rebased)."""
         got = self._own.of_cell(fid)
         if got is not None:
             return got
-        for store in self._open_masters():
+        for store, imap in self._open_masters():
             got = store.of_cell(fid)
             if got is not None:
-                return got
+                refrs, pgrd, land = got
+                return [_rebased_refr(r, imap) for r in refrs], pgrd, land
         return [], None, None
 
     def iter_cells(self):
@@ -222,11 +302,12 @@ class CellIndex(object):
         for fid, refrs, pgrd, land in self._own.iter_cells():
             seen.add(fid)
             yield fid, refrs, pgrd, land
-        for store in self._open_masters():
+        for store, imap in self._open_masters():
             for fid, refrs, pgrd, land in store.iter_cells():
                 if fid not in seen:
                     seen.add(fid)
-                    yield fid, refrs, pgrd, land
+                    yield (fid, [_rebased_refr(r, imap) for r in refrs],
+                           pgrd, land)
 
     def pathgrid_fids(self):
         """Cell FormIDs that have a pathgrid, across the chain.
@@ -235,7 +316,7 @@ class CellIndex(object):
         scan measured 10.8s on a four-master chain.
         """
         out = set(self._own.pathgrid_fids())
-        for store in self._open_masters():
+        for store, _imap in self._open_masters():
             out |= store.pathgrid_fids()
         return out
 
@@ -257,5 +338,5 @@ class CellIndex(object):
     def close(self):
         """Release every connection in the chain."""
         self._own.close()
-        for store in (self._masters or ()):
+        for store in self._masters or ():
             store.close()

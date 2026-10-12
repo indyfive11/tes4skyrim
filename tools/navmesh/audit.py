@@ -30,7 +30,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 from asset_convert.collision import collision_extract as ce
 from asset_convert.game_paths import namespace_for, set_namespace
 from tes5_import.navmesh import build, params
-from tes5_import.navmesh.pool import base_model_key, model_key
+from tes5_import.navmesh.pool import build_base_model_index, model_key
 from tes5_import.navmesh.from_pgrd import (collect_doors,
                                       load_door_centroids)
 from tools.navmesh import cell_index as cell_index_mod
@@ -46,9 +46,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__)))))
 from output_layout import assets_for
 
-_TYPES = {'CELL', 'REFR', 'PGRD', 'LAND', 'STAT', 'CONT', 'FURN', 'ACTI',
-          'TREE', 'DOOR', 'WRLD'}
-_BASES = ('STAT', 'CONT', 'FURN', 'ACTI', 'TREE', 'DOOR')
+#: Every base type the import's `build_base_model_index` may carve with.
+_BASE_TYPES = {'STAT', 'CONT', 'FURN', 'ACTI', 'TREE', 'FLOR'}
+_TYPES = {'CELL', 'REFR', 'PGRD', 'LAND', 'DOOR', 'WRLD'} | _BASE_TYPES
 
 
 def _pgrd_nodes(pgrd):
@@ -304,13 +304,7 @@ def _parse_tables(export):
     set_namespace(namespace_for(export))
     recs = parse_export_directory(export, type_filter=_TYPES)
     by_type = group_records_by_type(recs)
-    base_model = {}
-    for t in _BASES:
-        for rec in by_type.get(t, []):
-            f = get_formid(rec, 'FormID')
-            key = base_model_key(rec)
-            if f and key:
-                base_model[f] = key
+    base_model = build_base_model_index(by_type)
     refr_by_cell = {}
     for r in by_type.get('REFR', []):
         refr_by_cell.setdefault((r.get('ParentCELL') or '').upper(), []).append(r)
@@ -322,12 +316,26 @@ def _parse_tables(export):
             _door_model_map(by_type), by_type.get('CELL', []))
 
 
+def _base_model_table(export):
+    """`export`'s own carving base-model table, parsed from its base records alone."""
+    set_namespace(namespace_for(export))
+    return build_base_model_index(group_records_by_type(
+        parse_export_directory(export, type_filter=_BASE_TYPES)))
+
+
 def _ensure_store(export, reindex=False):
-    """Build `export`'s own index if it is missing or stale."""
+    """Build `export`'s own index if missing or stale; refresh only a stale base-model table.
+
+    See: docs/commentary/tes5_import_navmesh.md#frozen-corner-takes-the-vertex
+    """
     if reindex or not cell_index_mod.is_current(export):
         cell_index_mod.write(export, _parse_tables(export))
-        if os.path.exists(index_path(export)):
-            os.remove(index_path(export))
+    elif not cell_index_mod.bases_current(export):
+        cell_index_mod.write_base_model(export, _base_model_table(export))
+    else:
+        return
+    if os.path.exists(index_path(export)):
+        os.remove(index_path(export))
 
 
 def master_dirs(export):

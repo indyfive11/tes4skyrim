@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 from asset_convert.collision import collision_extract as ce
 from tes5_import.navmesh import world
-from tes5_import.navmesh.pool import base_model_key, model_key
+from tes5_import.navmesh.pool import build_base_model_index, model_key
 from tes5_import.base.text_reader import (
     parse_export_directory, group_records_by_type, get_float, get_formid,
     get_int, get_str,
@@ -29,8 +29,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(
 from output_layout import assets_for
 
 _TYPES = {'CELL', 'REFR', 'PGRD', 'LAND', 'STAT', 'CONT', 'FURN', 'ACTI',
-          'TREE', 'DOOR', 'WRLD'}
-_BLOCKING_BASES = ('STAT', 'CONT', 'FURN', 'ACTI', 'TREE', 'DOOR')
+          'TREE', 'FLOR', 'DOOR', 'WRLD'}
 
 
 _BY_TYPE_MEMO = {}
@@ -173,13 +172,7 @@ def load_cell(export_dir, cell_arg, load_collision=True):
     land = next((l for l in by_type.get('LAND', [])
                  if l.get('ParentCELL', '').upper() == fid.upper()), None)
 
-    base_model = {}
-    for t in _BLOCKING_BASES:
-        for rec in by_type.get(t, []):
-            f = get_formid(rec, 'FormID')
-            key = base_model_key(rec)
-            if f and key:
-                base_model[f] = key
+    base_model = build_base_model_index(by_type)
 
     nodes, edges = [], []
     if pgrd is not None:

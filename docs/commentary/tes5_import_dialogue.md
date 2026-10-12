@@ -152,6 +152,7 @@ game, see the `oblivion-dialog-system`, `skyrim-dialog-system`, and
   - Example that must stay gated: contract INFO (0003571C) lists AddTopic[0]=ratsTOPIC → TES4_TIF__0003571C sets TES4Unlock_ratsTOPIC OnEnd → "Rats" appears only after the contract line. Quest-running does NOT hide it — FGC01Rats starts at guild join (FGD00JoinFG stage 100 `StartQuest` → `.Start()` fragment).
 - **'AnswerStatus' and 'TRANSITION'** are Oblivion NPC-to-NPC conversation system topics — classify as barks (IDLE/88/cat 7) or they leak into player topic menus.
 - **Barter/Training services (2026-07)**: Skyrim opens the barter menu via a Papyrus fragment (`akSpeaker.ShowBarterMenu()` — there is NO Barter DIAL subtype, only BarterExit) and the training menu via `Game.ShowTrainingMenu(trainer)` (the Training subtype exists in the enum but even vanilla never uses it — zero `TRAI` SNAMs in Skyrim.esm). Vanilla contracts (decoded from Skyrim.esm): vendors = `OfferServicesTopic` (Custom, quest DialogueGeneric) with INFOs gated `GetInFaction(JobMerchantFaction)==1 + GetOffersServicesNow(func 255)==1` + TIF fragment calling ShowBarterMenu; trainers = `OffersTrainingTopic` (Custom, quest DialogueTrainers) with per-trainer INFOs gated `GetIsID + GetBaseActorValue(skill)<cap RunOn=Target` + TIF fragment, NPC in JobTrainerFaction + JobTrainer<Skill>Faction, and the menu's skill/cap read from the trainer's **CLAS** (DATA Teaches/MaxTrainingLevel). Our conversion (`dialog_converter.SERVICE_MENU_TOPICS`): the Oblivion Service-type topics `Barter` (57 voiced per-merchant lines) and `Training` (10 generic voiced lines) — previously dropped with all type-5 topics — convert to Custom player topics with synthesized prompts ("What have you got for sale?" / "I would like some training."); every INFO gets an injected service gate (barter: `GetInFaction` OR-chain over the synthesized vendor factions; training: `GetInFaction(TES4JobTrainerFaction)`) and a menu-opening fragment: script-less INFOs share the static scripts `TES4_ShowBarterMenu`/`TES4_ShowTrainingMenu` (in script_convert/static_scripts, auto-deployed + compiled with the generated scripts), while INFOs WITH result scripts (10 TG fence lines) get the menu call appended to their per-INFO TES4_TIF__ fragment by script_convert (same ParentDIAL classification on both sides). A synthetic text-only catch-all INFO ("Take a look." / "Let's begin.") is appended last so every vendor/trainer offers the topic even when no original line's conditions match. Service topics are EXCLUDED from identity/voice-gate inheritance and from the quest-NPC prescan (their 57 merchant GetIsIDs would pollute sibling-topic identity gating). Other Service topics (ServiceRefusal, BarterExit, Repair, Recharge, Travel, ...) stay skipped — no Skyrim mechanic fires them.
+- <a id="service-topics-by-formid"></a>**Service topics are found by FormID, not EditorID**: `SERVICE_MENU_TOPICS` is keyed by the raw export FormID of the engine's hardcoded topics: `0x10F` (barter) and `0x113` (training). Plugins rename them: Nehrim (and its Translation.esp override) call `0x10F` `BarterStart`, so the old EditorID lookup never matched. Nehrim shipped with no barter topic at all, and no Nehrim merchant could open the barter menu. FalloutNV's Training is also `0x113`. The match is on the full raw id (master index `00`, the base game file that owns the engine topic), so a plugin's own new DIAL at `xx00010F` is not taken for it. The other Service topics stay skipped even though Skyrim's subtype table defines the whole family (SERU, REPA, TRAV, TRAI, BAEX, REEX, RECH, RCEX, TREX): zero Skyrim.esm DIALs carry a Service subtype, because Skyrim drives services from Papyrus menus, so the engine would never ask for them.
 - **Trainer data source (2026-07)**: Oblivion stores trainer skill/cap per-NPC in **AIDT** (Teaches S8 @8, MaxTraining U8 @9), NOT the class — 92 of 114 vanilla trainers disagree with their CLAS values (classes are mostly 0/0; even the dedicated Trainer* classes have max=0). Skyrim reads them from the NPC's CLAS, so Phase 0c (`actors.create_trainer_records`) clones each trainer's class with Teaches/MaxTraining replaced from AIDT (deduped per class+skill+cap), points the trainer's CNAM at the clone, and adds the NPC to `TES4JobTrainerFaction`. Trainers of dead skills (Athletics/Acrobatics) or cap 0 are not converted. Vendor buying power: TES5 has no ACBS.BarterGold — a chest-less vendor trades from its own inventory, so barter gold becomes carried Gold001 in CNTO (kept OUT of the DOFT outfit item list).
 - **Run-on-Target conditions are DEAD in Say()-driven topics (2026-07-19)**: Skyrim's `Actor.Say(Topic)` has no dialogue target, so a converted `RunOn=Target` CTDA evaluates against nothing and can never pass. Oblivion drives NPC-NPC/NPC-player scripted dialogue with `Say`/`SayTo`/`StartConversation`, and its INFOs routinely pick lines by the TARGET's race/sex/identity — CharacterGen's Valen Dreth taunts are all race-of-target gated, so the intro froze at stage 6 (no taunt → tauntCount never increments → stage 9/10 never set → the Emperor's escort never descends). Scope: 319 Say-driven topics; 1,924 of their 8,083 INFOs carry ≥1 run-on-target condition. Fix (`dialog_converter.build_say_topic_dispositions` + `convert_ctda(run_on_target_ref/drop_run_on_target)`): scan SCPT bodies + INFO/QUST result scripts for Say/SayTo/StartConversation call sites; a topic whose script target is UNIQUE gets its target-conditions retargeted to `RunOn=Reference` on that ref (player → 0x14 PlayerRef — also correct for menu dialogue, where the target IS the player); topics with mixed/unknown targets DROP target-conditions (call sites already select speaker+topic; auto-pass ≈ intent, never-pass = frozen quest). 156 topics retargeted, 163 drop. Regression: `TestSayTopicRetarget`.
   **Engine-fixed CTDA params must NEVER be load-order remapped (2026-07-22, second cause of the same symptom)**: `GetIsID(Player 0x00000007) [Target]` ("am I addressing the player?") appears on 3,761 INFOs — every stage-gated reveal greeting uses it. A condition evaluates against the RUNTIME actor, and the in-game player's base form is vanilla Skyrim's `0x00000007`, never our converted copy of the TES4 Player record — so remapping the param to `0x01000007` makes the condition unpassable, the reveal greeting never fires, its TIF fragment never sets the `TES4Unlock_*` global, and every unlock-gated topic vanishes (FGC01Rats: Arvena's stage-40 "Please, go find Pinarus, and those mountain lions!" is a revealer for `MountainLionsTOPIC`, which is gated `GetGlobalValue(TES4Unlock_MountainLionsTOPIC)==1`). `dialog_conditions._remap_formid` originally passed engine-fixed ids (index 0, object id < 0x100 — Bethesda hardcodes the same ids in every game) through unchanged; the override-conversion work unified it with `text_reader.remap_formid` (passthrough set = only PlayerRef 0x14) and silently regressed it. The two contracts are genuinely DIFFERENT: record FIELDS referencing the player NPC_ must keep shifting to the converted copy, but CONDITION params must stay engine-fixed. The passthrough now lives in `_remap_formid` itself with a regression test (`test_engine_fixed_param_never_remapped`). Diagnosis method: build the last-known-good commit in a worktree against the same export (skip navmesh via a hardlinked export dir without PGRD.txt), dump both ESMs with `tools/esm/tes5_esm_reader.py`, normalize the synthesized-FormID shift, and diff per-record — the regression was invisible on the affected topics' own records (byte-identical) and only showed on the greeting INFOs.
@@ -490,6 +491,40 @@ for other reasons.)
 **Verify:** `tools/audit/ambient_bark_audit.py --by-source`; regression tests in
 `tests/test_import.py::TestNpcToNpcConversationDrop` (5 tests, incl. the
 fail-safe and the CharGen keep).
+
+#### <a id="engine-fired-say-topics"></a>A script `Say` must not strip an engine topic's target tests
+
+**Code:** `say_topics.build_say_topic_dispositions` (`engine_fired`, `ENGINE_TARGET`),
+`groups._fill_say_dispositions`, `conditions.convert_ctda_list_with_strings(drop_identity_target=)`.
+
+The Say/SayTo scan decides per TOPIC, not per call site. A single bare `Say`
+(no target, so disposition `drop`) therefore stripped every RunOn=Target test
+from a topic the engine also fires. In Oblivion.esm, Baurus's and Glenroy's
+CharacterGen `OnStartCombat` blocks each run `Say Attack`. That dropped the target
+race/faction/sex tests from all 69 `Attack` INFOs, 7 `Hit` INFOs and 444
+`GOODBYE` INFOs. "Die, you Orc filth!" (`0018BD75`) kept only *speaker is not
+an Orc* and fired at players of every race.
+
+A topic `classify_topic` marks as a bark (ATCK, HIT_, GBYE, …) is fired by the
+engine, which supplies a real target: the combat target, or the player for
+GBYE. When such a topic would otherwise be `drop`, it becomes `('target', None)`:
+- **State tests** (race, sex, faction, IsGuard, items) keep RunOn=Target.
+- **Identity tests** (`GetIsID`/`GetIsClass`, `_NO_TARGET_RETARGET_FUNCS`) still
+  drop. They name the NPC a script addressed. The CharacterGen 26→27 bridge is
+  a GOODBYE line (`0005144A`) gated on `GetIsID(UrielSeptim)[Target]` that Baurus
+  speaks via `Say`, which has no target.
+
+Topics already retargeted (`ref`) are unchanged: GREETING, HELLO and Assault
+point at PlayerRef, which is correct for both callers.
+
+Measured on Oblivion.esm: 3 topics switch (`Attack`, `Hit`, `GOODBYE`). 157
+INFOs gain conditions and none lose any: GetInFaction 114, GetIsRace 22,
+GetIsSex 14, IsGuard 11, GetIsCreature 6, other 6. No CharacterGen-owned INFO
+changes. The other scripted GOODBYE speakers (Faustina in MS04, Savlian Matius)
+have no changed lines. Known compromise: a script `Say` of these topics can't
+pass the kept target tests, so Baurus and Glenroy shout the untargeted combat
+lines. Confirmed in game.
+Tests: `tests/test_dialog.py::TestCTDAConversion::test_engine_fired_say_topic_*`.
 
 ---
 
@@ -1685,6 +1720,34 @@ A mention reveal unlocks EVERY gated topic sharing the mentioned FULL name. SI
 has one "Greymarch" DIAL per main quest (SE03, SE04, SE06-SE10); the name map
 used to keep one global per name, so a mention opened only whichever topic was
 written last.
+
+### <a id="never-added-topics"></a>A topic nothing adds never lists
+
+**Code:** `tes5_import/dialogue/unlocks.py:_unreachable_topics`,
+`groups.py:_branch_is_linked`
+
+Oblivion lists a regular (Type-0) topic only after something adds it: an Add-Topics
+list, an `AddTopic` in any script, a choice link, or a spoken line naming it. A
+topic with none of those never reaches the menu. Nehrim authors its scripted
+shouts this way (`SayTo Player NQ00Soldat01`, `SoldatenStehenBleiben`,
+`FuerDieFreiheit`), and some topics nothing uses at all (`FuerTaranor`). Skyrim has
+no "not yet added" state, so they all sat in every NPC's menu. They now get a
+Normal branch; `Say` still reaches them. The name match is by word sequence,
+punctuation ignored, so an ambiguous name errs toward listing.
+
+Only this plugin's own topics are judged (raw index byte `>= num_tes4_masters`): a
+dependent plugin's overrides were added by its master, whose scripts are not in
+this export. Counts: Nehrim.esm 622 topics, Oblivion.esm 39 topics / 146 lines
+(Martin's and Mankar's speeches, SE09Ceremony, `GlenmorilWitches`,
+`TGDirectGiveCoin`), Translation.esp 0. Confirmed in-game.
+
+**The same fix's second half:** `_quest_npc_sets` credited every line to its
+topic's `Quest[0]`. GREETING serves dozens of quests, so a quest whose NPCs are
+named only in its greeting lines got no NPCs, and a condition-free reply behind
+that greeting's choice (Nehrim `NQHeleneWorumGehts`, the bottles line) had no
+speaker fallback: Sentry Morten offered it. Each line now counts toward its own
+`QSTI.Quest`. On Oblivion.esm this widens the fallback on 3 topics / 4 lines
+(`Dark08Choice2A`/`3A` 5 -> 13 NPCs, `MS45Mother` 9 -> 11) and opens none.
 
 ## <a id="info-fragment-emission"></a>INFO fragment emission: one decision function
 
