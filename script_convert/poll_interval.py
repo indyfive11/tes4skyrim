@@ -39,7 +39,7 @@ def active_interval(sc) -> str:
     countdown timer is running (assemble._adaptive_arm): the interval its body was
     written to run at, capped at MIN_INTERVAL.
     """
-    if sc.uses_getsecondspassed or sc.moves_in_poll:
+    if sc.uses_getsecondspassed or sc.moves_in_poll or sc.frame_steps:
         return '0.1'
     if sc.uses_say_timer:
         return '0.15'

@@ -33,6 +33,7 @@ from script_convert.tes4.parser import (
     Mode, parse, split_trailing_comment,
 )
 from script_convert import symbols as _symbols
+from script_convert import frame_steps as _frame_steps
 
 
 # A whole name wrapped in Oblivion's optional quotes: `"MQ01Tate"`.  Anchored,
@@ -791,6 +792,10 @@ class ScriptConverter:
                     'equivalent' % (_expr.emit_source(stmt.target),
                                     _expr.emit_source(stmt.value)))
         target = self._convert_ref(_expr.emit_source(stmt.target), extends)
+        step = _frame_steps.scaled(self.sc, stmt)
+        if step:
+            return _frame_steps.line(
+                target, step[1], _expr.emit(self, step[0], extends))
         # The VALUE'S TYPE comes off the node, not from scanning the rendered
         # text: a command name inside a string literal cannot be mistaken for
         # a call, and arithmetic is typed by its operands rather than by

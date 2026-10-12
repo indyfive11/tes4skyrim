@@ -1884,6 +1884,86 @@ Morroblivion 29, Oblivion 9, including MQ09's bridge and the SEXedPuzStatue
 puzzle). Inside a GameMode poll it is now `SpinAxis` at its authored rate; the
 Papyrus fallback turns one pass's worth.
 
+## A variable's per-frame step is a rate too
+<a id="variable-steps-are-rates"></a>
+
+**Code:** `script_convert/frame_steps.py`, `converter.py:_assign`,
+`assemble.py:_load_facts`, `poll_interval.py:active_interval`.
+
+`set alpha to alpha - 0.01` ahead of `SetActorAlpha alpha` fades 0.01 per
+FRAME. Jyggalag's death fade (`SE13JyggylagSCRIPT`) runs that for four seconds
+and then disables him: at 30 frames a second he is gone after three. A converted
+poll passes every 0.1 s at best, so in four seconds it took off 0.4 at most and
+he popped out half visible. The same holds for a variable that ends in a pose:
+an orbit radius stepped by 0.1 a pass changed 0.37 units a second where TES4
+changed 3 (read out of two saves).
+
+A step is scaled when all of this holds:
+
+- it is `set v to v ± c` or `let v += c` with `c` a number, in a GameMode or
+  ScriptEffectUpdate block of an object or magic-effect script (a TES4 quest
+  script ran every `fQuestDelayTime`, not every frame);
+- `v` is a float variable of the script, and its value ends, directly or
+  through other variables, in an argument of `SetPos`, `SetAngle`, `SetScale`,
+  `Rotate`, `MoveTo`, `PositionWorld`, `PositionCell`, `SetActorAlpha` or `saa`;
+- `v` is never compared with `==` or `!=` (a scaled step skips values);
+- the step is not a ONE-OFF: no enclosing branch switches itself off with one
+  of its own statements — a new value written to something its conditions read
+  (`if stage == 1 … set stage to 2`; a flag kept on a quest or a reference
+  counts, a drain such as `set timer to timer - GetSecondsPassed` does not),
+  the `SetStage` of a quest they read, or an `if` whose every branch does one
+  of those. The statements after `if done == 1 / return / endif` are guarded
+  by that test like an `if` body. A switch behind a test of its own, one `if`
+  deeper, leaves the branch running: Jyggalag's step runs every pass until
+  another branch ends the stage;
+- the step is not COUNTED OUT: no enclosing condition tests a variable that a
+  poll block steps by a fixed amount and that is not scaled itself
+  (`if n < 100 … set n to n + 1`). Such a branch runs a fixed number of FRAMES,
+  so the step is a share of a total; scaling it would apply the total several
+  times over. A timer drained by `GetSecondsPassed` does not count passes;
+- the step is not a JUMP: under a condition that names `v` itself, a step as
+  large as the limit it is tested against, as the whole range the script tests
+  `v` against, or of half a turn or a whole one
+  (`if angle > 360 … set angle to angle - 360`).
+
+The scaled step is `c * 30 * TES4_SecondsPassed`: frames per second (the rate
+[GameMode steps](#gamemode-steps-are-rates) assume) times the measured time of
+the pass, which every poll that reads `GetSecondsPassed` or moves a reference
+already has. A script that had neither gains the measurement and the 0.1 s
+poll interval.
+
+Left alone on purpose: whole-number counters (a scaled counter skips values the
+script may test for), steps inside a loop, and variables that reach nothing
+seen — timers such as `saylength + 4`.
+
+**What the rule does not see** (each errs toward the old behaviour unless noted):
+
+- **A step whose amount is not a number** (`zpos + 0.00025 * GetRandomPercent`,
+  `z - turbo * sina`) is left alone. Of the 31 such steps on a seen float in
+  the five plugins looked at, 14 are true per-frame rates and 17 are not: they
+  recompute an absolute value every pass (`set fy to fstarty + fy` in
+  `SeigeEngineEffectsSCRIPT`, an orbit's origin plus offset) or place
+  something once. Scaling by form alone would break those.
+- **A state index advanced by `set state to state + 1`** reads as a pass
+  counter, and **one `==` test of the variable anywhere in the script** rules
+  the variable out. Neither fires in those plugins.
+- **SCALED WRONGLY: a wrap-around whose step is neither a turn, nor as large as
+  a literal limit, nor as wide as the tested range** (`if h > 100 … set h to
+  h - 90`), and a one-off switched off by something the branch does not write
+  (another script, `Disable`). None exists in those plugins; a plugin that
+  has one gets a jump about three times too large at a 0.1 s pass.
+- **A hitch or a menu shorter than the 2 s clamp** of the elapsed-time
+  measurement is applied whole: one pass can stand for up to 60 frames.
+
+Census of Oblivion.esm, Knights.esp, DLCFrostcrag.esp and the Unofficial Patch
+(`frame_steps` on every script): **13 steps in 10 scripts** are scaled, twelve
+of them actor fades (Jyggalag, Sheogorath, Haskill, the gnarl of SE03, the
+staging ghosts of SE32, a test hound, the three Frostcrag atronachs) and one a
+test object's size; 21 float steps reach nothing seen; 4 sit in quest scripts.
+No other line of the 19,403 converted scripts of those plugins changes.
+Guarded by `tests/test_frame_steps.py`. Not looked at in game yet.
+
+
 ## The placed pose: `GetStartingPos` / `GetStartingAngle`
 <a id="starting-pose"></a>
 

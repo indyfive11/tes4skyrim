@@ -29,6 +29,7 @@ from script_convert import symbols as _symbols
 from script_convert.poll_interval import (QUEST_DELAY_CALL, active_interval,
                                           float_literal, interval_literal,
                                           quest_delay_helper)
+from script_convert.frame_steps import frame_steps
 from script_convert.poll_motion import relative_sets
 from script_convert import start_pose
 from script_convert.emit import script as _script
@@ -270,6 +271,7 @@ def _load_facts(conv, tree) -> None:
 
     sc.suppressed_fall_damage = 'resetfalldamagetimer' in called
     sc.declares_quest_delay = 'fquestdelaytime' in declared
+    sc.frame_steps = frame_steps(tree, getattr(conv, '_script_extends', ''))
     _load_time_facts(sc, tree, called, btypes)
     sc.uses_timer = 'timer' in names
     sc.uses_say = bool(called & {'say', 'sayto'})
@@ -338,8 +340,9 @@ def _load_time_facts(sc, tree, called: set, btypes: set) -> None:
     """Does the poll measure real elapsed time, and does it move references?
 
     A poll that moves glides each step over the MEASURED gap between passes,
-    so it measures one too.  The elapsed variable is typed so a TES4 `short`
-    timer decremented by it gets its `as Int` cast.
+    so it measures one too, and so does a poll that scales a variable's step.
+    The elapsed variable is typed so a TES4 `short` timer decremented by it
+    gets its `as Int` cast.
     """
     sc.uses_getsecondspassed = 'getsecondspassed' in called
     polls = [b for b in (tree.blocks if tree else ())
@@ -347,7 +350,7 @@ def _load_time_facts(sc, tree, called: set, btypes: set) -> None:
     sc.moves_in_poll = any(e.called in ('setpos', 'setangle', 'rotate')
                            for b in polls for e in N.walk_exprs_in(b.body))
     sc.relative_sets = relative_sets(polls) if sc.moves_in_poll else {}
-    sc.gsp_realtime = sc.moves_in_poll or bool(
+    sc.gsp_realtime = sc.moves_in_poll or bool(sc.frame_steps) or bool(
         (called & {'getsecondspassed', 'scripteffectelapsedseconds'})
         and (btypes & {'gamemode', 'scripteffectupdate'}))
     if sc.gsp_realtime:
