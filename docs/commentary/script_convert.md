@@ -1887,7 +1887,7 @@ Papyrus fallback turns one pass's worth.
 ## A variable's per-frame step is a rate too
 <a id="variable-steps-are-rates"></a>
 
-**Code:** `script_convert/frame_steps.py`, `converter.py:_assign`,
+**Code:** `script_convert/frame_steps.py`, `converter.py:emit_assignment`,
 `assemble.py:_load_facts`, `poll_interval.py:active_interval`.
 
 `set alpha to alpha - 0.01` ahead of `SetActorAlpha alpha` fades 0.01 per
