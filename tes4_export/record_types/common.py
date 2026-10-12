@@ -104,7 +104,9 @@ def emit_effects(lines: list, rec: Record):
     TES4 effect structure: repeating groups of EFID + EFIT [+ SCIT] [+ FULL].
     EFID = 4-char effect code
     EFIT = struct(12): u32 magnitude, u32 area, u32 duration, u32 type, u32 actorValue
-    SCIT = struct(12): formid scriptEffect, u32 school, 4-char visualEffect
+    SCIT = formid scriptEffect [, u32 school, 4-char visualEffect]: 4, 12 or 16 bytes
+    A SCIT is written as `ScriptEffect[i]` with `i` the effect it follows.
+    See: docs/commentary/tes5_import_magic.md#script-effect-index
     """
     efids = get_all_subrecords(rec, "EFID")
     efits = get_all_subrecords(rec, "EFIT")
@@ -135,17 +137,19 @@ def emit_effects(lines: list, rec: Record):
             lines.append(f"{pfx}.Type={effect_type_names.get(etype, str(etype))}")
             lines.append(f"{pfx}.ActorValue={actor_val}")
 
-    # SCIT entries (script effects)
-    scits = get_all_subrecords(rec, "SCIT")
-    for i, scit in enumerate(scits):
-        pfx = f"ScriptEffect[{i}]"
-        if len(scit.data) >= 12:
-            se_formid = struct.unpack_from("<I", scit.data, 0)[0]
-            se_school = struct.unpack_from("<I", scit.data, 4)[0]
-            se_visual = scit.data[8:12].decode("ascii", errors="replace")
+    effect = -1
+    for sub in rec.subrecords:
+        if sub.type == "EFID":
+            effect += 1
+        elif sub.type == "SCIT" and len(sub.data) >= 4 and 0 <= effect < count:
+            pfx = f"ScriptEffect[{effect}]"
+            se_formid = struct.unpack_from("<I", sub.data, 0)[0]
             lines.append(f"{pfx}.FormID={get_formid_str(se_formid)}")
-            lines.append(f"{pfx}.School={se_school}")
-            lines.append(f"{pfx}.Visual={se_visual}")
+            if len(sub.data) >= 12:
+                se_school = struct.unpack_from("<I", sub.data, 4)[0]
+                se_visual = sub.data[8:12].decode("ascii", errors="replace")
+                lines.append(f"{pfx}.School={se_school}")
+                lines.append(f"{pfx}.Visual={se_visual}")
 
 
 def emit_conditions(lines: list, rec: Record, prefix: str = "Condition"):

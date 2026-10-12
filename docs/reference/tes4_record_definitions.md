@@ -1923,7 +1923,7 @@ Each effect is a group of subrecords:
 | 16 | 4 | u32 | Type: 0=Self, 1=Touch, 2=Target |
 | 20 | 4 | s32 | Actor Value (ActorValueEnum) |
 
-**SCIT Script Effect struct (16 bytes, always paired with FULL):**
+**SCIT Script Effect struct (4, 12 or 16 bytes: the script alone, or with school and visual; follows the EFIT of the effect it belongs to):**
 
 | Offset | Size | Type | Field |
 |--------|------|------|-------|

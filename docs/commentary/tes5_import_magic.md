@@ -433,6 +433,34 @@ Two script-side gaps had to be closed for these to be more than inert records
   perk window, not DamageResist
   ([fall damage is a perk](script_convert.md#fall-damage-is-a-perk)).
 
+### <a id="script-effect-index"></a>A script entry is numbered by the effect it follows
+
+A TES4 script effect's `SCIT` follows the `EFID` + `EFIT` of the effect it
+belongs to. `emit_effects` writes it as `ScriptEffect[i]` with `i` that effect's
+index, and every reader asks by effect index (`equipment._slot_mgef`,
+`magic_variants.build_seff_variants`, `object_scripts.build_magic_effect_script_plan`,
+`morroblivion_magic._script_effects`).
+
+The exporter used to number the entries 0, 1, ... in the order they occur. A
+record whose script effect is not its first effect then had its script under
+index 0 and none at the script effect's own index: the effect was pointed at
+the plain script-less `SEFF` record and its script was converted for nothing.
+Counted on the game's files: Oblivion.esm 28 of 143 script effects (23 spells,
+4 enchantments, 1 potion), Knights.esp 1 of 7, DLCBattlehornCastle.esp 1 of 1,
+DLCSpellTomes.esp 1 of 1, the Unofficial Oblivion Patch 3 of 13. No record in
+those files has two script effects behind a plain one, the shape that would
+have handed the first script effect the second one's script.
+
+A `SCIT` is 4, 12 or 16 bytes: the script alone, or the script with its school
+and visual. The exporter skipped the 4-byte form, so those effects lost their
+script the same way: 5 more in Oblivion.esm (`MS10ParalyzeSpell` and four test
+spells; a sixth names no script). `ScriptEffect[i].School` and `.Visual` are
+written only when the entry holds them; nothing reads either.
+
+With both, 140 of Oblivion.esm's 143 script effects find a script against 107
+(the other three name a null script), and 93 scripts are reached by an effect
+against 76.
+
 <a id="bound-items"></a>
 ### Bound items — DONE 2026-08-07 (user-confirmed in-game)
 
