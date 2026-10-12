@@ -14,6 +14,7 @@ import re
 import struct
 
 from script_convert.constants import safe_property_name
+from script_convert.stage_library import holds_library_call
 from script_convert.tes5.blocks import (
     Kind,
     classify,
@@ -197,15 +198,18 @@ def state_writes_before_setstage(lines: list) -> list:
 
     Only literal assignments, and only from a FLAT tail: `classify` is the
     shared barrier for a nested block that may depend on what the stage did.
+    A tail that calls a function-library stage is left as written: a write
+    after that call must not become its input.
     The result is re-fixed so no `Start()` sits below a write to its own quest.
     See: docs/commentary/script_convert.md#writes-before-setstage
+    See: docs/commentary/script_convert.md#stage-function-libraries
     """
     first = next((i for i, ln in enumerate(lines) if _SETSTAGE_RE.match(ln)),
                  None)
     if first is None:
         return lines
     tail = lines[first + 1:]
-    if any(classify(ln) is not Kind.OTHER for ln in tail):
+    if any(classify(ln) is not Kind.OTHER for ln in tail) or holds_library_call(tail):
         return lines
     hoist = [ln for ln in tail if _is_state_write(ln)]
     if not hoist:

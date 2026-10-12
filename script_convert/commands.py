@@ -34,6 +34,7 @@ from script_convert.emit.commands import emit_row
 from script_convert.commands_falloutnv import FALLOUT_HANDLERS
 from script_convert.message_menus import PAGE_OPTIONS
 from script_convert.poll_motion import axis_key, rate_scale
+from script_convert import stage_library
 from script_convert import start_pose
 from script_convert.emit import expr as _expr
 from script_convert.constants import typed_already
@@ -133,10 +134,12 @@ def stage(ctx, call) -> str:
     TES4 spells the quest as the first argument and the stage as the second;
     Papyrus makes the quest the receiver. SetStage on a quest with a script is
     its `TES4SetStage`, which keeps the variables a start resets; without
-    one, `TES4Polyfill.SetStage`. Both re-check the alias packages.
+    one, `TES4Polyfill.SetStage`. Both re-check the alias packages. On a
+    function-library quest it is a direct call.
     See: docs/commentary/script_convert.md#quest-property-never-downgrades
     See: docs/commentary/script_convert.md#setstage-start-keeps-variables
     See: docs/commentary/script_convert.md#setstage-re-evaluates-alias-packages
+    See: docs/commentary/script_convert.md#stage-function-libraries
     """
     parts = ctx.arg_srcs()
     quest_src = parts[0].strip() if parts else (call.ref or '')
@@ -147,6 +150,9 @@ def stage(ctx, call) -> str:
         ctx.sc.property_refs[prop] = 'Quest'
     if call.name == 'setstage':
         stage_no = call.arg(1, "0") if len(parts) > 1 else 0
+        direct = stage_library.call_text(ctx, quest_src, prop, stage_no)
+        if direct:
+            return direct
         script = ctx.xref.get_quest_script_type(quest_src) if ctx.xref else 'Quest'
         if script != 'Quest':
             return f'{script}.TES4SetStage({prop} as {script}, {stage_no})'

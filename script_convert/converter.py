@@ -152,6 +152,12 @@ class ScriptConverter:
         # Per-script state lives on ONE object, replaced per script rather
         # than reset field by field (see context.ScriptContext).
         self.sc = ScriptContext()
+        #: The function-library quest (lowercase) whose own stage code is being converted, or ''.
+        self.own_stage_library = ''
+        #: Library quests the statements now being emitted hold a turn on.
+        self.turn_span: set = set()
+        #: Turns opened so far, for their local names.
+        self.turn_seq = 0
 
 
     @property
@@ -543,6 +549,7 @@ class ScriptConverter:
                                 quest_delay=prev.quest_delay,
                                 on_book=prev.on_book,
                                 carriable_only=prev.carriable_only)
+        self.turn_span = set()
         return _assemble.build(self, name, source, extends, editor_id)
 
     def convert_fragment(self, source: str, extends: str = 'Quest') -> list[str]:
@@ -562,6 +569,7 @@ class ScriptConverter:
             property_refs=dict(prev.property_refs),
             cell_families=dict(prev.cell_families),
             scro_aliases=dict(prev.scro_aliases))
+        self.turn_span = set()
         # A fragment body runs on the ENGINE'S DISPATCH PATH: a quest stage
         # cannot advance, and an INFO cannot finish, while the fragment is
         # still executing.  A blocking SayLine there stalls the transition

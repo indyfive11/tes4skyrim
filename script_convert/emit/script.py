@@ -19,6 +19,7 @@ each statement's trailing source comment.
 from __future__ import annotations
 
 from script_convert.constants import HALTED_VAR, safe_property_name
+from script_convert import stage_library
 from script_convert.stage_latch import guard_stage_timer
 from script_convert.emit import stmt as S
 from script_convert.tes4 import nodes as N
@@ -48,16 +49,30 @@ def emit_body(conv, body, extends: str, depth: int = 0) -> list[str]:
     Recurses through `If`/`While` rather than tracking a running depth counter,
     so a body cannot come out unbalanced and a `Return` cannot strand the lines
     that follow it inside the wrong block.  Every body is returned with each
-    `Q.Start()` above the writes to `Q` it would reset.
+    `Q.Start()` above the writes to `Q` it would reset.  A function-library
+    call and its neighbours get their turn here.
     See: docs/commentary/script_convert.md#stopquest-converts-stop-run-bit
+    See: docs/commentary/script_convert.md#stage-function-libraries
     """
     body = _drop_duplicate_say(conv, body)
     animated = _animated_targets(body)
     out = []
     open_walk = conv.sc.refwalk_var
     conv.sc.refwalk_var = ''
-    for st in body:
+    opening, closing = {}, {}
+    for first, last, key in stage_library.turn_spans(conv, body):
+        opening.setdefault(first, []).append((last, key))
+    for i, st in enumerate(body):
+        for last, key in opening.get(i, ()):
+            enter, leave = stage_library.open_turn(
+                conv, key, stage_library.quest_source(_turn_call(conv, body, i, last, key)),
+                INDENT * depth)
+            out.append(enter)
+            closing.setdefault(last, []).append((leave, key))
         out += _deferred_destroy(emit_stmt(conv, st, extends, depth), animated)
+        for leave, key in closing.pop(i, ()):
+            out.append(leave)
+            conv.turn_span.discard(key)
     # An OBSE ref-walk's `While` is opened by a `Label` mid-body and its `Goto`
     # cannot close it in place (the Goto sits inside the loop's own `if` nest,
     # and `EndWhile` there would cross those blocks).  The walk therefore ends
@@ -67,6 +82,12 @@ def emit_body(conv, body, extends: str, depth: int = 0) -> list[str]:
         conv.sc.refwalk_labels = set()
     conv.sc.refwalk_var = open_walk
     return hoist_quest_start_above_writes(out)
+
+
+def _turn_call(conv, body, first: int, last: int, key: str):
+    """The stage-call statement of the run `first..last` on the library `key`."""
+    return next(st for st in body[first:last + 1]
+                if stage_library.library_call(conv, st) == key)
 
 
 def emit_stmt(conv, st: N.Stmt, extends: str, depth: int) -> list[str]:

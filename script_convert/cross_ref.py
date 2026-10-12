@@ -414,6 +414,8 @@ class CrossRefGraph:
         self.remote_writes: set[tuple[str, str]] = set()
         #: Variable names assigned through an owner no script could be found for; these veto by name.
         self.remote_write_names: set[str] = set()
+        #: Quest EditorID (lowercase) -> its stage indices, for a quest whose stages are called as functions.
+        self.stage_libraries: dict[str, tuple] = {}
         # base FormID (upper) -> its ONE placed ref FormID; lazily inverted
         # from record_base by unique_placed_ref().
         self._base_to_unique_ref: 'dict[str, str] | None' = None
@@ -1257,7 +1259,10 @@ class CrossRefGraph:
     def build_script_indexes(self, scpt_path: str) -> None:
         """Every index read off script SOURCE; the one entry both graph builders call."""
         self.build_ref_as_int_map(scpt_path)
-        self.index_remote_writes(_script_texts(os.path.dirname(scpt_path)))
+        export_dir = os.path.dirname(scpt_path)
+        texts = _script_texts(export_dir)
+        self.index_remote_writes(texts)
+        self.index_stage_libraries(export_dir, texts)
 
     def index_remote_writes(self, texts) -> None:
         """Record every `set Owner.var to X` in `texts` against the script that OWNS var.
@@ -1292,6 +1297,43 @@ class CrossRefGraph:
         var = var_name.lower()
         return ((script_edid or '').lower(), var) in self.remote_writes \
             or var in self.remote_write_names
+
+    def index_stage_libraries(self, export_dir: str, texts) -> None:
+        """Find the quests of the plugin and its masters whose stages are called as functions.
+
+        Each quest is judged by the build that OWNS its record -- that plugin's
+        scripts and conditions and its masters' -- so a plugin built later calls
+        the functions its master's build wrote.  A dependent's own record
+        replaces its master's, as in the record scan.
+        See: docs/commentary/script_convert.md#stage-function-libraries
+        """
+        owners, views = {}, {}
+        for d in _export_dirs_with_masters(export_dir):
+            for rec in _export_records(os.path.join(d, 'QUST.txt')):
+                key = rec.get('EditorID', '').lower()
+                stages = _bare_stages(rec) if key else None
+                if stages:
+                    owners[key] = (d, rec.get('FormID', '').upper(), stages)
+                else:
+                    owners.pop(key, None)
+        self.stage_libraries = {}
+        for key, (d, fid, (indices, scripts)) in owners.items():
+            if d not in views:
+                own = texts if _same_dir(d, export_dir) else _script_texts(d)
+                views[d] = ([_strip_comments(t) for t in own],
+                            _condition_stage_readers(d))
+            clean, readers = views[d]
+            if (readers is not None and fid and fid not in readers
+                    and _called_as_function(key, scripts, clean)
+                    and not _stage_is_read(key, clean)):
+                self.stage_libraries[key] = indices
+
+    def library_stages(self, quest_name: str) -> tuple:
+        """The stage indices of a function-library quest; empty for any other name.
+
+        See: docs/commentary/script_convert.md#stage-function-libraries
+        """
+        return self.stage_libraries.get((quest_name or '').strip().strip('"').lower(), ())
 
     def is_remote_ref_var(self, owner_edid: str, var_name: str) -> bool:
         """Check if a variable on a remote record's script is ref-typed in TES4.
@@ -1377,6 +1419,142 @@ def _script_texts(export_dir: str) -> list:
                 if m:
                     texts.append(unescape_value(m.group(1)))
     return texts
+
+
+#: QUST `DATA.Flags` bit: a stage that has run may be set again.
+_ALLOW_REPEATED_STAGES = 0x08
+
+#: Condition function ids that read a quest's stage: GetStage, GetStageDone.
+_STAGE_READ_FUNCTIONS = frozenset((58, 59))
+
+#: Export files whose records carry conditions.
+_CONDITION_FILES = ('IDLE.txt', 'INFO.txt', 'PACK.txt', 'QUST.txt')
+
+#: One exported condition, on any record or stage log entry.
+_CONDITION_RAW_RE = re.compile(r'[\w.\[\]]*Condition\[\d+\]\.Raw=([0-9A-Fa-f]{32,})')
+
+#: The line that closes a script block; a fragment has none and runs to its end.
+_BLOCK_END_RE = re.compile(r'^[ \t]*end[ \t\r]*$', re.I | re.M)
+
+#: What stands before the target of an assignment on its line.
+_WRITE_HEAD_RE = re.compile(r'[ \t]*(?:set|let)[ \t]+', re.I)
+
+
+def _bare_stages(rec: dict):
+    """(stage indices, stage scripts) when every stage of a repeat-stage quest is one bare result script.
+
+    None when the quest has no script, no stage, or a stage with journal text,
+    a condition, the complete-quest flag, no result script or several entries.
+    See: docs/commentary/script_convert.md#stage-function-libraries
+    """
+    flags = _int_field(rec, 'DATA.Flags', 0) or 0
+    count = _int_field(rec, 'StageCount') or 0
+    if not flags & _ALLOW_REPEATED_STAGES or not count or not rec.get('SCRI', '').strip('0'):
+        return None
+    indices, scripts = [], []
+    for i in range(count):
+        log = f'Stage[{i}].Log[0].'
+        script = unescape_value(rec.get(log + 'ResultScript', ''))
+        if (_int_field(rec, f'Stage[{i}].LogCount') != 1 or not script.strip()
+                or rec.get(log + 'Text', '')
+                or _int_field(rec, log + 'ConditionCount')
+                or (_int_field(rec, log + 'Flags', 0) or 0) & 0x01):
+            return None
+        indices.append(_int_field(rec, f'Stage[{i}].Index') or 0)
+        scripts.append(script)
+    return tuple(sorted(set(indices))), scripts
+
+
+def _stage_call_re(quest: str):
+    """A `SetStage <quest> <n>` statement, the quest quoted or not."""
+    return re.compile(r'^[ \t]*setstage[ \t]+"?%s"?(?=[ \t,])' % re.escape(quest),
+                      re.I | re.M)
+
+
+def _called_as_function(quest: str, stage_scripts: list, texts: list) -> bool:
+    """Does a stage of `quest` call another, or a caller read the quest's variables after a call?
+
+    Either is the mark of a call that returns a value; a quest whose stages
+    only do things is left on the engine's path.
+    See: docs/commentary/script_convert.md#stage-function-libraries
+    """
+    call = _stage_call_re(quest)
+    if any(call.search(script) for script in stage_scripts):
+        return True
+    read = re.compile(r'\b%s[ \t]*\.[ \t]*\w+' % re.escape(quest), re.I)
+    return any(_reads_after_call(text, call, read) for text in texts)
+
+
+def _reads_after_call(text: str, call, read) -> bool:
+    """Is a variable of the quest READ between a stage call and the end of its block?"""
+    for m in call.finditer(text):
+        tail = text[m.end():]
+        stop = _BLOCK_END_RE.search(tail)
+        if stop:
+            tail = tail[:stop.start()]
+        for hit in read.finditer(tail):
+            head = tail[tail.rfind('\n', 0, hit.start()) + 1:hit.start()]
+            if not _WRITE_HEAD_RE.fullmatch(head):
+                return True
+    return False
+
+
+def _stage_is_read(quest: str, texts: list) -> bool:
+    """Does any script read the stage of `quest` (GetStage / GetStageDone)?"""
+    read = re.compile(r'\bgetstage(?:done)?\b[ \t(]*"?%s\b' % re.escape(quest), re.I)
+    return any(read.search(text) for text in texts)
+
+
+def _condition_stage_readers(export_dir: str):
+    """FormIDs (in `export_dir`'s index space, uppercase) of the quests whose stage a condition reads.
+
+    None when a condition file is there and cannot be read: what it holds is
+    then unknown, and no quest of that build may be called a library.
+    """
+    readers = set()
+    for d in _export_dirs_with_masters(export_dir):
+        remap = _index_remap(export_dir, d)
+        for name in _CONDITION_FILES:
+            lines = _condition_lines(os.path.join(d, name))
+            if lines is None:
+                return None
+            for raw in lines:
+                data = bytes.fromhex(raw[:32])
+                if int.from_bytes(data[8:12], 'little') in _STAGE_READ_FUNCTIONS:
+                    fid = '%08X' % int.from_bytes(data[12:16], 'little')
+                    readers.add((fid if remap is None else _rekey(fid, remap)).upper())
+    return readers
+
+
+def _condition_lines(path: str):
+    """The hex of every exported condition in one file; [] when it is absent, None when unreadable."""
+    if not os.path.isfile(path):
+        return []
+    try:
+        with open(path, 'r', encoding='utf-8', errors='replace') as f:
+            return [m.group(1) for m in map(_CONDITION_RAW_RE.match, f) if m]
+    except OSError:
+        return None
+
+
+def _same_dir(a: str, b: str) -> bool:
+    """Do two paths name one folder?"""
+    return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+
+
+def _export_records(path: str):
+    """Each record of one export file as a field dict; nothing when the file is missing."""
+    lines = None
+    for line in _export_lines(path):
+        text = line.rstrip('\r\n')
+        if text.startswith('---RECORD_BEGIN---'):
+            lines = []
+        elif text.startswith('---RECORD_END---'):
+            if lines:
+                yield _record_fields(lines)
+            lines = None
+        elif lines is not None:
+            lines.append(text)
 
 
 def _export_lines(path: str):

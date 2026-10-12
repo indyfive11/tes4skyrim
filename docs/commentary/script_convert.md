@@ -3173,6 +3173,80 @@ list, as are SKSE's `GetNthAlias`), about a frame each, the same stall the
 combat queue removed from the Nehrim mine exit. Each alias runs on its own
 thread, and the caller pays one `SendModEvent`.
 
+## A quest whose stages are called as functions (2026-10-11, confirmed in game)
+<a id="stage-function-libraries"></a>
+
+**Symptom:** three objects that orbit a point jump about instead: each computes
+its sine and cosine through a "maths" quest, and gets another object's.
+
+**Cause:** before script extenders a TES4 author wrote a function as a quest
+stage: `set Lib.in1 to X`, `SetStage Lib 15`, read `Lib.out`; a stage may call
+another the same way. TES4 runs one script at a time, so the shared variables
+are safe. Converted, every caller's pass runs at once, and the engine's
+`SetStage` is latent: it returns only after the stage's fragment has finished,
+frames later. Read out of ten saves of a third-party plugin, 4 of 30 callers
+held their own result, 11 another caller's, 10 a value the function had been
+applied to twice or three times, 5 a half-way value; a pass took 0.4 to 0.5 s
+against 0.1 s intended.
+
+**Which quests.** `CrossRefGraph.index_stage_libraries` names a quest a
+function library when all of these hold:
+
+- it allows repeated stages and has a script;
+- every stage is one log entry with a result script and no journal text, no
+  condition and no complete-quest flag;
+- it is called as a function: a stage's script sets another stage of the same
+  quest, or some script reads one of the quest's variables after setting a
+  stage and before its block ends;
+- nothing reads its stage: no `GetStage` / `GetStageDone` in a script, and no
+  condition with those functions on an IDLE, INFO, PACK or QUST record. A
+  condition file that is there and cannot be read means no library at all.
+
+The first three are the idiom; the last makes the direct call unobservable.
+Each quest is judged by the build that OWNS its record: that plugin's scripts
+and conditions and its masters'. A plugin built later therefore gets the same
+answer as its master's own build, and calls the functions that build wrote; a
+caller or a stage read it adds changes nothing. Oblivion.esm has two quests
+that pass the first two (`Arena`, `SENQDMania`); neither is called as a
+function, so both stay on the engine's path. Oblivion.esm, Knights.esp,
+DLCFrostcrag.esp and the Unofficial Oblivion Patch convert byte-identically.
+Both graph builders reach the index through `build_script_indexes`, which
+reads the QUST files itself.
+
+**Direct call.** A library's fragment script carries `TES4RunStage` (an If chain
+over its stages; the engine's `SetStage` for any other number) and the Globals
+`TES4CallStage` / `TES4LockedStage`. `SetStage Lib n` converts to one of them,
+and inside the library's own stage code to a call of the sibling
+`Fragment_Stage_NNNN_Item_0`. The engine's stage number no longer moves for
+such a quest. A stopped library is started first, through its `TES4Start`.
+
+**Taking turns.** A direct call is fast, but each read or write of the quest's
+variables is a call into another script and lets other threads in; the turn is
+what makes the result the caller's own. `emit_body` wraps the stage call and
+the plain statements next to it that read or write the library's variables in
+`TES4Enter` ... `TES4Leave`; a call with no such neighbour takes its turn inside
+`TES4LockedStage`. An `if` that touches the library joins the run when nothing
+in it can leave early (`Return`, a label, a jump), so a result tested right
+after the call is the caller's own; a loop never joins. Two libraries used in
+one body each hold their own turn. A turn is a number: `TES4EndTurn` gives back
+only the turn that still owns, so a caller that waited out `TURN_TRIES` frames
+and took the turn anyway cannot be unlocked by the one it replaced.
+
+`conversation_sequence.state_writes_before_setstage` moves a dialogue result's
+plain writes ahead of its first stage call. It leaves a result that calls a
+library as written: moved, `set Lib.in1 to 0` after the call became the call's
+input.
+
+**Limits.** The library's own quest script reads its variables bare, so a call
+it makes takes a turn for the call only. A plugin built later against this one,
+or the console, can still read a stage number that no longer moves. `Start()` on
+a stopped library re-initialises the fragment script and with it the turn: the
+calls around a start are unguarded. A caller that spreads the input, the call
+and the result over statements that do not touch the library holds the turn for
+the adjacent ones only, and a result tested in a loop or in a branch that can
+return is read outside the turn. A lone call in a dialogue or stage fragment
+can wait up to `TURN_TRIES` frames for its turn.
+
 ## ResetInterior sends moved-in references home (2026-09-24, confirmed in game)
 <a id="resetinterior-sends-moved-refs-home"></a>
 

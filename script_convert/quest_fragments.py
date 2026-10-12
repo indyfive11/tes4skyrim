@@ -21,6 +21,7 @@ from script_convert.scro_refs import (
     resolve_scro_aliases,
     scro_list,
 )
+from script_convert.stage_library import library_functions
 from script_convert.symbols import property_declarations
 
 #: Script-scope re-entrancy latch for the modal chargen menus.
@@ -112,8 +113,10 @@ def quest_fragment_psc(rec: dict, edid: str, xref: CrossRefGraph,
     """(script name, Papyrus source) for one quest's stage fragments.
 
     A quest with authored objectives displays none of its own: its stage
-    indices are not objective indices.
+    indices are not objective indices.  A function-library quest also gets its
+    turn-taking and direct-call functions.
     See: docs/commentary/script_convert.md#one-objective-per-stage
+    See: docs/commentary/script_convert.md#stage-function-libraries
     """
     plan = (superseded_stages(rec, fragments),
             sweep_targets(rec, fragments, edid))
@@ -121,6 +124,8 @@ def quest_fragment_psc(rec: dict, edid: str, xref: CrossRefGraph,
     conv = ScriptConverter(xref)
     preload_scro_refs(conv, rec, xref)
     script_name = papyrus_script_name(edid, script_prefix('_QF_'))
+    library = xref.library_stages(edid)
+    conv.own_stage_library = edid.lower() if library else ''
     body, shown, chargen_latch = [], set(), False
     for frag in fragments:
         show = synthesize and bool(frag[2]) and frag[0] not in shown
@@ -131,7 +136,9 @@ def quest_fragment_psc(rec: dict, edid: str, xref: CrossRefGraph,
         chargen_latch = chargen_latch or conv.sc.uses_chargen_menus
     quest_globals = sorted({g for (q, _s), gs in stage_reveals.items()
                             if q == edid.lower() for g in gs})
+    turns = (library_functions(script_name, xref.get_quest_script_type(edid), library)
+             if library else [])
     lines = ([f'ScriptName {script_name} extends Quest Hidden', '']
              + _declarations(conv, quest_globals, chargen_latch)
-             + body + conv.get_cell_family_helpers())
+             + body + turns + conv.get_cell_family_helpers())
     return script_name, '\n'.join(lines)
