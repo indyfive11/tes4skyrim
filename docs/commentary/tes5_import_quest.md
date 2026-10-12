@@ -4,6 +4,7 @@
 
 ## Contents
 
+- [Quest EditorIDs that clash with Skyrim](#quest-editorids-that-clash-with-skyrim)
 - [Quest conversion: bugs found and fixed](#quest-conversion-bugs)
 - [Bugs found and FIXED on this branch](#bugs)
 - [Quest script conversion: defects found and fixed](#quest-script-conversion-defects)
@@ -93,6 +94,34 @@ The MASTERS' scripts are indexed alongside this plugin's (keyed on the
 `master_export` key, this plugin's space — see `_collect_scpts`): a dependent
 plugin's actor can carry one of its master's scripts, and missing it means the
 relocation never happens, so every reason above silently applies.
+
+## Quest EditorIDs that clash with Skyrim
+<a id="quest-editorids-that-clash-with-skyrim"></a>
+
+**Code:** `tes5_import/base/vanilla_quests.py:engine_quest_edid`, used by
+`convert_QUST` (the EDID subrecord) and `groups._record_voice_entry` (the voice
+prefix).
+
+Oblivion reuses 12 quest EditorIDs that a vanilla Skyrim master also uses:
+`MQ00`, `MS02`, `MS04`–`MS06`, `MS08`–`MS14`. A user reported Blood on the Ice
+(Skyrim `MS11`, `0001F7A3`) reading as A Brotherhood Betrayed (Oblivion `MS11`,
+ours `01017839`). The two records share nothing but the name: no converted
+plugin references `0001F7A3`, and the vanilla journal text loader
+(1.6.1170 `0x3dac10`) seeks the stage's owning quest by FormID in its last
+overriding file. So whatever mixed them up looks quests up by EditorID: the
+console, or an SKSE mod that indexes forms by EditorID. Which one is unconfirmed.
+
+Only a clashing EditorID is renamed (`TES4` + name), read from the installed
+`VANILLA_MASTERS` (2,274 QUST names, 0.11 s). Everything a save binds stays put:
+FormIDs, fragment and script names (`TES4_QF_MS11`), and the Papyrus property
+names. The authored name is still used for every internal lookup (conditions,
+scripts, unlock globals). The engine builds the voice path from the quest
+EditorID, so the voice prefix follows the rename (`tes4ms11_…`), and the sound
+stage prunes the files left under the old names. A dependent plugin's override
+patches the master's converted record, so it inherits the rename.
+
+This supersedes the "no behaviour change" verdict for QUST in
+[ck_warnings.md](ck_warnings.md#7-duplicate-editorids-duplicate001-deferred).
 
 ## Quest conversion: bugs found and fixed
 <a id="quest-conversion-bugs"></a>

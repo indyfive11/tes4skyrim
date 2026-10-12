@@ -55,6 +55,35 @@ set uses `BIPED_SLOT_MAP`, FO3/FNV's 20-bit set `FNV_BIPED_SLOT_MAP` — they
 share only bits 0-2, see
 [tes4_export_falloutnv.md](tes4_export_falloutnv.md#fnv-biped-slots).
 
+## <a id="arma-race-lists"></a>Armature race lists: every race AND its vampire race
+
+**Code:** `tes5_import/base/equivalents.py` (`ARMA_ADDITIONAL_RACES`,
+`ARMA_BEAST_RACES`, `ARMA_ADDITIONAL_RACES_NONBEAST`),
+`tes5_import/record_types/equipment.py:_arma_races`.
+
+An armature renders only on a race it names: its `RNAM` or one of its `MODL[]`
+additional races, or a race whose armor-race link (RACE `RNAM`) leads to one
+(SKSE `TESObjectARMA::isValidRace`). Skyrim's vampire races are separate RACE
+records with **no** armor-race link (`NordRaceVampire` 0x88794 carries no
+`RNAM`), so a vampire wears only armatures that name its vampire race directly.
+
+The default armature used to list only the ten base playable races, and every
+converted armor rendered wrong on vampires (the player after contracting
+vampirism) while working on everyone else. Vanilla `IronBootsAA` lists each base
+race followed by its vampire race (plus ElderRace, ElderRaceVampire and
+ManakinRace, which converted content never uses), so the default list is now
+built pairwise from `SKYRIM_VAMPIRE_RACES`.
+
+Head gear also gets one armature per beast race (see "BEAST RACES GET THEIR OWN
+HEAD-GEAR MESH" under "Body-wrap armor fitting" below).
+Each beast armature names its own race (`RNAM`) and that race's vampire race,
+exactly as vanilla. The default armature then drops **both** the beast races and
+their vampire races (`ARMA_ADDITIONAL_RACES_NONBEAST`), or a khajiit vampire would
+match the human-fitted armature first and never reach the khajiit mesh.
+
+The race lists change no FormID: armature ids are keyed on the source FormID
+(and race for beast variants), never on the list contents.
+
 ## Head gear is fitted by MEASUREMENT, not by a scale
 <a id="head-gear-fit"></a>
 
@@ -910,7 +939,7 @@ every downstream stage sees the same shape of input it always has.
   - 🛑 **Never look converted geometry up in `data.blocks`** — it is STALE after the strips→shape conversion replaces block objects. `_fit_prn_head_blocks` did, matched nothing silently, and every helmet fell back to the legacy `ARMOR_PIECE_OFFSETS_PRN` scale table (sy 1.165 — the in-game "extremely oversized, stretched wide" helmets). Walk `root.tree()` like `apply_armor_offset` does. Guarded by `test_converted_helmet_is_fitted_not_scaled`.
   - 🛑 **BEAST RACES GET THEIR OWN HEAD-GEAR MESH (2026-08-27).** Hair carries its race in the EditorID (`head_fit.fit_race_for_hair`), but a HOOD or HELMET is ONE Oblivion record worn by every race -- there is nothing on the record to route on, so every converted hood/helmet was fitted to the SHARED HUMAN skull and then sat inside a khajiit or argonian head. **Measured head-local:** the khajiit SK head reaches z 14.85 / |x| 8.47 against the human head's 11.51 / 6.85, and over the scalp region beast verts stand mean 1.91 (khajiit) / 1.40 (argonian) proud of the human surface (max 6.87 / 4.29). Signed penetration into the real beast skull, scalp region, blades/m/helmet: **khajiit 342.9 -> 43.0, argonian 466.1 -> 16.4** against a human-on-human baseline of 43.7; robemagearch/hood (skinned): **khajiit 37.1 -> 16.6, argonian 27.2 -> 7.2** against a baseline of 20.6.
     - **The fix mirrors vanilla exactly: a MESH PER RACE FAMILY named by a PER-RACE ARMA.** ARMA has no alternate-model slot -- race targeting is `RNAM` + the `MODL[]` additional races -- so a per-race mesh *requires* a per-race ARMA. Vanilla `ArmorIronHelmet` lists three armatures: `IronHelmetAA` (RNAM=DefaultRace, `Helmet.nif`), `IronHelmetKhajiitAA` (RNAM=KhajiitRace, `HelmetKhajiit.nif`), `IronHelmetArgonianAA` (RNAM=ArgonianRace, `HelmetArgonian.nif`); the same split runs through BoneCrown, Blades, Orcish, Dragonscale, Draugr, Dragonplate, Falmer, ThalmorHood and every Circlet. We write `<name>_khajiit.nif` / `<name>_argonian.nif` (`nif_converter._write_beast_head_variants`) and emit the matching ARMAs (`equipment._build_arma(beast_race=...)`, races in `skyrim_overrides.ARMA_BEAST_RACES`).
-    - **The default ARMA must DROP the beast races** (`ARMA_ADDITIONAL_RACES_NONBEAST`) or the engine satisfies a khajiit with the human-fitted armature and never reaches the beast one. Each beast ARMA lists that race's VAMPIRE variant as its additional race (KhajiitRaceVampire 0x88845 / ArgonianRaceVampire 0x8883A), exactly as vanilla does.
+    - **The default ARMA must DROP the beast races and their vampire races** (`ARMA_ADDITIONAL_RACES_NONBEAST`, see [race lists](#arma-race-lists)) or the engine satisfies a khajiit with the human-fitted armature and never reaches the beast one. Each beast ARMA lists that race's VAMPIRE variant as its additional race (KhajiitRaceVampire 0x88845 / ArgonianRaceVampire 0x8883A), exactly as vanilla does.
     - **Khajiit and Argonian stay SEPARATE, never one shared "beast" mesh** -- the two skulls differ from each other as much as either differs from the human one (khajiit ears sit on TOP of the crown, argonian snout runs to y 15.39 vs khajiit's 13.63).
     - **A beast variant is a full RE-CONVERSION, not a re-fit of the finished mesh.** A hood is multi-bone SKINNED geometry (Bip01 Head + Neck + Clavicles), so its head fit happens inside the retarget wrap (`deform_geoms_wrap`), not in the rigid Prn pass -- there is no later point at which the head verts can be displaced again without redoing the skin solve. `race` therefore threads `convert_nif` -> `_convert_nif` -> `retarget_skin_to_skyrim` -> `deform_geoms_wrap` -> `field_deltas`, AND into `_fit_prn_head_blocks` for the rigid case. Re-reading also keeps each variant a FIRST fit through its race's field rather than a second displacement stacked on the human result.
     - **The gate is the AUTHORED BMDT flags, never the filename**, and the record must claim ONLY head slots (bits 0/1) and NO body slots (bits 2-5). A multi-slot suit (Knight of Order, flags 0x3D) is fitted by where its vertex MASS sits -- the body -- so asset_convert writes no per-race mesh for it; emitting a beast ARMA anyway pointed at a missing file (measured: 14 of 484 beast ARMAs before the gate, all that suit) and a missing mesh renders INVISIBLE, which is worse than a slightly-wrong fit.

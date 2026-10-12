@@ -17,8 +17,8 @@ from script_convert.blocks import (BLOCK_MAP, BLOCK_TYPE_GUARDS,
                                    COMBAT_EVENT_HEADER,
                                    block_filter_guard)
 from script_convert.constants import (
-    CONV_WALK_VAR, LAST_ACTIVATOR_VAR, MENU_ID_NAMES, SLEEP_WAIT_MENU_ID,
-    UDF_CALLER_PARAM, UDF_RESULT_VAR,
+    CONV_WALK_VAR, HALTED_VAR, LAST_ACTIVATOR_VAR, MENU_ID_NAMES,
+    SLEEP_WAIT_MENU_ID, UDF_CALLER_PARAM, UDF_RESULT_VAR,
     POLL_BLOCKS, REF_SPECIFICITY, TYPE_MAP, is_generated_script_type,
     safe_property_name, papyrus_script_name
 )
@@ -64,6 +64,7 @@ def build(conv, name: str, source: str, extends: str, editor_id: str) -> str:
     body += stage_latches(conv)
     _inject_forcegreet_reeval(conv, extends, editor_id)
     body += quest_restart(conv, tree, extends, name)
+    body = halt_guards(conv, body)
 
     out = list(header(conv, name, extends, editor_id))
     out += properties(conv, tree)
@@ -78,6 +79,7 @@ def build(conv, name: str, source: str, extends: str, editor_id: str) -> str:
 def _prepare(conv, name: str, source: str, extends: str, editor_id: str):
     """Parse the script and load the context: symbols, then facts."""
     conv.sc.edid = editor_id or name
+    conv.sc.can_halt = True
     if extends == 'ObjectReference':
         extends = _self_type(conv, source, editor_id)
     conv._script_extends = extends
@@ -1678,6 +1680,21 @@ def block_activation(conv, tree, extends: str, body: list) -> list:
             return body[:i + 1] + ['  BlockActivation(true)'] + body[i + 1:]
     return body + ['Event OnLoad()', '  BlockActivation(true)', 'EndEvent', '']
 
+
+
+def halt_guards(conv, body: list) -> list:
+    """Declare the halted flag and make every event return at once while it is set.
+
+    See: docs/commentary/script_convert.md#missing-operand-halts
+    """
+    if not conv.sc.halts:
+        return body
+    out = [f'Bool {HALTED_VAR}', '']
+    for line in body:
+        out.append(line)
+        if line.startswith('Event '):
+            out += [f'  If {HALTED_VAR}', '    Return', '  EndIf']
+    return out
 
 
 def _guarded(conv, block, body: list, arms: dict = None) -> list:

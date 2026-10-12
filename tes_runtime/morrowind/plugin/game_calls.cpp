@@ -182,6 +182,7 @@ DistanceFn     g_distance = nullptr;
 
 ParentCellFn   g_parentCell = nullptr;
 RefQueryFn     g_isInterior = nullptr;
+RefQueryFn     g_cellAttached = nullptr;
 GetValueFn     g_getValue = nullptr;
 SetValueFn  g_setValue = nullptr;
 SetValueFn     g_restoreValue = nullptr;
@@ -837,12 +838,29 @@ bool IsDeadRef(std::uint32_t runtimeFormId) {
 // false is the only real unload. Collapsing them into one bool is what let a
 // chargen guard who never leaves his cell be unbound forever.
 // See: docs/commentary/morrowind_runtime.md#instances-bind-from-the-world
+//
+// 🛑 A DISABLED reference has no 3D and has NOT left the world. TES3 runs a
+// local script for every reference in an active cell, disabled or not (OpenMW
+// engine.cpp executeLocalScripts has no enabled test), and "disable myself
+// until the story reaches me" depends on it: read as an unload, the script
+// that disabled itself was dropped and could never enable itself again. So a
+// reference without 3D is in the world for as long as its CELL is attached.
+//
+// 🛑 The cell, not `IsDisabled`: enabling queues the 3D, so for the frames
+// after `Enable` the reference is neither disabled nor loaded, and a test on
+// the flag would drop the script on exactly the tick it woke up.
+bool InWorld(void* ref) {
+    if (g_is3DLoaded(PapyrusVm(), 0, ref)) return true;
+    if (!g_parentCell || !g_cellAttached) return false;
+    void* cell = g_parentCell(PapyrusVm(), 0, ref);
+    return cell && g_cellAttached(PapyrusVm(), 0, cell);
+}
+
 LoadState Load3DStateRef(std::uint32_t runtimeFormId) {
     if (!g_is3DLoaded) return LoadState::kUnknown;
     void* ref = RefByRuntimeId(runtimeFormId);
     if (!ref) return LoadState::kUnresolved;
-    return g_is3DLoaded(PapyrusVm(), 0, ref) ? LoadState::kLoaded
-                                             : LoadState::kUnloaded;
+    return InWorld(ref) ? LoadState::kLoaded : LoadState::kUnloaded;
 }
 
 bool Is3DLoadedRef(std::uint32_t runtimeFormId) {
@@ -879,7 +897,7 @@ void ReportRebindMiss(const std::string& plugin, std::uint32_t localFormId,
 // only while its cell is loaded, so the null is "not here yet", not a failure.
 std::uint32_t LoadedRef(const std::string& plugin, std::uint32_t localFormId) {
     void* ref = FormFromFile(plugin.c_str(), localFormId & kLocalMask);
-    if (!ref || !g_is3DLoaded || !g_is3DLoaded(PapyrusVm(), 0, ref)) {
+    if (!ref || !g_is3DLoaded || !InWorld(ref)) {
         ReportRebindMiss(plugin, localFormId, ref != nullptr);
         return 0;
     }
@@ -1005,6 +1023,8 @@ void InstallGameCalls() {
     g_parentCell = Native<ParentCellFn>("ObjectReference.GetParentCell",
                                         ids::kRefGetParentCell);
     g_isInterior = Native<RefQueryFn>("Cell.IsInterior", ids::kCellIsInterior);
+    g_cellAttached = Native<RefQueryFn>("Cell.IsAttached",
+                                        ids::kCellIsAttached);
     g_getValue = Native<GetValueFn>("Actor.GetActorValue", ids::kActorGetValue);
     g_setValue = Native<SetValueFn>("Actor.SetActorValue", ids::kActorSetValue);
     g_restoreValue = Native<SetValueFn>("Actor.RestoreActorValue",

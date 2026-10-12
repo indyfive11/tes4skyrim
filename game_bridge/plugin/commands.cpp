@@ -19,7 +19,7 @@
 #include "json.h"
 #include "log.h"
 #include "main_thread.h"
-#include "recorder.h"
+#include "trace.h"
 
 namespace bridge {
 
@@ -93,7 +93,6 @@ Json CmdCapabilities(const Json&) {
     caps.set("output_capture",
              Json(ConsoleCaptureInstalled() && ConsoleModeFlagAvailable()));
     caps.set("papyrus_capture", Json(PapyrusCaptureInstalled()));
-    caps.set("recorder", Json(GetRecorderStats().installed));
 
     Json missing = Json::Array();
     for (const auto& m : g_addr.missing) missing.push(Json(m));
@@ -600,6 +599,59 @@ Json CmdConsoleLog(const Json& args) {
     return Ok(std::move(r));
 }
 
+// Frame-rate sampler + timestamped hooks (trace.h). Sub-commands by "action":
+//   start  {path, interval_ms, meta, regions:[{kind,addr,off,len,stride,elem_ptr_off,max}]}
+//   hook   {address|rva, cap_arg, cap_len, label}
+//   stop / status
+// Answered on the pipe thread: nothing here touches game state, the sampler
+// reads memory from its own thread through SEH-guarded copies.
+Json CmdTrace(const Json& args) {
+    const std::string action = args["action"].asString();
+    if (action == "hook") {
+        std::uintptr_t addr = args.has("address") ? ParseAddr(args["address"])
+                              : ModuleBaseAddress() + ParseAddr(args["rva"]);
+        std::string err;
+        const int idx = TraceHook(addr, args["cap_arg"].asInt(2),
+                                  static_cast<std::size_t>(args["cap_len"].asInt(0)),
+                                  args["label"].asString(), &err);
+        if (idx < 0) return Err("E_INTERNAL", err);
+        Json r = Json::Object();
+        r.set("index", Json(idx));
+        r.set("address", Json(static_cast<double>(addr)));
+        return Ok(std::move(r));
+    }
+    if (action == "start") {
+        std::vector<TraceRegion> regions;
+        for (const Json& j : args["regions"].items()) {
+            TraceRegion t;
+            t.kind = static_cast<TraceRegion::Kind>(j["kind"].asInt(0));
+            t.addr = ParseAddr(j["addr"]);
+            t.off = j["off"].asInt(0);
+            t.len = j["len"].asU32(0);
+            t.stride = j["stride"].asU32(8);
+            t.elemPtrOff = j["elem_ptr_off"].asU32(0);
+            t.maxCount = j["max"].asU32(256);
+            regions.push_back(t);
+        }
+        std::string err;
+        if (!TraceStart(args["path"].asString(), regions, args["interval_ms"].asU32(8),
+                        args["meta"].asString(), &err))
+            return Err("E_INTERNAL", err);
+    } else if (action == "stop") {
+        TraceStop();
+    } else if (action != "status") {
+        return Err("E_INTERNAL", "action must be start, hook, stop or status");
+    }
+    const TraceStats s = TraceQuery();
+    Json r = Json::Object();
+    r.set("running", Json(s.running));
+    r.set("samples", Json(static_cast<double>(s.samples)));
+    r.set("hook_records", Json(static_cast<double>(s.hookRecords)));
+    r.set("bytes", Json(static_cast<double>(s.bytes)));
+    r.set("path", Json(s.path));
+    return Ok(std::move(r));
+}
+
 Json CmdHookStats(const Json&) {
     Json r = Json::Object();
     r.set("console_print_hits", Json(static_cast<double>(ConsoleCaptureHits())));
@@ -809,29 +861,6 @@ Json CmdWaitReady(const Json& args) {
     return Ok(std::move(r));
 }
 
-// The flight recorder's state; `enable` turns recording on or off. Plugin-local,
-// so it answers on the pipe thread.
-Json CmdRecorder(const Json& args) {
-    if (args.has("enable")) SetRecorderEnabled(args["enable"].asBool());
-    const RecorderStats s = GetRecorderStats();
-    Json r = Json::Object();
-    r.set("installed", Json(s.installed));
-    r.set("enabled", Json(s.enabled));
-    r.set("path", Json(s.path));
-    r.set("events", Json(s.events));
-    r.set("bytes", Json(s.bytes));
-    r.set("dropped", Json(s.dropped));
-    Json kinds = Json::Object();
-    for (const auto& kv : s.perKind) kinds.set(kv.first, Json(kv.second));
-    r.set("per_kind", std::move(kinds));
-    Json hooked = Json::Array(), missing = Json::Array();
-    for (const auto& h : s.hooked) hooked.push(Json(h));
-    for (const auto& m : s.missing) missing.push(Json(m));
-    r.set("hooked", std::move(hooked));
-    r.set("missing", std::move(missing));
-    return Ok(std::move(r));
-}
-
 Json CmdStatus(const Json&) {
     if (!IsGameLoaded()) {
         Json r = Json::Object();
@@ -893,13 +922,13 @@ std::string HandleRequest(const std::string& line) {
     else if (cmd == "hook")         resp = CmdHook(args);
     else if (cmd == "call")         resp = CmdCall(args);
     else if (cmd == "hookstats")    resp = CmdHookStats(args);
+    else if (cmd == "trace")        resp = CmdTrace(args);
     else if (cmd == "console_log")  resp = CmdConsoleLog(args);
     else if (cmd == "status")       resp = CmdStatus(args);
     else if (cmd == "spawn")        resp = CmdSpawn(args);
     else if (cmd == "cleanup")      resp = CmdCleanup(args);
     else if (cmd == "moveref")      resp = CmdMoveRef(args);
     else if (cmd == "wait_ready")   resp = CmdWaitReady(args);
-    else if (cmd == "recorder")     resp = CmdRecorder(args);
     // Distinct from E_UNSUPPORTED (a command this runtime cannot resolve):
     // this plugin build simply does not have the command, so a newer client can
     // fall back to a console-based path instead of reporting a hard failure.

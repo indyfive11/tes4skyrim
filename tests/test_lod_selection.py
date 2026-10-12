@@ -2,8 +2,16 @@
 
 `write_lodgen_input` is driven with a synthetic `_parsed` tuple and a tmp
 mesh tree; LODGEN_EXE points into tmp_path because the input file is written
-next to the exe.  The NIF header reader is stubbed ("a file that exists is a
-safe NiNode root") so the tests exercise selection, not the parser.
+next to the exe.  The NIF header reader is stubbed (a file holding b'NIF' is
+a safe NiNode root, anything else is not) so the tests exercise selection,
+not the parser.
+
+`TestLodgenInput` is a set of characterization tests: they pass on
+`write_lodgen_input` as it was BEFORE it was split into named phases and
+after, by design.  They pin what the split moved -- the per-reference
+filters, the kept-tile footprint, the master modes, mesh staging and
+screening, the per-base memo and the file's shape -- so a later change to
+any of them has to show up here.
 """
 
 import sys
@@ -18,339 +26,274 @@ from asset_convert.lod import lod_gen
 WRLD = 0x0000003C
 CELL = 0x00000100
 LOD = 0x00008000
+ROCK = 'tes4\\rocks\\rock01.nif'
+ROCK2 = 'tes4\\rocks\\rock02.nif'
+ROCK3 = 'tes4\\rocks\\rock03.nif'
 
 
 @pytest.fixture
 def gen(monkeypatch, tmp_path):
-    """lod_gen with the exe in tmp_path, a fresh screen cache and a stub reader."""
+    """lod_gen with the exe in tmp_path, fresh caches and a stub header reader."""
     exe_dir = tmp_path / 'lodgen'
     exe_dir.mkdir()
     monkeypatch.setattr(lod_gen, 'LODGEN_EXE', exe_dir / 'LODGenx64.exe')
     monkeypatch.setattr(lod_gen, '_NIF_ROOT_SAFE_CACHE', {})
+    monkeypatch.setattr(lod_gen, '_STAGED_MASTER_MESHES', set())
     monkeypatch.setattr(lod_gen, '_root_is_ninode',
-                        lambda full: Path(full).exists())
+                        lambda full: Path(full).read_bytes() == b'NIF')
     return lod_gen
 
 
-def _mesh(out, rel):
-    """Create an (empty) mesh file at backslash path `rel` under `out/meshes`."""
-    p = out / 'meshes' / Path(*rel.split('\\'))
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_bytes(b'NIF')
-    return p
+def _far(model, suffix='_far'):
+    """The LOD mesh path of `model` for one suffix."""
+    return model[:-4] + suffix + '.nif'
 
 
-def _stat(model, flags=LOD, edid='Rock01', sig='STAT'):
-    return {'edid': edid, 'sig': sig, 'flags': flags, 'model': model,
+def _mesh(root, *rels, data=b'NIF'):
+    """Write each backslash path of `rels` under `root/meshes`; b'NIF' is safe."""
+    for rel in rels:
+        p = root / 'meshes'
+        for part in rel.split('\\'):
+            p = p / part
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(data)
+
+
+def _stat(model, flags=LOD, edid='Rock01', sig='STAT', **lods):
+    """A `parse_esm`-shaped base record, 100 units across."""
+    stat = {'edid': edid, 'sig': sig, 'flags': flags, 'model': model,
             'obnd': (0, 0, 0, 100, 100, 100),
             'lod4': '', 'lod8': '', 'lod16': ''}
+    stat.update(lods)
+    return stat
 
 
-def _ref(fid, base, flags=0, x=100.0, y=100.0, **extra):
-    """A placed reference in cell (0, 0) of the test worldspace."""
+def _ref(fid, base, flags=0, cell=(0, 0), **extra):
+    """A `parse_esm`-shaped reference 100 units inside grid cell `cell`."""
     ref = {'form_id': fid, 'flags': flags, 'base_fid': base,
            'parent_wrld': WRLD, 'parent_cell': CELL,
-           'x': x, 'y': y, 'z': 0.0, 'rx': 0.0, 'ry': 0.0, 'rz': 0.0,
-           'scale': 1.0}
+           'x': cell[0] * 4096.0 + 100.0, 'y': cell[1] * 4096.0 + 100.0,
+           'z': 0.0, 'rx': 0.0, 'ry': 0.0, 'rz': 0.0, 'scale': 1.0}
     ref.update(extra)
     return ref
 
 
 def _parsed(stats, refs):
     """A `parse_esm`-shaped tuple: one worldspace, one cell."""
-    worldspaces = {WRLD: {'edid': 'TES4Tamriel', 'sw_x': -2, 'sw_y': -2,
+    worldspaces = {WRLD: {'edid': 'TES4Tamriel', 'sw_x': -2, 'sw_y': -3,
                           'ne_x': 2, 'ne_y': 2}}
     cells = {CELL: {'parent_wrld': WRLD, 'grid_x': 0, 'grid_y': 0}}
     return worldspaces, cells, stats, refs
 
 
 def _rows(path):
-    """{ref FormID: row fields} from a written LODGen input."""
+    """{ref FormID: row fields} from a written LODGen input; {} for None."""
     rows = {}
-    for line in Path(path).read_text(encoding='utf-8').splitlines():
+    for line in (Path(path).read_text(encoding='utf-8').splitlines()
+                 if path else ()):
         if '\t' in line:
             f = line.split('\t')
             rows[int(f[0], 16)] = f
     return rows
 
 
-def _write(gen, out, stats, refs, **kw):
-    return gen.write_lodgen_input(Path('x.esm'), out, 'TES4Tamriel',
-                                  _parsed=_parsed(stats, refs),
-                                  cell_sw=(-32, -32), **kw)
+def _write(gen, out, stats, refs, edid='TES4Tamriel', **kw):
+    """Run `write_lodgen_input` on a synthetic parse; `cell_sw` defaults to (-32, -16)."""
+    kw.setdefault('cell_sw', (-32, -16))
+    return gen.write_lodgen_input(Path('x.esm'), out, edid,
+                                  _parsed=_parsed(stats, refs), **kw)
 
 
-class TestInputShape:
+class TestLodgenInput:
+    """Characterization of `write_lodgen_input`; see the module docstring."""
 
-    def test_rows_header_and_basic_filters(self, gen, tmp_path):
-        """LOD base listed; non-LOD base, foreign worldspace, no-base dropped."""
-        out = tmp_path / 'AutoConvertLOD'
-        _mesh(out, 'tes4\\rocks\\rock01.nif')
-        _mesh(out, 'tes4\\rocks\\rock01_far.nif')
-        stats = {0x10: _stat('tes4\\rocks\\rock01.nif'),
-                 0x11: _stat('tes4\\rocks\\rock01.nif', flags=0)}
-        refs = [_ref(0xA1, 0x10, rz=1.0),
-                _ref(0xA2, 0x11),
-                _ref(0xA3, 0x10, parent_wrld=0x99, parent_cell=0x98),
-                _ref(0xA4, 0x77)]
-        txt = _write(gen, out, stats, refs)
-        head = Path(txt).read_text(encoding='utf-8').splitlines()[:5]
-        assert head[0] == 'GameMode=TES5'
-        assert head[2] == 'CellSW=-32 -32'
-        assert head[3].endswith('\\')
-        rows = _rows(txt)
-        assert set(rows) == {0xA1}
-        r = rows[0xA1]
-        assert r[7] == '57.2958'
-        assert r[9] == 'Rock01'
-        assert r[12] == 'meshes\\tes4\\rocks\\rock01.nif'
-        assert r[13] == 'meshes\\tes4\\rocks\\rock01_far.nif'
+    def test_header_and_file_place(self, gen, tmp_path, monkeypatch):
+        """Five header lines, absolute paths from a relative dir, file by the exe."""
+        monkeypatch.chdir(tmp_path)
+        out = Path('AutoConvertLOD')
+        _mesh(out, ROCK, _far(ROCK))
+        txt = _write(gen, out, {0x10: _stat(ROCK)}, [_ref(0xA1, 0x10)])
+        text = Path(txt).read_text(encoding='utf-8')
+        head = [h.replace('/', '\\') for h in text.splitlines()[:5]]
+        here = tmp_path.name + '\\AutoConvertLOD'
+        assert head[:3] == ['GameMode=TES5', 'Worldspace=TES4Tamriel',
+                            'CellSW=-32 -16']
+        assert head[3].startswith('PathData=')
+        assert head[3].endswith(here + '\\')
+        assert head[4].startswith('PathOutput=')
+        assert head[4].endswith(here + '\\meshes\\terrain\\TES4Tamriel\\Objects')
+        assert text.endswith('\n') and not text.endswith('\n\n')
         assert Path(txt).parent == tmp_path / 'lodgen'
 
-    def test_nothing_listed_returns_none(self, gen, tmp_path):
-        """No listable reference -> no file, None."""
+    def test_cell_sw_falls_back_to_the_worldspace_bounds(self, gen, tmp_path):
+        """Without `cell_sw` the header carries the WRLD's own SW corner."""
         out = tmp_path / 'AutoConvertLOD'
-        stats = {0x11: _stat('tes4\\rocks\\rock01.nif', flags=0)}
+        _mesh(out, ROCK, _far(ROCK))
+        txt = _write(gen, out, {0x10: _stat(ROCK)}, [_ref(0xA1, 0x10)],
+                     cell_sw=None)
+        assert Path(txt).read_text(encoding='utf-8').splitlines()[2] == 'CellSW=-2 -3'
+
+    def test_row_fields(self, gen, tmp_path):
+        """9 REFR fields (degrees, 4 decimals), then the base half with its tiers."""
+        out = tmp_path / 'AutoConvertLOD'
+        _mesh(out, ROCK, _far(ROCK), _far(ROCK, '_far8'), _far(ROCK, '_far16'))
+        ref = _ref(0xA1, 0x10, flags=0xC400, cell=(1, -2), z=5.0, rx=0.5,
+                   rz=1.0, scale=1.23456)
+        r = _rows(_write(gen, out, {0x10: _stat(ROCK)}, [ref]))[0xA1]
+        assert r[:2] == ['000000A1', '0000C400']
+        assert r[2:5] == ['4196.0000', '-8092.0000', '5.0000']
+        assert r[5:9] == ['28.6479', '0.0000', '57.2958', '1.2346']
+        assert r[9:12] == ['Rock01', '00008000', '']
+        assert r[12:] == ['meshes\\' + m for m in (
+            ROCK, _far(ROCK), _far(ROCK, '_far8'), _far(ROCK, '_far16'))]
+
+    def test_per_reference_filters(self, gen, tmp_path):
+        """Listed by own WRLD or parent CELL; base must be known, modelled, LOD-flagged."""
+        out = tmp_path / 'AutoConvertLOD'
+        _mesh(out, ROCK, _far(ROCK))
+        unflagged = _stat(ROCK)
+        del unflagged['flags']
+        stats = {0x10: _stat(ROCK), 0x11: _stat(ROCK, flags=0),
+                 0x12: _stat('', lod4=_far(ROCK)), 0x13: unflagged}
+        refs = [_ref(0xA1, 0x10),
+                _ref(0xA2, 0x11),
+                _ref(0xA3, 0x10, parent_wrld=0x99, parent_cell=0x98),
+                _ref(0xA4, 0x77),
+                _ref(0xA5, 0x10, parent_cell=0x98),
+                _ref(0xA6, 0x10, parent_wrld=0),
+                _ref(0xA7, 0x12),
+                _ref(0xA8, 0x13)]
+        assert set(_rows(_write(gen, out, stats, refs))) == {0xA1, 0xA5, 0xA6}
+
+    def test_nothing_listed_returns_none(self, gen, tmp_path, capsys):
+        """No listable reference -> None, and the log says so."""
+        out = tmp_path / 'AutoConvertLOD'
+        stats = {0x11: _stat(ROCK, flags=0)}
         assert _write(gen, out, stats, [_ref(0xA2, 0x11)]) is None
+        assert ("No LOD references found for worldspace 'TES4Tamriel'"
+                in capsys.readouterr().out)
 
-
-class TestCaseBlindLookups:
-    """Mixed-case source files (FR ships `X.NIF`, `Architecture\\`) are found."""
-
-    def test_mesh_exists_ignores_case(self, gen, tmp_path):
-        _mesh(tmp_path, 'tes4\\FR\\FRSkBridgeSmall.NIF')
-        assert gen._mesh_exists('meshes\\tes4\\fr\\frskbridgesmall.nif',
-                                tmp_path / 'meshes')
-
-    def test_mixed_case_master_model_is_listed_with_its_authored_far(
-            self, gen, tmp_path):
-        """Old: model not found in the master tree -> base dropped silently."""
+    def test_only_cells_lists_the_kept_tiles_footprint(self, gen, tmp_path,
+                                                       capsys):
+        """A changed cell keeps its level-4/8/16 tiles' cells, by floored position."""
         out = tmp_path / 'AutoConvertLOD'
-        (out / 'meshes').mkdir(parents=True)
-        fr = tmp_path / 'FR'
-        _mesh(fr, 'tes4\\FR\\FRSkBridgeSmall.NIF')
-        _mesh(fr, 'tes4\\FR\\FRSkBridgeSmall_far.NIF')
-        stats = {0x20: _stat('tes4\\FR\\FRSkBridgeSmall.NIF', edid='FRBridge')}
-        txt = _write(gen, out, stats, [_ref(0xB1, 0x20)],
-                     master_mesh_dirs=[fr])
-        assert txt is not None
-        row = _rows(txt)[0xB1]
-        assert row[13] == 'meshes\\tes4\\fr\\frskbridgesmall_far.nif'
-        assert (out / 'meshes/tes4/fr/frskbridgesmall_far.nif').is_file()
-        gen._drop_staged_master_meshes()
-
-    def test_authored_far_in_any_case_is_not_regenerated(self, tmp_path):
-        """FR's `X_far.NIF` counts as authored for a lowercase `_far` path."""
-        from asset_convert.lod import lod_far_gen
-        _mesh(tmp_path, 'tes4\\FR\\FRSkBridgeSmall_far.NIF')
-        assert lod_far_gen.has_authored_lod(
-            tmp_path / 'meshes', 'tes4\\fr\\frskbridgesmall_far.nif')
-
-    def test_find_texture_ignores_case(self, tmp_path):
-        """A billboard shipped as `Trees\\Billboards\\Oak.DDS` is found."""
-        from asset_convert.lod import lod_far_gen
-        p = tmp_path / 'tex' / 'tes4' / 'Trees' / 'Billboards' / 'Oak.DDS'
-        p.parent.mkdir(parents=True)
-        p.write_bytes(b'DDS ')
-        assert lod_far_gen.find_texture(
-            [tmp_path / 'lod', tmp_path / 'tex'],
-            'tes4\\trees\\billboards\\oak.dds').samefile(p)
-
-    def test_no_flat_normal_over_a_masters_mixed_case_normal(self, gen,
-                                                             tmp_path, capsys):
-        """D1 #10: a lowercase .bto ref to FR's `Architecture\\X_n.dds`.
-
-        Old: the master copy was missed, so a flat normal was written into the
-        LOD mod at the same archive path, shadowing FR's real one.
-        """
-        bto_dir = tmp_path / 'bto'
-        bto_dir.mkdir()
-        (bto_dir / 'W.4.0.0.bto').write_bytes(
-            b'\x00textures\\tes4\\architecture\\frwall01_n.dds\x00')
-        master = tmp_path / 'FR' / 'textures'
-        real = master / 'tes4' / 'Architecture' / 'FRWall01_n.dds'
-        real.parent.mkdir(parents=True)
-        real.write_bytes(b'DDS real')
-        lod_tex = tmp_path / 'AutoConvertLOD' / 'textures'
-        lod_tex.mkdir(parents=True)
-        gen._fill_missing_lod_textures(bto_dir, lod_tex,
-                                       master_tex_roots=[master])
-        assert [p for p in lod_tex.rglob('*') if p.is_file()] == []
-        assert 'Synthesized' not in capsys.readouterr().out
-
-    def test_an_unmakeable_texture_leaves_no_empty_folders(self, gen, tmp_path,
-                                                          capsys):
-        """A missing diffuse with no source creates nothing (old: its folders)."""
-        bto_dir = tmp_path / 'bto'
-        bto_dir.mkdir()
-        (bto_dir / 'W.4.0.0.bto').write_bytes(
-            b'\x00textures\\tes4\\lodonly\\gone.dds\x00')
-        lod_tex = tmp_path / 'AutoConvertLOD' / 'textures'
-        lod_tex.mkdir(parents=True)
-
-        gen._fill_missing_lod_textures(bto_dir, lod_tex)
-
-        assert list(lod_tex.rglob('*')) == []
-        assert '1 LOD textures missing' in capsys.readouterr().out
-
-
-class TestAuthoredFarFromAnyPlugin:
-    """A later plugin's hand-made `_far` beats deriving one from the owner's model."""
-
-    def _derive(self, gen, monkeypatch, tmp_path, dirs, model):
-        """Run `_derive_far_meshes`, recording what it asked to generate."""
-        from asset_convert.lod import lod_far_gen
-        asked = []
-        monkeypatch.setattr(lod_far_gen, 'generate_missing_far_nifs',
-                            lambda stats, d, referenced_models, **k:
-                            asked.extend(referenced_models) or 0)
-        out = tmp_path / 'AutoConvertLOD'
-        (out / 'meshes').mkdir(parents=True, exist_ok=True)
-        gen._derive_far_meshes({}, out, {model}, dirs)
-        return out, asked
-
-    def test_later_plugins_authored_far_is_staged_not_derived(
-            self, gen, monkeypatch, tmp_path):
-        """Old: owner Oblivion derived it; FR's `_far.nif` was never looked at."""
-        obl, fr = tmp_path / 'Oblivion.esm', tmp_path / 'FR'
-        model = 'tes4\\architecture\\skingrad\\skbridgesmall.nif'
-        _mesh(obl, model)
-        _mesh(fr, 'tes4\\Architecture\\skingrad\\skbridgesmall_far.nif')
-        out = tmp_path / 'AutoConvertLOD'
-        stale = _mesh(out, 'tes4\\architecture\\skingrad\\skbridgesmall_far.nif')
-        stale.with_suffix('.nif.generated').write_text('generated\n')
-        out, asked = self._derive(gen, monkeypatch, tmp_path, [obl, fr], model)
-        assert asked == []
-        assert not stale.with_suffix('.nif.generated').exists()
-        assert stale.is_file()
-        gen._drop_staged_master_meshes()
-
-    def test_an_earlier_plugins_authored_far_does_not_beat_a_later_model(
-            self, gen, monkeypatch, tmp_path):
-        """FR overrides the full model: Oblivion's authored `_far` is stale."""
-        obl, fr = tmp_path / 'Oblivion.esm', tmp_path / 'FR'
-        model = 'tes4\\rocks\\rock01.nif'
-        _mesh(obl, model)
-        _mesh(obl, 'tes4\\rocks\\rock01_far.nif')
-        _mesh(fr, model)
-        _out, asked = self._derive(gen, monkeypatch, tmp_path, [obl, fr], model)
-        assert asked == [model]
-
-
-PLAYER = 0x00000014
-PARENT_ON, PARENT_OFF = 0xC1, 0xC2
-
-
-class TestSelectionRules:
-    """Effective initial state through XESP, persistent Full LOD, effect meshes."""
-
-    def _listed(self, gen, tmp_path, refs, models=('tes4\\rocks\\rock01.nif',)):
-        """FormIDs `write_lodgen_input` lists; parents are non-LOD markers."""
-        out = tmp_path / 'AutoConvertLOD'
-        stats = {0x10 + i: _stat(m, edid='B%d' % i) for i, m in enumerate(models)}
-        stats[0x30] = _stat('marker.nif', flags=0)
-        for m in models:
-            _mesh(out, m)
-            _mesh(out, m[:-4] + '_far.nif')
-        parents = [_ref(PARENT_ON, 0x30), _ref(PARENT_OFF, 0x30, flags=0x800)]
-        txt = _write(gen, out, stats, parents + refs)
-        return set(_rows(txt)) if txt else set()
-
-    def test_game_start_state_decides(self, gen, tmp_path):
-        """Old: every LOD-flagged ref was listed, whatever its enable state."""
-        refs = [_ref(0xD1, 0x10),
-                _ref(0xD2, 0x10, flags=0x800),
-                _ref(0xD3, 0x10, xesp=(PARENT_ON, 0)),
-                _ref(0xD4, 0x10, xesp=(PARENT_ON, 1)),
-                _ref(0xD5, 0x10, xesp=(PARENT_OFF, 1)),
-                _ref(0xD6, 0x10, xesp=(PARENT_OFF, 0)),
-                _ref(0xD7, 0x10, flags=0x8800, xesp=(PARENT_OFF, 0)),
-                _ref(0xD8, 0x10, flags=0x800, xesp=(PARENT_ON, 0)),
-                _ref(0xD9, 0x10, xesp=(PLAYER, 0)),
-                _ref(0xDA, 0x10, xesp=(0xEE, 0)),
-                _ref(0xDB, 0x10, xesp=(0xD5, 0))]
-        assert self._listed(gen, tmp_path, refs) == {
-            0xD1, 0xD3, 0xD5, 0xD8, 0xD9, 0xDA, 0xDB}
-
-    def test_persistent_full_lod_is_left_to_the_engine(self, gen, tmp_path):
-        """R4: persistent + Is Full LOD dropped; either flag alone kept."""
-        refs = [_ref(0xE1, 0x10, flags=0x10400),
-                _ref(0xE2, 0x10, flags=0x10000),
-                _ref(0xE3, 0x10, flags=0x400)]
-        assert self._listed(gen, tmp_path, refs) == {0xE2, 0xE3}
-
-    def test_non_vwd_effect_mesh_is_dropped(self, gen, tmp_path):
-        """R3': NDCloudLayer-style effect meshes, unless the ref is VWD."""
-        models = ('tes4\\effects\\ndcloudlayer.nif',
-                  'tes4\\dungeons\\misc\\fx\\fxmist01.nif',
-                  'tes4\\rocks\\effectsrock.nif')
-        refs = [_ref(0xF1, 0x10, flags=0x400), _ref(0xF2, 0x11),
-                _ref(0xF3, 0x10, flags=0x8000), _ref(0xF4, 0x12)]
-        assert self._listed(gen, tmp_path, refs, models) == {0xF3, 0xF4}
-
-    def test_counts_and_top_models_are_logged(self, gen, tmp_path, capsys):
-        """No silent drop: each rule prints its count and models."""
-        self._listed(gen, tmp_path, [_ref(0xD2, 0x10, flags=0x800),
-                                     _ref(0xDA, 0x10, xesp=(0xEE, 0))])
+        _mesh(out, ROCK, _far(ROCK))
+        cells = [(0, 0), (5, 5), (15, 15), (-1, 0), (16, 0), (0, -1)]
+        refs = [_ref(0xB0 + i, 0x10, cell=c) for i, c in enumerate(cells)]
+        txt = _write(gen, out, {0x10: _stat(ROCK)}, refs,
+                     only_cells={(0, 0)}, replace_tiles=True)
         log = capsys.readouterr().out
-        assert '1 dropped by per-reference rules' in log
-        assert 'disabled at game start' in log
-        assert 'tes4\\rocks\\rock01.nif x1' in log
-        assert 'enable parent not scanned (kept): 1' in log
+        assert set(_rows(txt)) == {0xB0, 0xB1, 0xB2}
+        assert ('Restricted to the 256 cell(s) covered by the tiles this run '
+                'keeps: 3 of 6 references listed') in log
+        assert '(3 references)' in log
 
-    def test_prefetch_skips_a_base_whose_only_ref_is_dropped(self, gen):
-        """`_screenable_mesh_paths` filters with the same rules."""
-        stats = {0x10: _stat('tes4\\rocks\\rock01.nif'),
-                 0x11: _stat('tes4\\rocks\\rock02.nif')}
-        refs = [_ref(0xD2, 0x10, flags=0x800), _ref(0xD1, 0x11)]
-        scope = gen._Scope({CELL: WRLD}, WRLD, None,
-                           {r['form_id']: r for r in refs}, {})
-        paths = gen._screenable_mesh_paths(refs, stats, scope)
-        assert 'tes4\\rocks\\rock02.nif' in paths
-        assert 'tes4\\rocks\\rock01.nif' not in paths
+    def test_an_empty_only_cells_restricts_nothing(self, gen, tmp_path, capsys):
+        """An empty set is "no restriction", not "list nothing"."""
+        out = tmp_path / 'AutoConvertLOD'
+        _mesh(out, ROCK, _far(ROCK))
+        refs = [_ref(0xB0, 0x10), _ref(0xB1, 0x10, cell=(40, 40))]
+        txt = _write(gen, out, {0x10: _stat(ROCK)}, refs, only_cells=set())
+        assert set(_rows(txt)) == {0xB0, 0xB1}
+        assert 'Restricted' not in capsys.readouterr().out
 
+    def test_master_dirs_drop_a_shipped_base_unless_tiles_are_replaced(
+            self, gen, tmp_path):
+        """A base whose LOD a master ships is skipped only beside the master's tiles."""
+        out, master = tmp_path / 'AutoConvertLOD', tmp_path / 'Master.esm'
+        _mesh(out, ROCK, _far(ROCK), ROCK2, _far(ROCK2))
+        _mesh(master, _far(ROCK))
+        stats = {0x10: _stat(ROCK), 0x11: _stat(ROCK2, edid='Rock02')}
+        refs = [_ref(0xC1, 0x10), _ref(0xC2, 0x11)]
+        assert set(_rows(_write(gen, out, stats, refs))) == {0xC1, 0xC2}
+        assert set(_rows(_write(gen, out, stats, refs,
+                                master_dirs=[master]))) == {0xC2}
+        assert set(_rows(_write(gen, out, stats, refs, master_dirs=[master],
+                                replace_tiles=True))) == {0xC1, 0xC2}
 
-class TestEnableParentChain:
-    """The game-start state of a chain is the same whichever ref is asked first.
+    def test_master_mesh_dirs_stage_the_model_and_its_lod(self, gen, tmp_path):
+        """A master-owned model is copied into the bake tree, with its `_far`."""
+        out, master = tmp_path / 'AutoConvertLOD', tmp_path / 'Master.esm'
+        (out / 'meshes').mkdir(parents=True)
+        _mesh(master, ROCK3, _far(ROCK3))
+        stats = {0x12: _stat(ROCK3)}
+        refs = [_ref(0xD1, 0x12)]
+        assert _write(gen, out, stats, refs) is None
+        txt = _write(gen, out, stats, refs, master_mesh_dirs=[master])
+        assert set(_rows(txt)) == {0xD1}
+        rocks = out / 'meshes' / 'tes4' / 'rocks'
+        assert (rocks / 'rock03.nif').exists()
+        assert (rocks / 'rock03_far.nif').exists()
+        assert len(gen._STAGED_MASTER_MESHES) == 2
 
-    A depth cap measured from the entry point memoised None for a ref deep in
-    one walk that a shorter walk would have answered: in a 21-ref chain R17
-    alone was True, but None once R0 had been walked. The walk now has no
-    cap; only a missing parent or a cycle is unknown.
-    """
+    def test_an_unsafe_mesh_drops_its_base_and_is_named(self, gen, tmp_path,
+                                                        capsys):
+        """An unsafe full model or LOD mesh drops the base; the warning comes first."""
+        out = tmp_path / 'AutoConvertLOD'
+        _mesh(out, ROCK, _far(ROCK), _far(ROCK2), ROCK3)
+        _mesh(out, ROCK2, _far(ROCK3), data=b'BAD')
+        stats = {0x10: _stat(ROCK), 0x11: _stat(ROCK2), 0x12: _stat(ROCK3)}
+        refs = [_ref(0xE1, 0x10), _ref(0xE2, 0x11), _ref(0xE3, 0x12)]
+        assert set(_rows(_write(gen, out, stats, refs))) == {0xE1}
+        log = capsys.readouterr().out
+        assert 'WARNING: 2 LOD mesh(es) excluded' in log
+        assert '    meshes\\tes4\\rocks\\rock02.nif\n' in log
+        assert '    meshes\\tes4\\rocks\\rock03_far.nif\n' in log
+        assert _write(gen, out, stats, refs[1:]) is None
+        log = capsys.readouterr().out
+        assert log.index('WARNING: 2 LOD') < log.index('No LOD references')
 
-    @staticmethod
-    def _chain(gen, n, opposite=0):
-        """A scope over refs 0x100..0x100+n-1, each enabled by the next; the last plain."""
-        refs = [_ref(0x100 + i, 0x10, xesp=(0x101 + i, opposite))
-                for i in range(n - 1)] + [_ref(0x100 + n - 1, 0x10)]
-        return gen._Scope({CELL: WRLD}, WRLD, None,
-                          {r['form_id']: r for r in refs}, {})
+    def test_a_base_is_resolved_once_and_rows_keep_their_own_base(
+            self, gen, tmp_path, monkeypatch):
+        """Five refs of two listed bases and two of an unlisted one: three resolutions."""
+        out = tmp_path / 'AutoConvertLOD'
+        _mesh(out, ROCK, _far(ROCK), ROCK2, _far(ROCK2), ROCK3)
+        stats = {0x10: _stat(ROCK), 0x11: _stat(ROCK2, edid='Rock02'),
+                 0x12: _stat(ROCK3, edid='Rock03')}
+        bases = [0x10, 0x11, 0x12, 0x10, 0x11, 0x12, 0x10]
+        refs = [_ref(0xF0 + i, b) for i, b in enumerate(bases)]
+        real, seen = gen._lod_meshes_for, []
 
-    def test_walk_order_does_not_change_a_deep_refs_state(self, gen):
-        """R17 is True asked alone and after R0 (old: None after R0)."""
-        alone = self._chain(gen, 21)
-        after = self._chain(gen, 21)
+        def spy(stat, *args):
+            seen.append(stat['edid'])
+            return real(stat, *args)
+        monkeypatch.setattr(gen, '_lod_meshes_for', spy)
+        rows = _rows(_write(gen, out, stats, refs))
+        assert sorted(seen) == ['Rock01', 'Rock02', 'Rock03']
+        assert {f: (r[9], r[12]) for f, r in rows.items()} == {
+            0xF0 + i: (stats[b]['edid'], 'meshes\\' + stats[b]['model'])
+            for i, b in enumerate(bases) if b != 0x12}
 
-        gen._initially_enabled(0x100, after)
+    def test_the_worldspace_is_matched_in_any_case_else_the_first_is_used(
+            self, gen, tmp_path, capsys):
+        """Case-blind EditorID match; an unknown name warns and uses the first."""
+        out = tmp_path / 'AutoConvertLOD'
+        _mesh(out, ROCK, _far(ROCK))
+        stats, refs = {0x10: _stat(ROCK)}, [_ref(0xA1, 0x10)]
+        assert set(_rows(_write(gen, out, stats, refs, 'tes4tamriel'))) == {0xA1}
+        assert 'Warning' not in capsys.readouterr().out
+        assert set(_rows(_write(gen, out, stats, refs, 'NoSuchWorld'))) == {0xA1}
+        assert ("Warning: worldspace 'NoSuchWorld' not found, using "
+                "'TES4Tamriel'") in capsys.readouterr().out
+        assert gen.write_lodgen_input(Path('x.esm'), out, 'TES4Tamriel',
+                                      _parsed=({}, {}, stats, refs)) is None
+        assert 'Error: no worldspaces found in ESM' in capsys.readouterr().out
 
-        assert gen._initially_enabled(0x111, alone) is True
-        assert gen._initially_enabled(0x111, after) is True
+    def test_the_prefetch_gets_each_candidate_base_and_the_master_roots(
+            self, gen, tmp_path, monkeypatch):
+        """The warm-up is handed the LOD base's model and tier paths, and the masters."""
+        out, master = tmp_path / 'AutoConvertLOD', tmp_path / 'Master.esm'
+        _mesh(out, ROCK, _far(ROCK), ROCK2)
+        stats = {0x10: _stat(ROCK), 0x11: _stat(ROCK2, flags=0)}
+        refs = [_ref(0xA1, 0x10), _ref(0xA2, 0x10), _ref(0xA3, 0x11)]
+        real, calls = gen._prescreen_meshes, []
 
-    def test_a_long_chain_is_resolved(self, gen):
-        """40 links with the opposite bit alternate the state all the way down."""
-        scope = self._chain(gen, 40, opposite=1)
-
-        assert gen._initially_enabled(0x100, scope) is (39 % 2 == 0)
-        assert gen._initially_enabled(0x101, scope) is (38 % 2 == 0)
-
-    def test_a_cycle_is_unknown_from_every_entry(self, gen):
-        """A -> B -> A never terminates; both, and a ref hanging off them, are None."""
-        refs = [_ref(0x201, 0x10, xesp=(0x202, 0)), _ref(0x202, 0x10, xesp=(0x201, 1)),
-                _ref(0x203, 0x10, xesp=(0x201, 0))]
-        for first in (0x201, 0x202, 0x203):
-            scope = gen._Scope({CELL: WRLD}, WRLD, None,
-                               {r['form_id']: r for r in refs}, {})
-            gen._initially_enabled(first, scope)
-            assert [gen._initially_enabled(f, scope)
-                    for f in (0x201, 0x202, 0x203)] == [None, None, None]
+        def spy(paths, *args, **kw):
+            calls.append((list(paths), kw))
+            return real(paths, *args, **kw)
+        monkeypatch.setattr(gen, '_prescreen_meshes', spy)
+        _write(gen, out, stats, refs, master_mesh_dirs=[master])
+        paths, kw = calls[0]
+        assert [p.replace('/', '\\') for p in paths] == [
+            ROCK, _far(ROCK), _far(ROCK, '_far8'), _far(ROCK, '_far16')]
+        assert kw == {'source_meshes': [master / 'meshes']}

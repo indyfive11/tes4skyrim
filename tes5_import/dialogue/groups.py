@@ -13,6 +13,7 @@ from collections import Counter, defaultdict
 from ..base.text_reader import get_formid_index_offset, info_result_script
 from .quest import (bark_choice_gate_bytes, compute_quest_priorities,
                     has_quest_state_condition, quest_state_ctdas)
+from ..base.vanilla_quests import engine_quest_edid
 from ..base.writer import pack_group
 from .arrest import force_greet_topic
 from .barks_morrowind import bark_voice_types
@@ -666,7 +667,7 @@ def _record_voice_entry(info_rec, owner_qfid, ctx) -> None:
     """
     info_fid = get_formid(info_rec, 'FormID')
     prefix = voice_file_prefix(
-        ctx['quest_edid_by_fid'].get(owner_qfid, ''), ctx['edid'])
+        engine_quest_edid(ctx['quest_edid_by_fid'].get(owner_qfid, '')), ctx['edid'])
     for ri in range(get_int(info_rec, 'ResponseCount')):
         rtext = get_str(info_rec, f'Response[{ri}].ResponseText')
         rnum = (get_int(info_rec, f'Response[{ri}].ResponseNumber')

@@ -95,6 +95,12 @@ to match — and `--import-only` does not regenerate voice.
 **QUST (13) and DIAL (3) must never be renamed** for a cosmetic warning. That
 leaves 254 of 270 safe, which is not worth the vanilla-EditorID index.
 
+**QUST turned out not to be cosmetic.** A clashing quest name made Blood on the
+Ice read as an Oblivion quest, so a clashing QUST EditorID is now renamed, with
+its voice prefix renamed to match. That needs `--import-only` plus
+`--sounds-only`. See
+[tes5_import_quest.md](tes5_import_quest.md#quest-editorids-that-clash-with-skyrim).
+
 ### If it is ever built
 
 - Rename **at EDID assignment time**, not at write time: the voice map, FormID

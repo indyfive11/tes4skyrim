@@ -31,6 +31,7 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
 
 from asset_convert.game_paths import namespace_for, set_namespace
+from output_layout import record_dir
 from tes5_import.base.text_reader import parse_export_file
 from script_convert import pipeline
 
@@ -114,7 +115,7 @@ def main(argv=None) -> int:
     ap.add_argument('--compile', action='store_true')
     args = ap.parse_args(argv)
 
-    export_dir = str(ROOT / 'export' / args.plugin)
+    export_dir = str(record_dir(str(ROOT / 'export'), args.plugin))
     out = args.out or str(ROOT / 'temp' / 'subset_scripts' / args.plugin)
     os.makedirs(out, exist_ok=True)
     set_namespace(namespace_for(export_dir))

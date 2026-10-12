@@ -12,6 +12,10 @@
 #include "actor.h"
 #include "store.h"
 
+namespace Translation {
+class Storage;
+}
+
 namespace tesruntime::mw {
 
 // One row in the topic list.
@@ -26,9 +30,6 @@ struct Reply {
     std::string text;
     std::string voice;
     std::string resultScript;
-    // Topics named IN this reply's text, so the list can grow the way
-    // Morrowind's keyword discovery does.
-    std::vector<std::string> mentioned;
 };
 
 // The topics this actor can answer right now, in Morrowind's own order:
@@ -55,10 +56,15 @@ constexpr int kServiceEnchanting = 7;
 // when the actor does not refuse.
 Reply ServiceRefusal(int service, const ActorView& actor);
 
-// Topic ids appearing as whole words in `text`, longest first, restricted to
-// topics the actor can actually answer. Morrowind's keyword discovery.
+// DialogueManager::addTopicsFromText: OpenMW's KeywordSearch, seeded with
+// every visible dialogue, run over `text`; of the topics it finds, those the
+// actor can answer now. Call it after the reply's result script, as OpenMW does.
 std::vector<std::string> MentionedTopics(const std::string& text,
                                          const ActorView& actor);
+
+// OpenMW's Translation::Storage with no .top/.mrk/.cel loaded, which is what
+// it holds for an English data set: every topic is its own keyword.
+const Translation::Storage& Translations();
 
 // The topics vanilla hands the player in the census office, recovered from
 // the data's OWN chargen INFO rather than named here. A converted world is

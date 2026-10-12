@@ -25,7 +25,7 @@ from __future__ import annotations
 import dataclasses
 from enum import Enum, auto
 
-from script_convert.tes4.lexer import PRECEDENCE, T, Token, tokenize
+from script_convert.tes4.lexer import PRECEDENCE, RANK, T, Token, tokenize
 from script_convert.tes4.nodes import (
     Assign,
     BinOp,
@@ -43,6 +43,7 @@ from script_convert.tes4.nodes import (
     Label,
     Literal,
     Member,
+    Missing,
     Raw,
     Return,
     Script,
@@ -279,6 +280,8 @@ class Parser:
             # Record that the author parenthesised this, so the emitter can
             # echo it.  Frozen dataclass, so replace rather than mutate.
             return dataclasses.replace(inner, parenthesised=True)
+        if tok.kind is T.OP and tok.text in RANK:
+            return Missing(line=tok.line)
         # Anything else (a stray operator, the MG09Script backtick) is not an
         # expression; consume it so the caller cannot loop forever.
         self.advance()

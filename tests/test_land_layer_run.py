@@ -158,7 +158,10 @@ def test_land_with_no_base_anywhere_still_writes_a_run():
 
 
 def test_quadrant_with_a_base_is_written_as_before():
-    """Beside a baseless quadrant, a BASE quadrant keeps its merge, order and cap."""
+    """Beside a baseless quadrant, a BASE quadrant keeps its merge, order and cap.
+
+    The five widest layers are kept and written in the source blend order.
+    """
     cover = [0.3, 0.9, 0.1, 0.8, 0.2, 0.7, 0.6]
     busy = [('ALPHA', 1, 0x2000 + i, {pos: c for pos in range(4)})
             for i, c in enumerate(cover)]
@@ -170,8 +173,8 @@ def test_quadrant_with_a_base_is_written_as_before():
     merged = {0: 0.3, 1: 0.3, 2: 0.3, 3: 0.3, 200: 0.4}
     kept = [(0x2001, 0.9), (0x2003, 0.8), (0x2005, 0.7), (0x2006, 0.6)]
     assert build_land_layers(rec) == _packed([
-        (1, GRASS, [(tex, {pos: c for pos in range(4)}) for tex, c in kept]
-         + [(0x2000, merged), (0x2004, {pos: 0.2 for pos in range(4)})]),
+        (1, GRASS, [(0x2000, merged)]
+         + [(tex, {pos: c for pos in range(4)}) for tex, c in kept]),
         (2, None, [(MOSS, {7: 1.0})])])
 
 

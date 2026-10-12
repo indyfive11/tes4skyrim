@@ -41,14 +41,19 @@ del /q obj\*.obj 2>nul
 
 REM misc/strings and esm4 are header-only in this closure; esm/ contributes the
 REM RefId translation units refid.hpp pulls in.
-echo [build] compiling vendored OpenMW (interpreter + compiler)...
+echo [build] compiling vendored OpenMW (interpreter + compiler + keyword search)...
 cl %CXXFLAGS% %INCLUDES% ^
    "%MW%\components\interpreter\*.cpp" ^
    "%MW%\components\compiler\*.cpp" ^
    "%MW%\components\esm\*.cpp" ^
    "%MW%\components\debug\debuglog.cpp" ^
    "%MW%\components\files\conversion.cpp" ^
+   "%MW%\components\files\collections.cpp" ^
+   "%MW%\components\files\multidircollection.cpp" ^
    "%MW%\components\misc\*.cpp" ^
+   "%MW%\components\toutf8\toutf8.cpp" ^
+   "%MW%\components\translation\translation.cpp" ^
+   "%MW%\apps\openmw\mwdialogue\keywordsearch.cpp" ^
    /Fo:obj\mw\
 if errorlevel 1 (
     echo [build] ERROR: vendored OpenMW failed to compile

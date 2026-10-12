@@ -3,6 +3,9 @@
 #include <algorithm>
 #include <cctype>
 
+#include <components/translation/translation.hpp>
+#include <openmw/mwdialogue/keywordsearch.hpp>
+
 #include "filter.h"
 #include "scope.h"
 
@@ -18,20 +21,6 @@ std::string Lower(std::string text) {
 
 bool IEqual(const std::string& a, const std::string& b) {
     return a.size() == b.size() && Lower(a) == Lower(b);
-}
-
-bool IsWordChar(char c) {
-    const unsigned char u = static_cast<unsigned char>(c);
-    return std::isalnum(u) != 0 || c == '\'';
-}
-
-// A topic matches only on a whole-word boundary, or "ring" would light up
-// inside "bring".
-bool WholeWordAt(const std::string& haystack, const std::string& needle,
-                 std::size_t pos) {
-    if (pos > 0 && IsWordChar(haystack[pos - 1])) return false;
-    const std::size_t after = pos + needle.size();
-    return after >= haystack.size() || !IsWordChar(haystack[after]);
 }
 
 // The actor whose result script hands out the starting topics. Morrowind's
@@ -73,7 +62,6 @@ Reply MakeReply(const std::string& topic, const Info* info,
     reply.text = info->response;
     reply.voice = info->voice;
     reply.resultScript = info->resultScript;
-    reply.mentioned = MentionedTopics(info->response, actor);
     return reply;
 }
 
@@ -155,29 +143,27 @@ std::vector<std::string> ChargenTopics() {
 
 std::vector<std::string> MentionedTopics(const std::string& text,
                                          const ActorView& actor) {
-    const std::string haystack = Lower(text);
-    std::vector<std::string> out;
+    MWDialogue::KeywordSearch search;
     for (const auto& entry : Topics()) {
-        const Topic& topic = entry.second;
-        if (topic.type != DialType::Topic || !TopicVisible(topic)) continue;
-        const std::string needle = Lower(topic.id);
-        if (needle.empty() || needle.size() > haystack.size()) continue;
-        const std::size_t pos = haystack.find(needle);
-        if (pos == std::string::npos) continue;
-        if (!WholeWordAt(haystack, needle, pos)) continue;
-        // Only offer what the actor can actually answer, or the list fills
-        // with topics that reply with nothing.
-        if (SelectInfo(topic, actor, -1).info == nullptr) continue;
-        out.push_back(topic.id);
+        if (TopicVisible(entry.second)) {
+            search.seed(Translations().topicKeyword(entry.second.id),
+                        entry.second.id);
+        }
     }
-    // Longest first: a reply naming both "Caius Cosades" and "Caius" should
-    // surface the specific topic ahead of the general one.
-    std::sort(out.begin(), out.end(),
-              [](const std::string& a, const std::string& b) {
-                  if (a.size() != b.size()) return a.size() > b.size();
-                  return Lower(a) < Lower(b);
-              });
+    std::vector<std::string> out;
+    for (const auto& match : search.parseHyperText(text, Translations())) {
+        const Topic* topic = FindTopic(match.mTopicId);
+        if (topic && topic->type == DialType::Topic &&
+            SelectInfo(*topic, actor, -1).info != nullptr) {
+            out.push_back(topic->id);
+        }
+    }
     return out;
+}
+
+const Translation::Storage& Translations() {
+    static const Translation::Storage storage;
+    return storage;
 }
 
 }  // namespace tesruntime::mw

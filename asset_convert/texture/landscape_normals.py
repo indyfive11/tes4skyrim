@@ -201,20 +201,21 @@ def ensure_ltex_normals(rec_dir, textures_root, output_dir,
     """Write a flat normal for every land texture that ships none.
 
     A landscape TXST names ``<diffuse>_n.dds`` whether or not the source game
-    had one, and a missing landscape normal renders at full specular. The
-    case resolver looks for the file under every plugin's output tree (a
-    dependent's terrain borrows its master's textures); it is written under
-    THIS plugin's when absent.
+    had one; Morrowind has no normal maps at all, and a missing landscape
+    normal renders at full specular. The case resolver looks for the file
+    under every plugin's output tree (a dependent's terrain borrows its
+    master's textures), whatever the spelling of its `textures` folder; it
+    is written under THIS plugin's when absent.
     Returns (checked, written).
     See: docs/commentary/asset_convert_texture.md#landscape-normal-maps-dxt1-shiny
     """
     output_dir = Path(output_dir)
-    trees = [p / 'textures' for p in output_dir.iterdir() if p.is_dir()]
+    trees = [p for p in output_dir.iterdir() if p.is_dir()]
     written = 0
     rels = _ltex_texture_rels(rec_dir)
     for rel in sorted(rels):
         normal = rel.rsplit('.', 1)[0] + '_n.dds'
-        if case_paths.exists(trees, normal, 'landscape_normal'):
+        if case_paths.exists(trees, 'textures\\' + normal, 'landscape_normal'):
             continue
         dest = case_paths.write_path(textures_root, normal)
         with open(dest, 'wb') as f:

@@ -22,6 +22,7 @@ from core.subprocess_flags import POPEN_FLAGS as _POPEN_FLAGS, windows_cmd
 from core.worker_budget import worker_count
 from output_layout import plugin_out_root, record_dir
 from script_convert.ownership import owner_key, read_owned, sibling_owned
+from script_convert.static_scripts import STATIC_DIR, static_script_files
 from source_paths import find_game_path
 
 #: TESConversion root, for the bundled compiler and as the compiler's cwd.
@@ -303,6 +304,28 @@ def _master_source_dirs(file_name: str, out_root: Path) -> list:
     return dirs
 
 
+def _root_statics_current(file_name: str, out_root: Path) -> bool:
+    """False, after printing which master to reconvert, when the root's static scripts are stale.
+
+    See: docs/commentary/script_convert.md#stale-master-static-scripts
+    """
+    export_root = str(SCRIPT_DIR / "export")
+    chain = master_chain(record_dir(export_root, file_name))
+    if not chain:
+        return True
+    root_src = plugin_out_root(out_root, chain[0], export_root) / "scripts" / "source"
+    stale = [n for n in static_script_files()
+             if not (root_src / n).is_file()
+             or (root_src / n).read_bytes() != (Path(STATIC_DIR) / n).read_bytes()]
+    if not stale:
+        return True
+    print(f"[{file_name}] ERROR: {chain[0]}'s converted scripts are missing or "
+          f"older than this converter ({', '.join(stale)}).\n"
+          f"  Reconvert them first: python convert.py -f \"{chain[0]}\" "
+          f"--scripts-only")
+    return False
+
+
 def _write_error_log(script_out: Path, errors: list) -> None:
     """Dump every failure beside the scripts; remove a stale log on success.
 
@@ -357,6 +380,9 @@ def _prepare(file_name: str, config: dict, output_dir):
     if not headers:
         print(f"[{file_name}] ERROR: Skyrim Papyrus source headers not found")
         print("  Expected at: <Skyrim SE>\\Data\\Source\\Scripts\\")
+        return None, False
+
+    if not _root_statics_current(file_name, out_root):
         return None, False
 
     script_out.mkdir(parents=True, exist_ok=True)

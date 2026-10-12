@@ -154,17 +154,6 @@ yours.
 Tailing the file (`tools/script/papyrus_tail.py`) is still supported and complementary
 — it sees history and anything emitted while nothing was armed.
 
-### Flight recorder
-
-Script events (quest stages, dialogue lines, packages, triggers, activations
-and more) are written to `TESGameBridge_events.jsonl` whether or not a client
-is connected. The recorder is described in `../README.md` (Flight recorder),
-and `tools/live/flight_log.py` reads it. This command only reports on it.
-
-| cmd | args | returns |
-|---|---|---|
-| `recorder` | `{enable?}` | `{installed, enabled, path, events, bytes, dropped, per_kind, hooked, missing}`. `enable` turns recording off or back on |
-
 ### Papyrus
 
 | cmd | args | returns |
@@ -235,6 +224,17 @@ garbage.
   "bones": [{"name": "NPC Spine", "world": [x,y,z], "rot": [...]}, ...]
 }
 ```
+
+### `trace` — frame-rate sampler + timestamped hooks (`trace.cpp`)
+
+| action | args | effect |
+|---|---|---|
+| `hook` | `{rva\|address, cap_arg, cap_len, label}` | detour (≤6) that records entry/exit µs, thread, 4 args, return, `cap_len` bytes at arg `cap_arg` — only while a trace runs |
+| `start` | `{path, interval_ms, meta, regions:[{kind 0 direct\|1 deref\|2 ptr-array, addr, off, len, stride, elem_ptr_off, max}]}` | background thread copies every region each interval (SEH-guarded) into `path` |
+| `stop` / `status` | – | `{running, samples, hook_records, bytes, path}` |
+
+File: framed records `u8 type, u32 len, payload` — 0 meta JSON, 1 sample, 2 hook
+(layout in `trace.cpp`). Client and decoder: `tools/live/graph_trace.py`.
 
 `ragdoll_instance:false` or `rigid_bodies:0` on a creature that looks fine on
 screen is the exact silent-binding signature that offline validation misses.

@@ -18,7 +18,7 @@ each statement's trailing source comment.
 
 from __future__ import annotations
 
-from script_convert.constants import safe_property_name
+from script_convert.constants import HALTED_VAR, safe_property_name
 from script_convert.stage_latch import guard_stage_timer
 from script_convert.emit import stmt as S
 from script_convert.tes4 import nodes as N
@@ -72,6 +72,8 @@ def emit_body(conv, body, extends: str, depth: int = 0) -> list[str]:
 def emit_stmt(conv, st: N.Stmt, extends: str, depth: int) -> list[str]:
     """Papyrus lines for ONE statement, including any body it owns."""
     pad = INDENT * depth
+    if _evaluates_missing(st):
+        return _halt(conv, extends, pad)
     if isinstance(st, N.If):
         return _if(conv, st, extends, depth)
     if isinstance(st, N.While):
@@ -110,12 +112,34 @@ def _indent(text: str, pad: str) -> list[str]:
     return out
 
 
+def _evaluates_missing(st: N.Stmt) -> bool:
+    """Does this statement's own expression (not a nested body's) lack an operand?"""
+    return any(N.has_missing(getattr(st, attr, None))
+               for attr in ('expr', 'cond', 'value', 'target'))
+
+
+def _halt(conv, extends: str, pad: str) -> list[str]:
+    """A failed evaluation: TES4 ends the pass and disables a standalone script.
+
+    See: docs/commentary/script_convert.md#missing-operand-halts
+    """
+    conv.sc.halts = conv.sc.halts or conv.sc.can_halt
+    head = [pad + f'{HALTED_VAR} = True'] if conv.sc.can_halt else []
+    return head + _indent(conv.emit_return(N.Return(), extends), pad)
+
+
 def _if(conv, st: N.If, extends: str, depth: int) -> list[str]:
-    """`If` with its elseif chain and else, each body owning its own nesting."""
+    """`If` with its elseif chain and else, each body owning its own nesting.
+
+    An elseif whose condition lacks an operand halts there; nothing after it can run.
+    """
     pad = INDENT * depth
     out = [pad + _text(conv, st, extends)]
     out += emit_body(conv, st.body, extends, depth + 1)
     for cond, body, _line in st.elifs:
+        if N.has_missing(cond):
+            return (out + [pad + 'Else'] + _halt(conv, extends, pad + INDENT)
+                    + [pad + 'EndIf'])
         out.append(pad + 'ElseIf ' + S.emit_condition(conv, cond, extends))
         out += emit_body(conv, body, extends, depth + 1)
     if st.orelse:

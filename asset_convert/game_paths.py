@@ -22,8 +22,9 @@ from pathlib import Path
 from asset_convert.case_paths import split_rel
 from core.plugin_masters import master_dir, masters_from_export_header
 
-__all__ = ["win_join", "DEFAULT_NAMESPACE", "namespace_for",
-           "set_namespace", "current_namespace", "owns_namespace"]
+__all__ = ["win_join", "find_nocase", "folder_names", "DEFAULT_NAMESPACE",
+           "namespace_for", "set_namespace", "current_namespace",
+           "owns_namespace"]
 
 #: Namespace for Oblivion and everything mastered on it, and the fallback.
 DEFAULT_NAMESPACE = 'tes4'
@@ -111,3 +112,42 @@ def win_join(root, rel: str) -> Path:
     `Path(root) / '\\abs.nif'` would.
     """
     return Path(root).joinpath(*split_rel(rel))
+
+
+def _segments(rel) -> list:
+    """`rel` split on either separator, empty segments dropped."""
+    return [p for p in str(rel).replace('/', '\\').split('\\') if p]
+
+
+def folder_names(folder) -> dict:
+    """`{lowercase name: [names]}` for `folder`'s entries; empty when unreadable."""
+    found = {}
+    try:
+        names = sorted(os.listdir(folder))
+    except OSError:
+        return found
+    for name in names:
+        found.setdefault(name.lower(), []).append(name)
+    return found
+
+
+def find_nocase(root, *parts, kind=os.path.isfile, listing=folder_names):
+    """The file `win_join(root, parts)` names, matched ignoring case, or None.
+
+    The exact join is probed first and returned as is: an exact hit lists
+    nothing, so where the filesystem ignores case a file that exists is found
+    as it always was. After a miss each segment is matched ignoring case,
+    through every folder that spells it, one listing per folder. `kind` is the
+    probe: `os.path.isdir` finds a folder. A `listing` that remembers must
+    forget a folder the run writes into.
+    See: docs/commentary/asset_convert_texture.md#case-blind-lookups
+    """
+    segs = _segments('\\'.join(parts))
+    exact = Path(root).joinpath(*segs)
+    if kind(exact):
+        return exact
+    found = [str(Path(root))]
+    for seg in segs:
+        found = [os.path.join(folder, name) for folder in found
+                 for name in listing(folder).get(seg.lower(), ())]
+    return next((Path(p) for p in found if kind(p)), None)

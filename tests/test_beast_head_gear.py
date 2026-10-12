@@ -114,11 +114,25 @@ def test_multi_slot_suit_gets_no_beast_armature():
 
 
 def test_body_gear_armature_is_unchanged():
-    """A cuirass keeps exactly one armature listing all ten races."""
+    """A cuirass keeps exactly one armature listing every race and its vampire race."""
     _armo, armas = _armas(_record(1 << 2))
     assert len(armas) == 1
     assert _fid(armas[0]['RNAM'][0]) == DEFAULT_RACE
     assert [_fid(m) for m in armas[0]['MODL']] == ARMA_ADDITIONAL_RACES
+
+
+def test_armature_races_match_vanilla_iron_boots():
+    """Base/vampire pairs as Skyrim.esm IronBootsAA lists them, minus Elder and Manakin.
+
+    Vampire races carry no armor-race link, so an armature that skips them
+    renders nothing on a vampire. See: docs/commentary/asset_convert_armor.md#arma-race-lists
+    """
+    assert ARMA_ADDITIONAL_RACES == [
+        0x00013740, 0x0008883A, 0x00013741, 0x0008883C, 0x00013742, 0x0008883D,
+        0x00013743, 0x00088840, 0x00013744, 0x00088844, 0x00013745, 0x00088845,
+        0x00013746, 0x00088794, 0x00013747, 0x000A82B9, 0x00013748, 0x00088846,
+        0x00013749, 0x00088884,
+    ]
 
 
 # --- the split --------------------------------------------------------------
@@ -141,8 +155,9 @@ def test_head_gear_emits_three_armatures():
     default = by_race[DEFAULT_RACE]
     default_races = [_fid(m) for m in default['MODL']]
     assert default_races == ARMA_ADDITIONAL_RACES_NONBEAST
-    assert KHAJIIT_RACE not in default_races
-    assert ARGONIAN_RACE not in default_races
+    for race in (KHAJIIT_RACE, ARGONIAN_RACE, 0x00088845, 0x0008883A):
+        assert race not in default_races
+    assert 0x00088794 in default_races
 
     # Beast armatures: that race's vampire variant as the additional race,
     # exactly as vanilla lists it.

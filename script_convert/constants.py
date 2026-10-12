@@ -13,6 +13,9 @@ from script_convert.constants_falloutnv import FALLOUT_ACTOR_VALUE_MAP, FALLOUT_
 #: TES4 player-base script rides a QUST alias. See: docs/commentary/script_convert.md#player-base-script-needs-quest-alias
 PLAYER_ALIAS_EXTENDS = 'ReferenceAlias'
 
+#: Set once a statement's expression fails to evaluate. See: docs/commentary/script_convert.md#missing-operand-halts
+HALTED_VAR = 'TES4_Halted'
+
 #: The object's last activator, recorded by OnActivate. See: docs/commentary/script_convert.md#last-activator
 LAST_ACTIVATOR_VAR = 'TES4_LastActivator'
 

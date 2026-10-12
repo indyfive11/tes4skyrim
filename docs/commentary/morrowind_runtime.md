@@ -203,7 +203,17 @@ filter — the same count the source probe measured.
 `plugin/session.{h,cpp}` turns the filter into what a menu renders: the
 greeting, the offered topic list (alphabetical, as vanilla reads), one topic's
 answer, and Morrowind's **keyword discovery** — topics named in a reply's text,
-whole-word, longest first, restricted to topics the actor can actually answer.
+restricted to topics the actor can actually answer.
+
+Keywords are found by the vendored OpenMW `MWDialogue::KeywordSearch`, never a
+hand-written matcher. A topic needs a separator (`\n \r \t ' " ( [`) only
+BEFORE it; its end may fall mid-word, so `cave rat` matches inside "cave rats"
+(the Fighters Guild's first contract) and `Shal` inside "shall". Overlaps go to
+the longest. Learning runs `DialogueManager::addTopicsFromText`'s search over
+every visible dialogue after the result script; the window seeds its own from
+the topic list and re-links the whole history each redraw, as
+`DialogueWindow::updateTopics` does. A hand-written whole-word check here once
+missed 6,177 topic mentions across 352 Morrowind.esm topics.
 
 `session_test.exe` runs all of it headless against a real export:
 

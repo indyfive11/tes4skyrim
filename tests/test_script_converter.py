@@ -6842,14 +6842,9 @@ class TestGameModeStepsAreRates:
         assert 'akRef.SendModEvent("TES4Track", aiAxis as String, afValue)' in body
         assert '!(akRef as Actor)' in body
 
-@pytest.mark.parametrize('owns_script', [False, True])
-def test_compile_shared_sources_respects_empty_plugin_ownership(tmp_path, monkeypatch, owns_script):
-    """Empty ownership succeeds; an owned script that fails compilation still fails."""
+def _shared_pack_export(tmp_path):
+    """Export side of a two-plugin `Pack` mod: Base.esm and its dependent Empty.esp."""
     import json
-    import papyrus_compile as compiler
-    from script_convert.ownership import write_owned
-
-    monkeypatch.setattr(compiler, 'SCRIPT_DIR', tmp_path)
     export = tmp_path / 'export'
     export.mkdir()
     names = ['Base.esm', 'Empty.esp']
@@ -6861,14 +6856,27 @@ def test_compile_shared_sources_respects_empty_plugin_ownership(tmp_path, monkey
         records.mkdir(parents=True)
         (records / '_HEADER.txt').write_text('Master[0]=Base.esm\n'
                                              if name == 'Empty.esp' else '')
-    output = tmp_path / 'output'
-    source = output / 'Pack' / 'scripts' / 'source'
+
+
+def _shared_pack_output(tmp_path, owns_script):
+    """The shared output folder, where Base.esm already ships the current statics."""
+    import shutil
+    from script_convert.ownership import write_owned
+    from script_convert.static_scripts import STATIC_DIR, static_script_files
+    source = tmp_path / 'output' / 'Pack' / 'scripts' / 'source'
     source.mkdir(parents=True)
     (source / 'MasterScript.psc').write_text('Scriptname MasterScript extends Quest\n')
+    for name in static_script_files():
+        shutil.copy2(os.path.join(STATIC_DIR, name), source / name)
     write_owned(source, 'Base.esm', ['MasterScript'])
     write_owned(source, 'Empty.esp', ['OwnScript'] if owns_script else [])
     if owns_script:
         (source / 'OwnScript.psc').write_text('Scriptname OwnScript extends Quest\n')
+    return source
+
+
+def _fake_compiler_install(tmp_path):
+    """A placeholder compiler exe and vanilla header dir; returns the Data dir."""
     executable = tmp_path / 'external' / 'papyrus-compiler' / 'papyrus.exe'
     executable.parent.mkdir(parents=True)
     executable.touch()
@@ -6876,6 +6884,39 @@ def test_compile_shared_sources_respects_empty_plugin_ownership(tmp_path, monkey
     headers = data / 'Source' / 'Scripts'
     headers.mkdir(parents=True)
     (headers / 'Debug.psc').write_text('Scriptname Debug\n')
+    return data
+
+
+def test_compile_dependent_refuses_stale_root_statics(tmp_path, monkeypatch, capsys):
+    """A root's out-of-date TES4Polyfill fails the dependent's compile and names the master to reconvert."""
+    import papyrus_compile as compiler
+
+    monkeypatch.setattr(compiler, 'SCRIPT_DIR', tmp_path)
+    _shared_pack_export(tmp_path)
+    source = _shared_pack_output(tmp_path, False)
+    (source / 'TES4Polyfill.psc').write_text('Scriptname TES4Polyfill Hidden\n')
+    data = _fake_compiler_install(tmp_path)
+    compiled = []
+    monkeypatch.setattr(compiler._Compiler, '_run',
+                        lambda self, argv, timeout: compiled.append(argv) or ('', 0))
+
+    result = compiler.phase_compile('Empty.esp', {'tes5DataPath': str(data)}, str(tmp_path / 'output'))
+
+    assert result is False and compiled == []
+    assert 'convert.py -f "Base.esm" --scripts-only' in capsys.readouterr().out
+    assert (source / 'TES4Polyfill.psc').read_text() == 'Scriptname TES4Polyfill Hidden\n'
+
+
+@pytest.mark.parametrize('owns_script', [False, True])
+def test_compile_shared_sources_respects_empty_plugin_ownership(tmp_path, monkeypatch, owns_script):
+    """Empty ownership succeeds; an owned script that fails compilation still fails."""
+    import papyrus_compile as compiler
+
+    monkeypatch.setattr(compiler, 'SCRIPT_DIR', tmp_path)
+    _shared_pack_export(tmp_path)
+    source = _shared_pack_output(tmp_path, owns_script)
+    output = tmp_path / 'output'
+    data = _fake_compiler_install(tmp_path)
 
     compiled_names = set()
     def fail_compile(self, argv, timeout):

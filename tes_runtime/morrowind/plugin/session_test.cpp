@@ -109,6 +109,15 @@ void PrintWrapped(const std::string& text, int indent) {
     std::putchar('\n');
 }
 
+// The topics `text` teaches the player when `actor` says it.
+void PrintMentions(const std::string& text, const ActorView& actor) {
+    const std::vector<std::string> mentioned = MentionedTopics(text, actor);
+    if (mentioned.empty()) return;
+    std::printf("  mentions:");
+    for (const auto& t : mentioned) std::printf(" '%s'", t.c_str());
+    std::putchar('\n');
+}
+
 }  // namespace
 }  // namespace tesruntime::mw
 
@@ -164,11 +173,7 @@ int main(int argc, char** argv) {
     } else {
         std::printf("GREETING  [%s]\n", hello.topic.c_str());
         PrintWrapped(hello.text, 2);
-        if (!hello.mentioned.empty()) {
-            std::printf("  mentions:");
-            for (const auto& t : hello.mentioned) std::printf(" '%s'", t.c_str());
-            std::putchar('\n');
-        }
+        PrintMentions(hello.text, actor);
         std::putchar('\n');
     }
 
@@ -199,6 +204,7 @@ int main(int argc, char** argv) {
             std::printf("TOPIC '%s'\n", reply.topic.c_str());
             DialogueContext context(actor, actor.id, "Player");
             PrintWrapped(Interpreter::fixDefinesDialog(reply.text, context), 2);
+            PrintMentions(reply.text, actor);
             if (!reply.resultScript.empty()) {
                 std::printf("  result script:\n");
                 PrintWrapped(reply.resultScript, 4);

@@ -392,6 +392,10 @@ constexpr std::uint64_t kRefDelete = 56154;
 constexpr std::uint64_t kRefGetDistance = 56170;
 constexpr std::uint64_t kRefGetParentCell = 56632;
 constexpr std::uint64_t kCellIsInterior = 56056;
+// bool Cell.IsAttached() (0xa274e0 on 1.6.1170, 0x9c8820 on 1.6.659): the `lea`
+// beside the name string `IsAttached`, one registration above IsInterior's.
+// Its whole body is `cmp byte ptr [cell+0x44], 7`.
+constexpr std::uint64_t kCellIsAttached = 56055;
 constexpr std::uint64_t kActorGetValue = 54675;
 constexpr std::uint64_t kActorSetValue = 54743;
 constexpr std::uint64_t kActorRestoreValue = 54737;

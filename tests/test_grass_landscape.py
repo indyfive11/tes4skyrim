@@ -365,7 +365,6 @@ class TestLandscapeNormals:
     def test_ensure_ltex_normals_writes_only_missing(self, tmp_path):
         """A land texture whose normal any plugin ships is left alone; one
         shipping none gets a flat normal under this plugin's tree."""
-        from asset_convert.game_paths import set_namespace
         set_namespace('tes4')
         export = tmp_path / 'export'
         export.mkdir()
@@ -441,11 +440,41 @@ class TestLandscapeNormals:
 
         monkeypatch.setattr(case_paths, 'exists', scripted)
         assert landscape_normals.ensure_ltex_normals(export, mine, out) == (2, 1)
-        assert sorted(asked) == ['tes4\\landscape\\gone_n.dds',
-                                 'tes4\\landscape\\here_n.dds']
+        assert sorted(asked) == ['textures\\tes4\\landscape\\gone_n.dds',
+                                 'textures\\tes4\\landscape\\here_n.dds']
         assert (mine / 'tes4' / 'landscape' / 'gone_n.dds').is_file()
         assert not (mine / 'tes4' / 'landscape' / 'here_n.dds').exists()
         assert shipped.read_bytes() == b'DDS shipped'
+
+    def test_two_spellings_of_one_missing_normal_write_one_file(self, tmp_path):
+        """The second spelling finds the placeholder the first one just wrote."""
+        set_namespace('tes4')
+        export = tmp_path / 'export'
+        export.mkdir()
+        (export / 'LTEX.txt').write_text(
+            '---RECORD_BEGIN---\nICON=Dirt02.dds\n---RECORD_END---\n'
+            '---RECORD_BEGIN---\nICON=dirt02.dds\n---RECORD_END---\n')
+        out = tmp_path / 'output'
+        mine = out / 'Plugin.esp' / 'textures'
+        mine.mkdir(parents=True)
+        assert landscape_normals.ensure_ltex_normals(export, mine, out) == (2, 1)
+        assert len(os.listdir(mine / 'tes4' / 'landscape')) == 1
+
+    def test_a_master_with_a_capital_textures_folder_is_searched(self, tmp_path):
+        """`Textures/` is one more spelling of the folder, not a miss."""
+        set_namespace('tes4')
+        export = tmp_path / 'export'
+        export.mkdir()
+        (export / 'LTEX.txt').write_text(
+            '---RECORD_BEGIN---\nICON=dirt02.dds\n---RECORD_END---\n')
+        out = tmp_path / 'output'
+        shipped = (out / 'Master.esm' / 'Textures' / 'tes4' / 'landscape'
+                   / 'dirt02_n.dds')
+        shipped.parent.mkdir(parents=True)
+        shipped.write_bytes(b'DDS shipped')
+        mine = out / 'Plugin.esp' / 'textures'
+        assert landscape_normals.ensure_ltex_normals(export, mine, out) == (1, 0)
+        assert not mine.exists()
 
     def test_the_lookup_counts_match_what_was_written(self, tmp_path):
         """Every flat normal written is one `missed` lookup; the rest are found, exactly or by case."""

@@ -950,57 +950,23 @@ HEAVY_ARMOR_FOOTSTEP_SET = 0x00021487   # FSTArmorHeavyFootstepSet
 LIGHT_ARMOR_FOOTSTEP_SET = 0x00021486   # FSTArmorLightFootstepSet
 CLOTHING_FOOTSTEP_SET = 0x00021468      # FSTBarefootFootstepSet
 
-# Additional races for ARMA records.  Every ARMA should list all playable
-# races so any race can equip the armor.  These are the base race FormIDs
-# from Skyrim.esm (sourced from IronBootsAA's MODL entries).
+#: ARMA MODL[]: each playable race, then its vampire race. See: docs/commentary/asset_convert_armor.md#arma-race-lists
 ARMA_ADDITIONAL_RACES = [
-    0x00013740,  # ArgonianRace
-    0x00013741,  # BretonRace
-    0x00013742,  # DarkElfRace
-    0x00013743,  # HighElfRace
-    0x00013744,  # ImperialRace
-    0x00013745,  # KhajiitRace
-    0x00013746,  # NordRace
-    0x00013747,  # OrcRace
-    0x00013748,  # RedguardRace
-    0x00013749,  # WoodElfRace
+    fid for race in sorted(SKYRIM_VAMPIRE_RACES) for fid in (race, SKYRIM_VAMPIRE_RACES[race])
 ]
 
-
-# BEAST-RACE HEAD GEAR (2026-08-27).  A converted hood/helmet mesh is fitted
-# to the SHARED HUMAN skull, which on a khajiit or argonian puts the geometry
-# inside the head: measured head-local, the khajiit Skyrim head reaches
-# z 14.85 and abs(x) 8.47 against the human head's 11.51 / 6.85, and over the
-# scalp region a hood sits on, beast verts stand a mean 1.91 (khajiit) / 1.40
-# (argonian) proud of the human surface (max 6.87 / 4.29).
-#
-# Vanilla Skyrim's answer is one ARMA PER RACE FAMILY, each naming its own
-# reshaped NIF -- ArmorIronHelmet lists IronHelmetAA (RNAM=DefaultRace,
-# Helmet.nif), IronHelmetKhajiitAA (RNAM=KhajiitRace, HelmetKhajiit.nif) and
-# IronHelmetArgonianAA (RNAM=ArgonianRace, HelmetArgonian.nif).  ARMA carries
-# no alternate-model slot; race targeting is RNAM plus the MODL[] additional
-# races, so a per-race MESH requires a per-race ARMA.  The same split runs
-# through BoneCrown, Blades, Orcish, Dragonscale, Draugr, Dragonplate, Falmer,
-# ThalmorHood and every Circlet.
-#
-# We mirror it: asset_convert.nif.nif_converter writes <name>_khajiit.nif /
-# <name>_argonian.nif beside the base mesh and equipment._build_arma emits the
-# ARMA naming each.  Khajiit and Argonian stay SEPARATE (never one shared
-# "beast" mesh) because the two skulls differ from each other as much as
-# either differs from the human one.
-#
-# race key -> (RNAM race FormID, [additional races], mesh suffix).  The
-# additional race is that race's vampire variant, exactly as vanilla lists it.
+#: Head-gear beast armatures: race key -> (RNAM race, [its vampire race], mesh suffix).
 ARMA_BEAST_RACES = {
-    'khajiit': (0x00013745, [0x00088845], '_khajiit'),
-    'argonian': (0x00013740, [0x0008883A], '_argonian'),
+    'khajiit': (0x00013745, [SKYRIM_VAMPIRE_RACES[0x00013745]], '_khajiit'),
+    'argonian': (0x00013740, [SKYRIM_VAMPIRE_RACES[0x00013740]], '_argonian'),
 }
 
-# The races the DEFAULT (human-fitted) ARMA should claim once beast variants
-# exist: everything in ARMA_ADDITIONAL_RACES except the beast races, which are
-# served by their own ARMA.  Leaving them in makes the engine pick whichever
-# armature it finds first and the beast mesh never renders.
-ARMA_BEAST_RACE_FIDS = {fid for fid, _extra, _sfx in ARMA_BEAST_RACES.values()}
+#: Every race a beast armature serves, its vampire race included.
+ARMA_BEAST_RACE_FIDS = {
+    fid for rnam, extra, _sfx in ARMA_BEAST_RACES.values() for fid in (rnam, *extra)
+}
+
+#: The default armature's races once beast armatures exist. See: docs/commentary/asset_convert_armor.md#arma-race-lists
 ARMA_ADDITIONAL_RACES_NONBEAST = [
     fid for fid in ARMA_ADDITIONAL_RACES if fid not in ARMA_BEAST_RACE_FIDS
 ]

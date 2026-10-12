@@ -25,6 +25,7 @@ from ..base.conditions import (CTDA_OR, CTDA_RUN_ON_TARGET,
 from .objective_text import short_objective
 from .quest_falloutnv import authored_objectives, has_authored_objectives
 from ..base.text_reader import get_formid_index_offset, remap_formid
+from ..base.vanilla_quests import engine_quest_edid
 from ..record_types.common import (
     get_formid,
     get_int,
@@ -884,7 +885,7 @@ def convert_QUST(rec: dict, fid_to_edid: dict = None,
                   else quest_objectives(rec, targets, script_vars))
     alias_packages = _quest_alias_packages(pack_plan, qfid, alias_by_fid)
 
-    subs = pack_string_subrecord('EDID', edid) if edid else b''
+    subs = pack_string_subrecord('EDID', engine_quest_edid(edid)) if edid else b''
     subs += _quest_vmad(rec, edid, alias_packages, (fid_to_edid, well_known_props, unlock_plan,
                                                     unlock_globals, xref))
     full = get_str(rec, 'FULL')

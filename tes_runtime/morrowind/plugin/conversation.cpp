@@ -2,14 +2,17 @@
 #include "conversation.h"
 
 #include <algorithm>
-#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <components/interpreter/defines.hpp>
+#include <components/misc/strings/lower.hpp>
+#include <components/translation/translation.hpp>
+#include <openmw/mwdialogue/keywordsearch.hpp>
 
 #include "activation.h"
 #include "conversation_modal.h"
@@ -93,11 +96,10 @@ struct Hot {
 
 // One entry in the history pane: a reply under its topic heading (empty for
 // a greeting or an answered choice), as OpenMW's Response, or a notice such
-// as the journal update, as its Message. Keywords are found once, on entry.
+// as the journal update, as its Message.
 struct Entry {
     std::string title;
     std::string text;
-    std::vector<Hot> links;
     bool notice = false;
 };
 
@@ -118,6 +120,12 @@ std::string g_lastTopic;
 std::vector<Entry> g_history;
 std::vector<Item> g_items;
 
+// DialogueWindow's mKeywordSearch and mTopicLinks: the listed topics, seeded
+// again whenever the list is rebuilt. A link maps a lowercased id to the
+// listed topic.
+MWDialogue::KeywordSearch g_keywordSearch;
+std::unordered_map<std::string, std::string> g_topicLinks;
+
 // The hot spans and wrapped lines of the WHOLE pane, in the plain-text
 // character indices the movie's TextField uses, and that plain text.
 std::vector<Hot> g_paneHots;
@@ -137,57 +145,6 @@ bool g_open = false;
 // the button only while a choice is pending.
 bool ListLocked() { return !State().choices.empty() || State().goodbye; }
 bool ByeLocked() { return !State().choices.empty() && !State().goodbye; }
-
-std::string Lower(std::string text) {
-    std::transform(text.begin(), text.end(), text.begin(),
-                   [](unsigned char c) { return static_cast<char>(::tolower(c)); });
-    return text;
-}
-
-bool IsWordChar(char c) {
-    return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '\'';
-}
-
-bool WholeWordAt(const std::string& haystack, std::size_t pos,
-                 std::size_t length) {
-    if (pos > 0 && IsWordChar(haystack[pos - 1])) return false;
-    const std::size_t after = pos + length;
-    return after >= haystack.size() || !IsWordChar(haystack[after]);
-}
-
-bool Overlaps(const std::vector<Hot>& links, std::size_t begin,
-              std::size_t end) {
-    for (const Hot& link : links) {
-        if (begin < link.end && link.begin < end) return true;
-    }
-    return false;
-}
-
-// Every whole-word occurrence of each topic in `text`. `topics` arrives
-// longest first from MentionedTopics, so "Caius Cosades" claims its span
-// before "Caius" can.
-std::vector<Hot> FindLinks(const std::string& text,
-                           const std::vector<std::string>& topics) {
-    std::vector<Hot> out;
-    const std::string haystack = Lower(text);
-    for (const std::string& topic : topics) {
-        const std::string needle = Lower(topic);
-        if (needle.empty()) continue;
-        std::size_t pos = haystack.find(needle);
-        while (pos != std::string::npos) {
-            const std::size_t end = pos + needle.size();
-            if (WholeWordAt(haystack, pos, needle.size()) &&
-                !Overlaps(out, pos, end)) {
-                out.push_back({pos, end, HotKind::Topic, topic, 0});
-            }
-            pos = haystack.find(needle, pos + 1);
-        }
-    }
-    std::sort(out.begin(), out.end(), [](const Hot& a, const Hot& b) {
-        return a.begin < b.begin;
-    });
-    return out;
-}
 
 std::string Path(const char* base, const char* property) {
     return std::string(base) + property;
@@ -322,7 +279,8 @@ struct Pane {
 };
 
 // One response the way Response::write lays it out: heading in the header
-// colour, then the text with each keyword as a link. A notice is one colour.
+// colour, then the text as parseHyperText splits it, each match shown by its
+// display name and linked when it is a listed topic. A notice is one colour.
 void AppendEntry(const Entry& entry, Pane* pane) {
     if (entry.notice) {
         pane->Colored(entry.text, Colors().notify);
@@ -332,14 +290,21 @@ void AppendEntry(const Entry& entry, Pane* pane) {
         pane->Colored(entry.title, Colors().header);
         pane->Text("\n");
     }
-    std::size_t at = 0;
-    for (const Hot& link : entry.links) {
-        pane->Text(entry.text.substr(at, link.begin - at));
-        pane->Clickable(entry.text.substr(link.begin, link.end - link.begin),
-                        link, Colors().link, Colors().linkOver);
-        at = link.end;
+    auto pos = entry.text.begin();
+    for (const auto& token :
+         g_keywordSearch.parseHyperText(entry.text, Translations())) {
+        pane->Text(std::string(pos, token.mBeg));
+        const std::string name(token.getDisplayName());
+        pos = token.mEnd;
+        const auto link = g_topicLinks.find(token.mTopicId);
+        if (link == g_topicLinks.end()) {
+            pane->Text(name);
+            continue;
+        }
+        pane->Clickable(name, {0, 0, HotKind::Topic, link->second, 0},
+                        Colors().link, Colors().linkOver);
     }
-    pane->Text(entry.text.substr(at));
+    pane->Text(std::string(pos, entry.text.end()));
 }
 
 // What DialogueWindow::updateHistory adds under the replies: one line per
@@ -522,10 +487,16 @@ void RebuildItems() {
         g_items.push_back({Kind::Separator, ""});
     }
     // DialogueManager::getKeywords: what the speaker can answer AND the
-    // player has heard of.
+    // player has heard of. DialogueWindow::updateTopics seeds its search
+    // with each.
+    g_keywordSearch.clear();
+    g_topicLinks.clear();
     for (const TopicEntry& topic : OfferedTopics(*g_actor, {})) {
         if (State().KnowsTopic(topic.id)) {
             g_items.push_back({Kind::Topic, topic.id});
+            const std::string id = Misc::StringUtils::lowerCase(topic.id);
+            g_keywordSearch.seed(Translations().topicKeyword(topic.id), id);
+            g_topicLinks[id] = topic.id;
         }
     }
     g_listScroll = std::min(g_listScroll, ListRange());
@@ -590,13 +561,12 @@ void Learn(const std::vector<std::string>& topics) {
 
 // What DialogueManager does with a chosen INFO: say it with "%name" and its
 // kin replaced, run its result script, then take in whatever the script
-// asked for -- notices, new topics -- and the keywords the text mentions.
+// asked for -- notices, new topics -- and the keywords the raw text mentions.
 void Deliver(const std::string& title, const Reply& reply) {
     DialogueContext context(*g_actor, g_speakerName, g_playerName);
     Entry entry;
     entry.title = title;
     entry.text = Interpreter::fixDefinesDialog(reply.text, context);
-    entry.links = FindLinks(entry.text, MentionedTopics(entry.text, *g_actor));
     g_history.push_back(entry);
     g_lastTopic = reply.topic;
 
@@ -612,7 +582,7 @@ void Deliver(const std::string& title, const Reply& reply) {
     State().messages.clear();
     Learn(State().addedTopics);
     State().addedTopics.clear();
-    Learn(reply.mentioned);
+    Learn(MentionedTopics(reply.text, *g_actor));
     RebuildItems();
     g_hoverItem = -1;
     g_hoverHot = -1;
@@ -897,6 +867,8 @@ void OnClosed() {
     g_actor.reset();
     g_history.clear();
     g_items.clear();
+    g_keywordSearch.clear();
+    g_topicLinks.clear();
     g_paneHots.clear();
     g_paneLines.clear();
     g_panePlain.clear();

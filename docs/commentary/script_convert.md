@@ -6478,6 +6478,64 @@ TES4Polyfill had no ReleaseBreakaway, so every script calling it failed to
 compile), and the stale `.pex` ships under the same script name as the
 master's.
 
+### <a id="stale-master-static-scripts"></a>A dependent refuses a root with stale static scripts
+
+**Code:** `papyrus_compile._root_statics_current`.
+
+A user who converted Oblivion.esm with an older build, updated the converter,
+and then converted only The Lost Spires.esp got ~190 compile failures: the
+ESP's generated bodies call the current statics (`LineBegan` with its third
+`aiInfo` argument, `TES4_Attributes`, `TES4_Chargen`), but the header path
+held the master's old copies. Compiling the dependent against the converter's
+own `static_scripts/` would not be enough: in game the master's old
+`TES4Polyfill.pex` still answers the call and Papyrus rejects the argument
+count. So before compiling a dependent, the compile phase compares the
+masterless root's `scripts/source/` copies against `static_scripts/`. If any
+differ or are missing, it compiles nothing, fails the stage, and prints the
+command that fixes it: `python convert.py -f <root> --scripts-only`. The
+dependent's stage never writes into another plugin's output.
+
+## <a id="missing-operand-halts"></a>An expression missing an operand halts the script
+
+**Code:** `tes4/parser.py` (`_parse_primary` returns `nodes.Missing`),
+`emit/script.py` (`_halt`), `assemble.halt_guards`; tests in
+`tests/test_script_missing_operand.py`.
+
+The Lost Spires' `TeavsFuneral01Script` has
+`if (getCurrentTime >= 23.7 && < 23.8)`. The CS compiled it anyway; its SCDA
+holds the postfix stream `GetCurrentTime 23.7 >= 23.8 < &&`, so the stray `<`
+applies to everything before it and `&&` gets one operand. We used to emit
+`If (... >= 23.7 && <)`, which Papyrus rejects.
+
+What Oblivion.exe does with it (1.2.0.416, Nehrim install, disassembled):
+
+* The postfix evaluator (0x4F3620) checks the stack before every pop. A binary
+  operator with one value left raises error 3, STACKUNDERFLOW (0x4F4004 →
+  error setter 0x4F3300), and returns 0.0. Nothing is read from an empty slot.
+* The `if`/`elseif` handler in `ScriptRunner::ExecuteLine` (0x516EBE) skips
+  the block, sees the error, prints "failed to evaluate expression", returns
+  false (the rest of the pass does not run) and sets the script's data length
+  to 0 (`[Script+0x20]`). `Script::Execute` (0x4FBE00) returns at once for a
+  length ≤ 4 unless forced, so the script never runs again. Result scripts run
+  forced, so they lose only that pass.
+
+A missing operand always fails evaluation: k binary operators need k+1 values,
+so one of the pops finds the stack empty. The parser therefore marks the gap
+with `Missing` (a binary operator where an operand should start), and the
+emitter replaces any statement whose own expression contains one, or an
+`elseif` arm and everything after it, with `TES4_Halted = True` plus the
+block's normal `Return`. When a script sets the flag, `halt_guards` declares
+it and puts a return at the top of every event, so the poll stops re-arming.
+Variables stay readable from other scripts, as in Oblivion. A fragment has no
+flag and just returns.
+
+Census across every export (about 40,000 SCPT, INFO and QUST bodies, all
+games): this is the only statement with a missing operand.
+
+Known gap: a quest restart (`TES4Start`) re-creates the script instance, so
+the flag clears and the script runs again until it reaches the bad line. In
+Oblivion the script stayed off until the game exited.
+
 ## <a id="quest-fragments"></a>Quest-stage fragment scripts
 
 **Code:** `script_convert/quest_fragments.py` (`quest_fragment_psc`), written by

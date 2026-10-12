@@ -121,6 +121,19 @@ class Raw(Expr):
     text: str
 
 
+@dataclass(frozen=True)
+class Missing(Expr):
+    """An operand the source left out (`x >= 1 && < 2`); evaluating it halts the script.
+
+    See: docs/commentary/script_convert.md#missing-operand-halts
+    """
+
+
+def has_missing(expr: Expr) -> bool:
+    """Does `expr` contain an operand the source left out?"""
+    return any(isinstance(e, Missing) for e in walk_expr(expr))
+
+
 # --------------------------------------------------------------------------
 # Statements
 # --------------------------------------------------------------------------

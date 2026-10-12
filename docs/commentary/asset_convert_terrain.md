@@ -15,6 +15,8 @@
 - [Terrain LOD: arguments, shared cells, texture counts](#generate-terrain-lod-arguments)
 - [The LAND texture-layer run](#land-layer-run)
 - [The source game's baked LOD: tiles and height meshes](#baked-lod-sources)
+  - [The input file's shape, and the per-base memo](#lodgen-input-shape)
+- [Terrain LOD invents ground over cells that own no LAND](#lod-invents-terrain-over-cells-with-no-land)
 - [GENERATED `_far.nif` belong to the LOD mod](#generated-far-nif-belong-to-the-lod-mod)
   - [Why one LOD folder, not one per plugin](#one-lod-folder-not-one-per-plugin)
 
