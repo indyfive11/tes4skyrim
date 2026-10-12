@@ -37,20 +37,51 @@ MGEF_FAMILY_KEYWORDS: dict[int, int] = {}
 _VTYP_FEMALE = 0x02
 
 
-#: Conversion-owned globals: EditorID -> FNAM type char ('f' float, 's' short).
-_OWNED_GLOBALS = (
-    ('TES4Fame', 'f'),
-    ('TES4Infamy', 'f'),
-    ('TES4GoldFenced', 'f'),
-    ('TES4ControlsDisabled', 's'),
-)
+#: The eight attributes in TES3/TES4 order, as TES4 records and scripts name them.
+TES4_ATTRIBUTE_NAMES = ('Strength', 'Intelligence', 'Willpower', 'Agility', 'Speed',
+                        'Endurance', 'Personality', 'Luck')
 
-def _emit_global(writer: PluginWriter, edid: str, type_char: str) -> int:
+#: The player's attributes, each a global MorrowindRuntime keeps current, in that order.
+PLAYER_ATTRIBUTE_GLOBALS = tuple(f'TES4Player{name}' for name in TES4_ATTRIBUTE_NAMES)
+
+#: What an attribute global holds until the runtime writes it: the old stub, so a gate falls open.
+PLAYER_ATTRIBUTE_DEFAULT = 100.0
+
+#: Conversion-owned globals: (EditorID, FNAM type char 'f' float / 's' short, starting value).
+_OWNED_GLOBALS = (
+    ('TES4Fame', 'f', 0.0),
+    ('TES4Infamy', 'f', 0.0),
+    ('TES4GoldFenced', 'f', 0.0),
+    ('TES4ControlsDisabled', 's', 0.0),
+) + tuple((edid, 'f', PLAYER_ATTRIBUTE_DEFAULT) for edid in PLAYER_ATTRIBUTE_GLOBALS)
+
+#: FACT DATA flag Hidden From PC.
+FACTION_HIDDEN = 0x1
+
+
+def adopt_or_write(writer, master_index, sig: str, edid: str, build) -> tuple:
+    """(FormID, written): a master's record of `edid`, else ``build(fid)`` written as this plugin's."""
+    fid = master_index.find_by_edid(sig.encode(), edid) if master_index else 0
+    if fid:
+        return fid, False
+    fid = writer.derive_formid(sig, edid)
+    writer.add_record(sig, build(fid))
+    return fid, True
+
+
+def owner_row(name: str, fid: int, plugin: str, masters: list) -> str:
+    """`name=Owner.esm|FormID`, the owner read off `fid`'s master slot."""
+    slot = fid >> 24
+    owner = masters[slot] if slot < len(masters) else plugin
+    return f'{name}={owner}|{fid:08X}'
+
+
+def _emit_global(writer: PluginWriter, edid: str, type_char: str, value: float = 0.0) -> int:
     """Write one GlobalVariable, register it by name, and return its FormID."""
     fid = writer.derive_formid('GLOB', edid)
     subs = pack_string_subrecord('EDID', edid)
     subs += pack_subrecord('FNAM', struct.pack('<B', ord(type_char)))
-    subs += pack_subrecord('FLTV', struct.pack('<f', 0.0))
+    subs += pack_subrecord('FLTV', struct.pack('<f', value))
     writer.add_record('GLOB', pack_record('GLOB', fid, 0, subs))
     WELL_KNOWN_PROPERTIES[edid] = fid
     return fid
@@ -69,11 +100,22 @@ def create_tes4_special_records(writer: PluginWriter):
 
     See: docs/commentary/tes5_import_dialogue.md#the-conversion-owned-globals
     """
-    made = {edid: _emit_global(writer, edid, ch)
-            for (edid, ch) in _OWNED_GLOBALS}
+    made = {edid: _emit_global(writer, edid, ch, value)
+            for (edid, ch, value) in _OWNED_GLOBALS}
     made[ESCORT_WHEN_NEAR_EDID] = _emit_escort_template(writer)
     print('  Created TES4 special records: '
           + ', '.join(f'{k}={v:08X}' for k, v in made.items()))
+
+
+def create_missing_globals(writer: PluginWriter) -> int:
+    """Each conversion-owned global no master supplied (one built before it existed); how many."""
+    missing = [row for row in _OWNED_GLOBALS if row[0] not in WELL_KNOWN_PROPERTIES]
+    for edid, ch, value in missing:
+        _emit_global(writer, edid, ch, value)
+    if missing:
+        print(f'  Created {len(missing)} global(s) the masters lack: '
+              + ', '.join(row[0] for row in missing))
+    return len(missing)
 
 
 def create_message_menu_records(writer: PluginWriter, plan: dict) -> dict:
@@ -101,12 +143,37 @@ def create_message_menu_records(writer: PluginWriter, plan: dict) -> dict:
     return name_to_fid
 
 
+#: The global a converted chargen call asks MorrowindRuntime's menu through: each plugin its own.
+CHARGEN_REQUEST_GLOBAL = 'TES4ChargenRequest'
+
+
+def _chargen_page(fid: int, name: str, title: str, buttons: list) -> bytes:
+    """One chargen MESG page."""
+    subs = pack_string_subrecord('EDID', name)
+    subs += pack_string_subrecord('DESC', title)
+    subs += pack_subrecord('INAM', struct.pack('<I', 0))
+    subs += pack_subrecord('DNAM', struct.pack('<I', 1))
+    for button in buttons:
+        subs += pack_string_subrecord('ITXT', button)
+    return pack_record('MESG', fid, 0, subs)
+
+
+def _short_global(fid: int, edid: str) -> bytes:
+    """A short GLOB at 0."""
+    subs = pack_string_subrecord('EDID', edid)
+    subs += pack_subrecord('FNAM', struct.pack('<B', ord('s')))
+    subs += pack_subrecord('FLTV', struct.pack('<f', 0.0))
+    return pack_record('GLOB', fid, 0, subs)
+
+
 def create_chargen_menu_records(writer: PluginWriter, plan: dict) -> dict:
-    """MESG pages for the TES4 chargen menus (ShowBirthsignMenu/ShowClassMenu).
+    """MESG pages for the TES4 chargen menus (ShowBirthsignMenu/ShowClassMenu),
+    their choice globals, and this plugin's own request global.
 
     Allocates FIXED ids from a reserved window, not derive_formid(): the pages
     are a contiguous, order-significant block.  A page or global a master
-    already defines keeps the master's FormID.
+    already defines keeps the master's FormID, and is not written again for a
+    menu built only from the masters' records (`own` false).
 
     See: docs/commentary/tes5_import_dialogue.md#synthesized-menus-factions-and-formlists
     """
@@ -114,16 +181,11 @@ def create_chargen_menu_records(writer: PluginWriter, plan: dict) -> dict:
     k = 0
     for key in sorted(plan):
         for name, title, buttons in plan[key]['pages']:
-            fid = adopted_formid(writer, 'MESG', name) or writer.chargen_fid_base + k
+            adopted = adopted_formid(writer, 'MESG', name)
+            name_to_fid[name] = adopted or writer.chargen_fid_base + k
             k += 1
-            subs = pack_string_subrecord('EDID', name)
-            subs += pack_string_subrecord('DESC', title)
-            subs += pack_subrecord('INAM', struct.pack('<I', 0))
-            subs += pack_subrecord('DNAM', struct.pack('<I', 1))
-            for button in buttons:
-                subs += pack_string_subrecord('ITXT', button)
-            writer.add_record('MESG', pack_record('MESG', fid, 0, subs))
-            name_to_fid[name] = fid
+            if not adopted or plan[key].get('own', True):
+                writer.add_record('MESG', _chargen_page(name_to_fid[name], name, title, buttons))
 
     assert k <= 0x40, f'chargen menu pages overflow the fixed-id window ({k})'
     for slot, key in ((0x40, 'birthsign'), (0x41, 'class')):
@@ -131,12 +193,14 @@ def create_chargen_menu_records(writer: PluginWriter, plan: dict) -> dict:
         if not menu:
             continue
         gname = menu['choice_global']
-        fid = adopted_formid(writer, 'GLOB', gname) or writer.chargen_fid_base + slot
-        subs = pack_string_subrecord('EDID', gname)
-        subs += pack_subrecord('FNAM', struct.pack('<B', ord('s')))
-        subs += pack_subrecord('FLTV', struct.pack('<f', 0.0))
-        writer.add_record('GLOB', pack_record('GLOB', fid, 0, subs))
-        name_to_fid[gname] = fid
+        adopted = adopted_formid(writer, 'GLOB', gname)
+        name_to_fid[gname] = adopted or writer.chargen_fid_base + slot
+        if not adopted or menu.get('own', True):
+            writer.add_record('GLOB', _short_global(name_to_fid[gname], gname))
+    if plan:
+        fid = writer.derive_formid('GLOB', CHARGEN_REQUEST_GLOBAL)
+        writer.add_record('GLOB', _short_global(fid, CHARGEN_REQUEST_GLOBAL))
+        name_to_fid[CHARGEN_REQUEST_GLOBAL] = fid
     return name_to_fid
 
 

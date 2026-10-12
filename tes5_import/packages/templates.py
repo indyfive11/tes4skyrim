@@ -197,6 +197,16 @@ FOLLOW = Template(
            'ride_horse': 4, 'need_los': 5},
 )
 
+#: FollowTo (00025E6D, 6 vanilla instances): trail the target, stop following at the destination.
+FOLLOW_TO = Template(
+    formid=0x00025E6D, edid='FollowTo', xnam=13, version=9,
+    index_list=(2, 4, 5, 8, 6),
+    inputs=(T_SINGLEREF, T_FLOAT, T_FLOAT, T_LOCATION, T_BOOL),
+    defaults={1: 128.0, 2: 256.0, 4: 0},
+    slots={'target': 0, 'min_radius': 1, 'max_radius': 2, 'location': 3,
+           'accompany': 4},
+)
+
 # --- Escort (00023B73) — 44 instances ------------------------------------
 # procedures: Escort.  Preferred over EscortPlayerWhenNear (which additionally
 # waits/travels); TES4 Escort is a plain "walk the target to the destination".

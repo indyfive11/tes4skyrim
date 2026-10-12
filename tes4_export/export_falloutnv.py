@@ -14,7 +14,8 @@ import struct
 from .record_types.common import escape_value
 from .record_types.falloutnv import (EFFECT_TYPES, FALLOUT_BASE_EXPORTERS,
                                      MGEF_EDITOR_IDS, SUPERSEDED_ACTOR_KEYS,
-                                     SUPERSEDED_EFFECT_KEYS, export_deltas)
+                                     SUPERSEDED_EFFECT_KEYS, SUPERSEDED_IDLE_KEYS,
+                                     export_deltas)
 from .record_types.quest_falloutnv import SUPERSEDED_QUEST_KEYS
 from .tes4_reader import Record, get_string, get_subrecord, read_group_records
 
@@ -46,6 +47,8 @@ def superseded_keys(rec: Record) -> tuple:
         return SUPERSEDED_QUEST_KEYS
     if rec.type == "CSTY":
         return _TES4_COMBAT_STYLE_KEYS
+    if rec.type == "IDLE":
+        return SUPERSEDED_IDLE_KEYS
     return ()
 
 

@@ -34,6 +34,7 @@ from .templates import (
     EAT,
     FLEE_TO,
     FOLLOW,
+    FOLLOW_TO,
     FORCE_GREET,
     HOLD_POSITION,
     PKDT_TYPE_PACKAGE,
@@ -1051,25 +1052,24 @@ def _follow_destination_reachable(p: _Pick) -> bool:
 
 
 def _pick_follow(p: _Pick) -> Inputs:
-    """Follow / Accompany, rerouted to Escort when it must ARRIVE.
+    """Follow / Accompany; with a reachable PLDT destination, FollowTo it.
 
-    Skyrim's Follow has no location slot, so a TES4 Follow carrying a PLDT
-    destination becomes an Escort -- but only when that destination is
-    reachable, since Escort makes it the goal and a cross-cell goal has no
-    navmesh route.
+    FollowTo trails the target and stops at the destination, so the package
+    ends there as in TES4. Skyrim's Follow never ends; a cross-cell
+    destination has no route. FollowTo has no ride-horse input, so a Use
+    Horse one stays Escort.
+    See: docs/commentary/tes5_import_package.md#follow-with-a-destination-is-followto
     """
-    if _follow_destination_reachable(p):
-        i = Inputs(escort_template())
-        i.set('target', p.tgt)
-        i.set('location', p.loc)
-        if p.use_horse:
-            i.set('ride_horse', 1)
-        return i
-    i = Inputs(FOLLOW)
+    arrives = _follow_destination_reachable(p)
+    if arrives and p.use_horse:
+        return _pick_escort(p)
+    i = Inputs(FOLLOW_TO if arrives else FOLLOW)
     i.set('target', p.tgt)
     i.set('accompany', 1 if get_int(p.rec, 'PKDT.Type', -1) == T4_ACCOMPANY
           else 0)
-    if p.use_horse:
+    if arrives:
+        i.set('location', p.loc)
+    elif p.use_horse:
         i.set('ride_horse', 1)
     return i
 

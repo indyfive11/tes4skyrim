@@ -48,6 +48,14 @@ RACE_MAP = {
 }
 DEFAULT_RACE = 0x00013746  # Nord
 
+#: Each playable Skyrim race -> its vampire race (Skyrim.esm `<Race>RaceVampire`), which a vampire player wears.
+SKYRIM_VAMPIRE_RACES = {
+    0x00013740: 0x0008883A, 0x00013741: 0x0008883C, 0x00013742: 0x0008883D,
+    0x00013743: 0x00088840, 0x00013744: 0x00088844, 0x00013745: 0x00088845,
+    0x00013746: 0x00088794, 0x00013747: 0x000A82B9, 0x00013748: 0x00088846,
+    0x00013749: 0x00088884,
+}
+
 
 # ---------------------------------------------------------------------------
 # Creature race map: EditorID/name keyword → Skyrim race FormID

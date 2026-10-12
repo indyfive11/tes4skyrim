@@ -149,6 +149,22 @@ bool VersionDb::Load(std::uint32_t runtimeVersion) {
     return LoadFile(PluginsDir() + name);
 }
 
+bool VersionDb::LoadPreAe(std::uint32_t runtimeVersion, const PreAeTable* tables,
+                          std::size_t count) {
+    runtime_ = runtimeVersion;
+    for (std::size_t t = 0; t < count; ++t) {
+        if (tables[t].runtime != runtimeVersion) continue;
+        map_.clear();
+        for (std::size_t i = 0; i < tables[t].count; ++i) {
+            map_[tables[t].rows[i].id] = tables[t].rows[i].rva;
+        }
+        loaded_ = true;
+        path_ = "built-in pre-AE table";
+        return true;
+    }
+    return false;
+}
+
 bool VersionDb::LoadFile(const std::string& path) {
     map_.clear();
     loaded_ = false;
@@ -196,6 +212,17 @@ std::size_t PlayerField(std::size_t offset16) {
     constexpr std::uint32_t kRuntime17 = 0x01070000u;
     constexpr std::size_t kShift17 = 8;
     return g_versionDb.runtime() >= kRuntime17 ? offset16 + kShift17 : offset16;
+}
+
+std::size_t ActorField(std::size_t offset16) {
+    constexpr std::uint32_t kRuntimeAe = 0x01060000u;
+    constexpr std::size_t kRefGrowth = 8;
+    return g_versionDb.runtime() < kRuntimeAe ? offset16 - kRefGrowth : offset16;
+}
+
+bool IsVr() {
+    constexpr std::uint32_t kRuntimeVr = 0x010400F0u;
+    return g_versionDb.runtime() == kRuntimeVr;
 }
 
 std::uintptr_t VersionDb::Get(std::uint64_t id) const {

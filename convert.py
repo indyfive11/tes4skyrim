@@ -69,8 +69,8 @@ from tes4_export.tes3_reader import is_tes3
 from tes4_export.morrowind_patch import (
     PATCH_NAME, register_source as register_patch_source, run_patch_export,
     stage_pair_scripts)
-from core.plugin_masters import (get_masters_from_binary, is_master_export,
-                                 topological_order)
+from core.plugin_masters import (binary_master_chain, get_masters_from_binary,
+                                 is_master_export, topological_order)
 import core.run_log as run_log
 
 
@@ -570,12 +570,16 @@ def _use_plugin_namespace(file_name: str) -> str:
 
     Every phase runs in its own process, and only the ones calling into
     asset_pipeline set this, so the rest wrote the default namespace whatever
-    plugin they were handed.
+    plugin they were handed. The Morroblivion texture map rides along, since
+    it rewrites the same texture paths.
     See: docs/commentary/asset_convert_texture.md#per-game-asset-namespace
     """
     from asset_convert.game_paths import namespace_for, set_namespace
-    ns = namespace_for(record_dir(str(SCRIPT_DIR / "export"), file_name))
+    from asset_convert.nif import morroblivion_textures
+    rec_dir = record_dir(str(SCRIPT_DIR / "export"), file_name)
+    ns = namespace_for(rec_dir)
     set_namespace(ns)
+    morroblivion_textures.activate(rec_dir)
     return ns
 
 
@@ -1186,7 +1190,9 @@ def _work(steps, order, run) -> dict:
     See: docs/commentary/performance.md#one-heavy-job-at-a-time
     """
     a = run.args
-    return {'plugins': list(order), 'steps': list(steps),
+    masters = binary_master_chain(order, lambda name: resolve_plugin_path(
+        name, run.tes4_data, run.export_dir))
+    return {'plugins': list(order), 'steps': list(steps), 'masters': masters,
             'scope': {'only': a.only, 'mesh_subdirs': a.mesh_subdirs},
             'same': [run.output_dir, run.tes4_data, a.config, a.textures_only,
                      a.parallax, a.skip_hair, a.collision_winding_fix,

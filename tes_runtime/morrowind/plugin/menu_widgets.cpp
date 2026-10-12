@@ -1,12 +1,15 @@
 #include "menu_widgets.h"
 
 #include <algorithm>
+#include <cstdio>
 
 #include "menu_layout.h"
 
 namespace tesruntime::mw {
 
 namespace {
+
+const layout::Palette* g_colors = &layout::kMorrowindColors;
 
 int TrackLength(const Rect& bar) {
     return bar.h - layout::kScrollTrackTop - layout::kScrollTrackBottom -
@@ -20,6 +23,14 @@ double ThumbTop(const Rect& bar, double fraction) {
 }
 
 }  // namespace
+
+const layout::Palette& Colors() { return *g_colors; }
+
+void PickColors(CustomMenu& menu) {
+    double x = 0;
+    g_colors = menu.GetNumber(layout::kStyleMarker, &x) ? &layout::kSkyrimColors
+                                                        : &layout::kMorrowindColors;
+}
 
 void PushScrollbar(CustomMenu& menu, const Rect& bar, const std::string& barPath,
                    const std::string& thumbPath, bool visible, double fraction) {
@@ -65,6 +76,35 @@ double TextWidth(const std::string& text) {
     double width = 0;
     for (char c : text) width += CharWidth(c);
     return width;
+}
+
+std::string HexColor(unsigned rgb) {
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "#%06X", rgb);
+    return buf;
+}
+
+std::string HtmlText(const std::string& text) {
+    std::string html;
+    for (char c : text) {
+        if (c == '\r') continue;
+        if (c == '\n') {
+            html += "<br>";
+        } else if (c == '&') {
+            html += "&amp;";
+        } else if (c == '<') {
+            html += "&lt;";
+        } else if (c == '>') {
+            html += "&gt;";
+        } else {
+            html += c;
+        }
+    }
+    return html;
+}
+
+std::string HtmlColored(const std::string& text, unsigned rgb) {
+    return "<font color=\"" + HexColor(rgb) + "\">" + HtmlText(text) + "</font>";
 }
 
 }  // namespace tesruntime::mw

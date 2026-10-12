@@ -6,8 +6,9 @@ inside that box sit undisturbed; Skyrim simulates them and ejects them. The
 box's shape cannot say whether its volume is open -- a ramp over steps is the
 same kind of box -- but the placements can: an item whose origin lies inside a
 placed fixture's box proves the author treated that space as open. The
-placements come from the plugin AND the plugins that master it, since a patch
-can define a shelf that only the plugins it patches place.
+placements come from the plugin AND the plugins that master it, since a plugin
+can define a shelf only its dependents place; the Morroblivion patch reads its
+source ESMs instead (`resting_items_morrowind`).
 
 The index is too large to ride in the per-task plan, so the parent writes it
 beside the record dump and each worker loads it once, on first use.
@@ -22,10 +23,11 @@ from pathlib import Path
 import numpy as np
 
 from asset_convert.collision.clutter_plan import CLUTTER_TYPES, WEARABLE_TYPES
+from asset_convert.collision.resting_items_morrowind import patch_layout
 from asset_convert.nif.fixture_plan import fixture_model_ids, latched_fixture
 from core.plugin_masters import masters_from_export_header
 from output_layout import record_dir
-from tes4_export.morrowind_patch import PATCH_NAME, PATCH_SOURCES
+from tes4_export.morrowind_patch import PATCH_NAME
 from tes5_import.navmesh.world import rot_matrix
 
 #: Resting-items sub-map key inside the wearable plan: the index file's path.
@@ -69,15 +71,8 @@ def _refs(path: Path):
 
 
 def _dependents(export_root, plugin: str) -> list:
-    """Record dumps under `export_root` whose header names `plugin` a master.
-
-    The generated Morroblivion patch is a patch OF its source ESMs, so only
-    their dumps are read for it.
-    """
+    """Record dumps under `export_root` whose header names `plugin` a master."""
     root, want = Path(export_root), plugin.lower()
-    if want == PATCH_NAME.lower():
-        return [d for d in (Path(record_dir(root, s)) for s in PATCH_SOURCES)
-                if (d / '_HEADER.txt').is_file()]
     headers = [*root.glob('*/_HEADER.txt'), *root.glob('*/*/_HEADER.txt')]
     return sorted(h.parent for h in headers
                   if want in (m.lower() for m in
@@ -139,14 +134,11 @@ def _placements(dumps: list, names: dict, wanted, cells=None):
                        _placement(dict(_REF_LINE.findall(chunk))))
 
 
-def build_index(export_root, plugin: str) -> dict:
-    """Fixture placements that share a cell with an item, and those items.
+def _plugin_layout(export_root, own, plugin: str) -> tuple:
+    """(item origins per cell, {model: [(cell, placement)]}) from exported dumps.
 
     Placements are read from `plugin` and every exported plugin mastering it.
-    `cells` maps a cell's (plugin, id) to an (N,3) array of item origins;
-    `models` maps a mesh-relative NIF path to (cells, (K,7) placements).
     """
-    own = Path(record_dir(export_root, plugin))
     dumps = [own, *_dependents(export_root, plugin)]
     names = _dump_names(export_root, own, plugin, dumps)
     owners = _owners(own, names)
@@ -157,6 +149,21 @@ def build_index(export_root, plugin: str) -> dict:
         points[cell].append(place[:3])
     for base, cell, place in _placements(dumps, names, fixtures, points):
         placed[fixtures[base]].append((cell, place))
+    return points, placed
+
+
+def build_index(export_root, plugin: str) -> dict:
+    """Fixture placements that share a cell with an item, and those items.
+
+    The Morroblivion patch reads its source ESMs; every other plugin, the
+    exported dumps. `cells` maps a cell key to an (N,3) array of item origins;
+    `models` maps a mesh-relative NIF path to (cells, (K,7) placements).
+    """
+    own = Path(record_dir(export_root, plugin))
+    if plugin.lower() == PATCH_NAME.lower():
+        points, placed = patch_layout(export_root, own)
+    else:
+        points, placed = _plugin_layout(export_root, own, plugin)
     models = {model: ([cell for cell, _ in refs],
                       np.array([p for _, p in refs], dtype=np.float64))
               for model, refs in placed.items()}

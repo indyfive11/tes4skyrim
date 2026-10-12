@@ -5,6 +5,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -79,6 +80,12 @@ void InstallSpellCalls(GameHooks& hooks);
 // state barks test into their GLOBs. game_calls_state.cpp.
 // See: docs/commentary/morrowind_runtime.md#published-state
 void InstallStateCalls(GameHooks& hooks);
+// The value of the GLOB at `formId` in `plugin`, or null. Game thread.
+float* GlobalSlot(const std::string& plugin, std::uint32_t formId);
+// An actor's rank in a faction, -2 when it is no member or the native is
+// missing; and setting one, which joins the faction. False when it could not.
+int FactionRank(void* actor, void* faction);
+bool SetFactionRank(void* actor, void* faction, int rank);
 // PC Crime Level on the engine's crime gold, and the fine and jail opcodes.
 // See: docs/commentary/morrowind_runtime.md#crime-is-the-engines
 void InstallCrimeCalls(GameHooks& hooks);
@@ -86,8 +93,9 @@ void PublishState();
 // Mark, Recall and the two Interventions, on the VM's OnMagicEffectApply sink.
 // See: docs/commentary/morrowind_runtime.md#teleport-effects
 void InstallTeleportCalls();
-// The TES3 effect index of a runtime-carried MGEF (or delivery copy), or -1.
-int RuntimeEffectIndex(std::uint32_t effectId);
+// The TES3 effect index and attribute of a runtime-carried MGEF (or delivery
+// copy); index -1 for any other.
+RuntimeEffect RuntimeEffectOf(std::uint32_t effectId);
 // The TES3 indices of the duration effects the runtime carries.
 constexpr int kSwiftSwimEffect = 1;
 constexpr int kLevitateEffect = 10;
@@ -99,14 +107,33 @@ constexpr int kSanctuaryEffect = 42;
 // See: docs/commentary/morrowind_runtime.md#levitate-and-slowfall
 void InstallFlightCalls(GameHooks& hooks);
 // The summed magnitude of every active instance of a runtime-carried effect
-// on `actor`, read off its active-effect list. Game thread.
-float ActiveMagnitude(void* actor, int tes3Index);
+// on `actor`, read off its active-effect list; with `attribute` set, only the
+// instances of that attribute's variant. Game thread.
+float ActiveMagnitude(void* actor, int tes3Index, int attribute = -1);
+// Each active, runtime-carried effect instance on `actor` with its magnitude:
+// one walk of the list for a caller that needs many sums. Game thread.
+void ForEachActiveEffect(void* actor,
+                         const std::function<void(const RuntimeEffect&, float)>& fn);
+// Morrowind's attribute effects on the player, and the skill cap on its
+// skill use and trainers. game_calls_attributes.cpp.
+// See: docs/commentary/morrowind_runtime.md#attribute-effects
+void TickAttributeEffects(void* player);
+void InstallAttributeCalls(GameHooks& hooks);
+// Game thread: an attribute effect just landed on `actorId`, cast by
+// `casterId` (0 for none), so the tick sums it -- and pays an Absorb's
+// magnitude to its caster for as long as the target carries it.
+void WatchAttributes(std::uint32_t actorId, std::uint32_t casterId, const RuntimeEffect& row);
 // Game thread: `actorId` just had a Sanctuary applied, so the tick ranks it.
 void WatchSanctuary(std::uint32_t actorId);
+// Whether `ref` is a placed actor: an id saved in one session may name
+// something else in the next.
+bool IsActorRef(void* ref);
 // Keeps the player's and each watched actor's Sanctuary faction rank at its
 // summed Sanctuary. game_calls_sanctuary.cpp.
 void TickSanctuary(void* player);
-void InstallSanctuaryCalls();
+// `PlayGroup` / `LoopGroup`: the object animation queue on the mesh's own
+// sequences, and the tick that advances it. game_calls_anim.cpp.
+void InstallAnimCalls(GameHooks& hooks);
 // The seven player-control switches and Game.ShowRaceMenu.
 // See: docs/commentary/morrowind_runtime.md#the-control-switches
 void InstallControlCalls(GameHooks& hooks);

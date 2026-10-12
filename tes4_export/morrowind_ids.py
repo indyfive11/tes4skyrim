@@ -177,7 +177,7 @@ class IdIndex:
 
         See: docs/commentary/tes4_export_morrowind.md#teleport-doors
         """
-        return self._by_key.get(persistent_key(wrld_form_id))
+        return self.lookup_editor_id(persistent_key(wrld_form_id))
 
     def form_ids(self):
         """Every FormID this index hands out, so derivation can avoid them."""
@@ -288,6 +288,11 @@ def _keep_field(fields: dict, line: str, keys=_INDEXED_KEYS) -> None:
         fields[key] = value.strip()
 
 
+def _is_persistent(fields: dict) -> bool:
+    """Whether a scanned CELL is its worldspace's persistent-reference cell."""
+    return bool(int(fields.get('RecordFlags', '0')) & _PERSISTENT_FLAG)
+
+
 def _add_cell(fields: dict, form_id: str, index: IdIndex, remap) -> None:
     """Index one exterior CELL, by worldspace when it is the persistent one.
 
@@ -296,7 +301,7 @@ def _add_cell(fields: dict, form_id: str, index: IdIndex, remap) -> None:
     a dependent plugin can reuse.
     See: docs/commentary/tes4_export_morrowind.md#teleport-doors
     """
-    if int(fields.get('RecordFlags', '0')) & _PERSISTENT_FLAG:
+    if _is_persistent(fields):
         wrld = remap_form_id(fields.get('ParentWRLD', ''), remap)
         if wrld:
             index.add(persistent_key(wrld), form_id, 'CELL')
@@ -321,7 +326,7 @@ def _add_record(fields: dict, index: IdIndex, signature: str, remap,
         if parent:
             index.add(land_key(parent), form_id, signature)
         return
-    if signature == 'CELL' and 'XCLC.X' in fields:
+    if signature == 'CELL' and ('XCLC.X' in fields or _is_persistent(fields)):
         _add_cell(fields, form_id, index, remap)
         return
     edid = fields.get('EditorID')

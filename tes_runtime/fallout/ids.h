@@ -110,19 +110,9 @@ constexpr std::uint64_t kObjectByName = 76207;
 // (docs/commentary/tes_runtime_guns.md#firing-node).
 constexpr std::uint64_t kCrossbowFiringNode = 39834;
 
-// Gun parts, the way ObjectReference.PlayGamebryoAnimation (0x9cfdd0) plays
-// an in-mesh sequence: the NiControllerManager vtable (0x185c968) that the
-// weapon root's first controller must carry, the BSFixedString hash
-// (0xc3d430) keying the manager's name map (+0x98 buckets, +0x7c capacity,
-// +0x88 sentinel) and NiControllerSequence::Activate (0xd07020), which
-// refuses a sequence whose state (+0x68) is not inactive, so a clamped part
-// sequence is first stopped by NiControllerSequence::Deactivate(seq,
-// easeOut, transition) (0xd071a0; 1.6.1170 0xd93030)
+// Gun parts play their in-mesh sequence through common/gamebryo_sequence.*,
+// whose ids are in common/engine_ids.h
 // (docs/commentary/asset_convert_falloutnv.md#gun-parts).
-constexpr std::uint64_t kControllerManagerVtable = 237541;
-constexpr std::uint64_t kFixedStringHash = 68221;
-constexpr std::uint64_t kSequenceActivate = 72463;
-constexpr std::uint64_t kSequenceDeactivate = 72464;
 
 // The HUD ammo counter (docs/commentary/tes_runtime_guns.md#hud):
 // HUDMenu::ProcessMessage (0x8bed60) invokes "ShowArrowCount" (the string

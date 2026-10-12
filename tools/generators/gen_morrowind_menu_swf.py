@@ -16,11 +16,13 @@ the font's metrics are also written to a C++ header the plugin includes, so
 mouse input and keyword links are resolved against the numbers the movie was
 drawn from.
 
-🛑 The art is NOT committed -- it is read from the registered Morrowind install
-at build time, so this generator needs a machine that has one. The FONT is
+Every part is drawn by an ART object (`asset_convert.ui.menu_art`), so the
+same layout builds in Morrowind's look or Skyrim's. 🛑 Morrowind's art is NOT
+committed -- it is read from the registered install at build time. The FONT is
 OpenMW's own OFL-licensed face, vendored, so text needs no install.
 
 See: docs/commentary/morrowind_runtime.md#the-real-menu
+See: docs/commentary/morrowind_runtime.md#menu-styles
 """
 
 import argparse
@@ -28,15 +30,11 @@ import functools
 import os
 import struct
 
-from asset_convert.ui import ttf_glyphs
-from asset_convert.ui.morrowind_menu_art import (BOX_BORDER, SCROLL_END,
-                                                 SCROLL_TRACK, SCROLL_W,
-                                                 compose_bar, compose_box,
-                                                 compose_button, compose_cap,
-                                                 compose_frame, compose_head,
-                                                 compose_line,
-                                                 compose_scrollbar,
-                                                 compose_thumb)
+from asset_convert.ui import skyrim_menu_art, ttf_glyphs
+from asset_convert.ui.menu_art import ICON_SETS, STYLES, menu_art
+from asset_convert.ui.morrowind_menu_art import (BOX_BORDER, FONT_COLORS,
+                                                 SCROLL_END, SCROLL_TRACK,
+                                                 SCROLL_W)
 from asset_convert.ui.swf import (Swf, Tag, define_bits_lossless2,
                                   define_font2, define_shape3_bitmap_rects,
                                   define_shape3_solid_rects, define_sprite,
@@ -90,18 +88,10 @@ PANEL_RGBA = (38, 30, 22, 235)
 BORDER_RGBA = (120, 100, 66, 255)
 TEXT_RGB = (220, 208, 180)
 
-#: `[FontColor]` from Morrowind.ini, under its own key names; the plugin gets this same table.
-FONT_COLORS = {
-    'normal': (202, 165, 96), 'normal_over': (223, 201, 159),
-    'normal_pressed': (243, 237, 221), 'link': (112, 126, 207),
-    'link_over': (143, 155, 218), 'link_pressed': (175, 184, 228),
-    'answer': (150, 50, 30), 'answer_over': (223, 201, 159),
-    'answer_pressed': (243, 237, 221), 'header': (223, 201, 159),
-    'notify': (223, 201, 159), 'disabled': (179, 168, 135),
-}
-
-#: `[FontColor] color_background`, at the window's own alpha.
-COLOR_BACKGROUND = (0, 0, 0, 245)
+#: The empty sprite a Skyrim-style movie carries, which the plugin picks its text colors by.
+STYLE_MARKER = 'SkyrimStyle'
+CHAR_STYLE_MARKER = 990
+DEPTH_STYLE_MARKER = 16000
 
 #: The dialogue window, at `openmw_dialogue_window.layout`'s authored size.
 WINDOW_W = 588
@@ -232,7 +222,7 @@ BODY_HEIGHT_TWIPS = FONT_PX * TWIP
 TEXT_GUTTER = 2
 
 #: DefineEditText layout block alignments: 0 left, 1 right, 2 center.
-_ALIGN_LEFT, _ALIGN_CENTER = 0, 2
+ALIGN_LEFT, ALIGN_RIGHT, ALIGN_CENTER = 0, 1, 2
 
 #: Where the plugin's copy of the layout is written.
 HEADER_PATH = 'tes_runtime/morrowind/plugin/menu_layout.h'
@@ -246,7 +236,7 @@ def _layout(align: int) -> bytes:
 def define_edit_text(character_id: int, x: int, y: int, w: int, h: int,
                      var_name: str, initial: str, font_id: int = CHAR_FONT,
                      rgb: tuple = TEXT_RGB, height: int = TEXT_HEIGHT_TWIPS,
-                     align: int = _ALIGN_CENTER, html: bool = False) -> Tag:
+                     align: int = ALIGN_CENTER, html: bool = False) -> Tag:
     """A dynamic text field, optionally bound to `var_name`.
 
     UseOutlines is always set: the glyphs come from the font character named
@@ -414,54 +404,53 @@ def modal_cancel_text_rect() -> tuple:
                            w - 2 * BUTTON_INSET[0], h - 2 * BUTTON_INSET[1]))
 
 
-def compose_modal(export_root):
+def compose_modal(art):
     """The persuasion modal's chrome as one image: frame, the actions box,
     the Cancel button. Textless, like the window.
     See: docs/commentary/morrowind_runtime.md#persuasion
     """
-    panel = compose_frame(export_root, MODAL_W, MODAL_H,
-                          fill=COLOR_BACKGROUND)
+    panel = art.compose_frame(MODAL_W, MODAL_H, fill=art.background)
     bx, by, bw, bh = MODAL_BOX
-    panel.alpha_composite(compose_box(export_root, bw, bh), (bx, by))
+    panel.alpha_composite(art.compose_box(bw, bh), (bx, by))
     cx, cy, cw, ch = MODAL_CANCEL
-    panel.alpha_composite(compose_button(export_root, cw, ch), (cx, cy))
+    panel.alpha_composite(art.compose_button(cw, ch), (cx, cy))
     return panel
 
 
-def _modal_field(character_id: int, rect: tuple, color: str = 'normal',
-                 align: int = _ALIGN_LEFT) -> Tag:
+def _modal_field(character_id: int, rect: tuple, colors: dict,
+                 color: str = 'normal', align: int = ALIGN_LEFT) -> Tag:
     """A field at a MODAL-space rect, in the embedded face."""
     return define_edit_text(character_id, *modal_stage_rect(rect), '', '',
-                            font_id=CHAR_MW_FONT, rgb=FONT_COLORS[color],
+                            font_id=CHAR_MW_FONT, rgb=colors[color],
                             height=BODY_HEIGHT_TWIPS, align=align)
 
 
-def _modal_fields() -> list:
+def _modal_fields(colors: dict) -> list:
     """The modal's dynamic text fields as `(tag, instance_name)`."""
-    out = [(_modal_field(CHAR_MODAL_TITLE, centered_field(MODAL_TITLE),
-                         color='header', align=_ALIGN_CENTER),
+    out = [(_modal_field(CHAR_MODAL_TITLE, centered_field(MODAL_TITLE), colors,
+                         color='header', align=ALIGN_CENTER),
             FIELD_MODAL_TITLE)]
     for row in range(MODAL_ROWS):
         out.append((_modal_field(CHAR_MODAL_ROW_FIRST + row,
-                                 centered_field(modal_row_rect(row))),
+                                 centered_field(modal_row_rect(row)), colors),
                     f'{FIELD_MODAL_ROW}{row}'))
-    out.append((_modal_field(CHAR_MODAL_GOLD, centered_field(MODAL_GOLD)),
+    out.append((_modal_field(CHAR_MODAL_GOLD, centered_field(MODAL_GOLD), colors),
                 FIELD_MODAL_GOLD))
-    out.append((_modal_field(CHAR_MODAL_CANCEL, modal_cancel_text_rect(),
-                             align=_ALIGN_CENTER), FIELD_MODAL_CANCEL))
+    out.append((_modal_field(CHAR_MODAL_CANCEL, modal_cancel_text_rect(), colors,
+                             align=ALIGN_CENTER), FIELD_MODAL_CANCEL))
     return out
 
 
-def _modal_tags(export_root, depth: int) -> list:
+def _modal_tags(art, depth: int) -> list:
     """The modal's art sprite and fields, placed ABOVE the window from
     `depth` up. The plugin hides them until Persuasion is chosen."""
-    art = compose_modal(export_root)
-    tags = _sprite(CHAR_MODAL_BMP, art, SPRITE_MODAL, (0, 0, MODAL_W, MODAL_H))
+    tags = _sprite(CHAR_MODAL_BMP, compose_modal(art), SPRITE_MODAL,
+                   (0, 0, MODAL_W, MODAL_H))
     bitmap, shape, sprite, (char_id, name, _at) = tags
     out = [bitmap, shape, sprite,
            place_object2(depth=depth, character_id=char_id, name=name,
                          translate=modal_origin())]
-    for field, name in _modal_fields():
+    for field, name in _modal_fields(art.colors):
         depth += 1
         out += [field, place_object2(depth=depth,
                                      character_id=field.character_id,
@@ -469,7 +458,7 @@ def _modal_tags(export_root, depth: int) -> list:
     return out
 
 
-def compose_window(export_root):
+def compose_window(art):
     """The window CHROME as one image: both frames, caption plate, panes, a
     FULL disposition bar and the Goodbye button, every part where MW_Window
     and the layout put it.
@@ -481,47 +470,46 @@ def compose_window(export_root):
     whole shape and ignores the rest.
     See: docs/commentary/morrowind_runtime.md#one-bitmap
     """
-    panel = compose_frame(export_root, WINDOW_W, WINDOW_H,
-                          fill=COLOR_BACKGROUND)
+    panel = art.compose_frame(WINDOW_W, WINDOW_H, fill=art.background)
     ix, iy, iw, ih = INNER_FRAME
-    panel.alpha_composite(compose_frame(export_root, iw, ih), (ix, iy))
+    panel.alpha_composite(art.compose_frame(iw, ih), (ix, iy))
     cx, cy, cw, ch = CAPTION
-    panel.alpha_composite(compose_head(export_root, cw, ch), (cx, cy))
+    panel.alpha_composite(art.compose_head(cw, ch), (cx, cy))
     hx, hy, hw, hh = client_rect(HISTORY_BOX)
-    panel.alpha_composite(compose_box(export_root, hw, hh), (hx, hy))
+    panel.alpha_composite(art.compose_box(hw, hh), (hx, hy))
     tx, ty, tw, th = client_rect(TOPICS)
-    panel.alpha_composite(compose_box(export_root, tw, th), (tx, ty))
+    panel.alpha_composite(art.compose_box(tw, th), (tx, ty))
     dx, dy, dw, dh = client_rect(DISPOSITION)
-    panel.alpha_composite(compose_bar(export_root, dw, dh, 1.0), (dx, dy))
+    panel.alpha_composite(art.compose_bar(dw, dh, 1.0), (dx, dy))
     bx, by, bw, bh = client_rect(BYE_BUTTON)
-    panel.alpha_composite(compose_button(export_root, bw, bh), (bx, by))
+    panel.alpha_composite(art.compose_button(bw, bh), (bx, by))
     return panel
 
 
-def _body_field(character_id: int, rect: tuple, initial: str = '',
-                color: str = 'normal', align: int = _ALIGN_LEFT,
+def _body_field(character_id: int, rect: tuple, colors: dict, initial: str = '',
+                color: str = 'normal', align: int = ALIGN_LEFT,
                 html: bool = False) -> Tag:
-    """A field in the embedded face at the body size, in one of the ini
-    colors, placed at a WINDOW-space rect."""
+    """A field in the embedded face at the body size, in one of `colors`,
+    placed at a WINDOW-space rect."""
     return define_edit_text(character_id, *stage_rect(rect), '', initial,
-                            font_id=CHAR_MW_FONT, rgb=FONT_COLORS[color],
+                            font_id=CHAR_MW_FONT, rgb=colors[color],
                             height=BODY_HEIGHT_TWIPS, align=align, html=html)
 
 
-def _fields() -> list:
+def _fields(colors: dict) -> list:
     """Every dynamic text field as `(tag, instance_name)`."""
     out = [
-        (_body_field(CHAR_NAME, centered_field(CAPTION), color='header',
-                     align=_ALIGN_CENTER), FIELD_NAME),
-        (_body_field(CHAR_HISTORY, history_text_rect(), html=True),
+        (_body_field(CHAR_NAME, centered_field(CAPTION), colors, color='header',
+                     align=ALIGN_CENTER), FIELD_NAME),
+        (_body_field(CHAR_HISTORY, history_text_rect(), colors, html=True),
          FIELD_HISTORY),
         (_body_field(CHAR_DISPOSITION, centered_field(client_rect(DISPOSITION)),
-                     align=_ALIGN_CENTER), FIELD_DISPOSITION),
-        (_body_field(CHAR_BYE, bye_text_rect(), GOODBYE, align=_ALIGN_CENTER),
+                     colors, align=ALIGN_CENTER), FIELD_DISPOSITION),
+        (_body_field(CHAR_BYE, bye_text_rect(), colors, GOODBYE, align=ALIGN_CENTER),
          FIELD_BYE),
     ]
     for row in range(TOPIC_FIELDS):
-        out.append((_body_field(CHAR_TOPIC_FIRST + row, topic_row_rect(row)),
+        out.append((_body_field(CHAR_TOPIC_FIRST + row, topic_row_rect(row), colors),
                     f'{FIELD_TOPIC}{row}'))
     return out
 
@@ -544,34 +532,47 @@ def _sprite(char_id: int, image, name: str, rect: tuple) -> list:
     ]
 
 
-def _cover(char_id: int, name: str, rect: tuple, depth: int) -> list:
-    """A 1 px wide opaque black sprite `rect[3]` tall at a WINDOW-space rect's
+def _cover(char_id: int, name: str, rect: tuple, depth: int,
+           rgba: tuple = (0, 0, 0, 255)) -> list:
+    """A 1 px wide `rgba` sprite `rect[3]` tall at a WINDOW-space rect's
     top-left, placed at `depth`; the plugin sets its `_x` and `_width`."""
     x, y, _w, h = stage_rect(rect)
     return [
-        define_shape3_solid_rects(char_id, [(0, 0, 1, h)], (0, 0, 0, 255)),
+        define_shape3_solid_rects(char_id, [(0, 0, 1, h)], rgba),
         define_sprite(char_id + 1, [place_object2(depth=1, character_id=char_id)]),
         place_object2(depth=depth, character_id=char_id + 1, name=name,
                       translate=(x, y)),
     ]
 
 
-def _sprites(export_root) -> list:
+def style_marker(art) -> list:
+    """The empty `SkyrimStyle` sprite a Skyrim-style movie carries, else nothing.
+
+    See: docs/commentary/morrowind_runtime.md#menu-styles
+    """
+    if art.style != skyrim_menu_art.SkyrimArt.style:
+        return []
+    return [define_sprite(CHAR_STYLE_MARKER, []),
+            place_object2(depth=DEPTH_STYLE_MARKER, character_id=CHAR_STYLE_MARKER,
+                          name=STYLE_MARKER)]
+
+
+def _sprites(art) -> list:
     """The moving parts, each `[bitmap, shape, sprite, placement]`, in draw
     order: the caption caps, both scrollbars and thumbs, the list rule."""
     hs = client_rect(HISTORY_SCROLL)
     ts = topic_scroll_rect()
-    thumb = compose_thumb(export_root, THUMB_W, THUMB_H)
+    thumb = art.compose_thumb(THUMB_W, THUMB_H)
     parts = [
-        (compose_cap(export_root, 'right'), SPRITE_CAP_LEFT, CAPTION),
-        (compose_cap(export_root, 'left'), SPRITE_CAP_RIGHT, CAPTION),
-        (compose_scrollbar(export_root, hs[3]), SPRITE_HISTORY_SCROLL, hs),
+        (art.compose_cap('right'), SPRITE_CAP_LEFT, CAPTION),
+        (art.compose_cap('left'), SPRITE_CAP_RIGHT, CAPTION),
+        (art.compose_scrollbar(hs[3]), SPRITE_HISTORY_SCROLL, hs),
         (thumb, SPRITE_HISTORY_THUMB,
          (hs[0] + THUMB_X, hs[1] + SCROLL_TRACK[0], THUMB_W, THUMB_H)),
-        (compose_scrollbar(export_root, ts[3]), SPRITE_TOPIC_SCROLL, ts),
+        (art.compose_scrollbar(ts[3]), SPRITE_TOPIC_SCROLL, ts),
         (thumb, SPRITE_TOPIC_THUMB,
          (ts[0] + THUMB_X, ts[1] + SCROLL_TRACK[0], THUMB_W, THUMB_H)),
-        (compose_line(export_root, topic_line_width()), SPRITE_TOPIC_LINE,
+        (art.compose_line(topic_line_width()), SPRITE_TOPIC_LINE,
          client_rect((TOPICS[0] + LIST_INSET + 2, TOPICS[1] + LIST_INSET,
                       topic_line_width(), 2))),
     ]
@@ -597,14 +598,14 @@ def embed_font() -> Tag:
                         leading)
 
 
-def dialogue_window(export_root) -> Swf:
-    """The real menu: Morrowind's art, at OpenMW's layout, with live text.
+def dialogue_window(art) -> Swf:
+    """The real menu: `art`'s look, at OpenMW's layout, with live text.
 
     The chrome is one composed bitmap; the moving parts are sprites the plugin
     positions; every string is a field the plugin writes.
     See: docs/commentary/morrowind_runtime.md#the-real-menu
     """
-    window = compose_window(export_root)
+    window = compose_window(art)
     ox, oy = window_origin()
     tags = [
         Tag(TAG_FILE_ATTRIBUTES, struct.pack('<I', 0)),
@@ -618,21 +619,22 @@ def dialogue_window(export_root) -> Swf:
         place_object2(depth=1, character_id=CHAR_WINDOW_SHAPE,
                       name='Window_mc'),
     ]
-    tags += _cover(CHAR_COVER, SPRITE_COVER, CAPTION, 2)
+    tags += _cover(CHAR_COVER, SPRITE_COVER, CAPTION, 2, art.cover)
     tags += _cover(CHAR_BAR_COVER, SPRITE_BAR_COVER,
                    client_rect(DISPOSITION_FILL), 3)
     depth = 4
-    for bitmap, shape, sprite, (char_id, name, at) in _sprites(export_root):
+    for bitmap, shape, sprite, (char_id, name, at) in _sprites(art):
         tags += [bitmap, shape, sprite,
                  place_object2(depth=depth, character_id=char_id, name=name,
                                translate=at)]
         depth += 1
-    for field, name in _fields():
+    for field, name in _fields(art.colors):
         tags.append(field)
         tags.append(place_object2(depth=depth,
                                   character_id=field.character_id, name=name))
         depth += 1
-    tags += _modal_tags(export_root, depth)
+    tags += _modal_tags(art, depth)
+    tags += style_marker(art)
     tags += [Tag(TAG_SHOW_FRAME, b''), Tag(TAG_END, b'')]
     return Swf(version=9,
                frame_size=pack_rect(0, STAGE_W * TWIP, 0, STAGE_H * TWIP),
@@ -646,8 +648,24 @@ def _rect_lines(prefix: str, rect: tuple) -> list:
 
 
 def _camel(key: str) -> str:
-    """`normal_over` -> `NormalOver`."""
-    return ''.join(part.capitalize() for part in key.split('_'))
+    """`normal_over` -> `normalOver`."""
+    first, *rest = key.split('_')
+    return first + ''.join(part.capitalize() for part in rest)
+
+
+def _palette_lines() -> list:
+    """`Palette`, a member per color, and its value in each style.
+
+    See: docs/commentary/morrowind_runtime.md#menu-styles
+    """
+    members = ' '.join(f'unsigned {_camel(key)};' for key in FONT_COLORS)
+    lines = [f'struct Palette {{ {members} }};']
+    for name, colors in (('Morrowind', FONT_COLORS),
+                         ('Skyrim', skyrim_menu_art.FONT_COLORS)):
+        values = ', '.join(f'0x{r:02X}{g:02X}{b:02X}'
+                           for r, g, b in (colors[key] for key in FONT_COLORS))
+        lines.append(f'constexpr Palette k{name}Colors{{{values}}};')
+    return lines + [f'constexpr const char* kStyleMarker = "_root.{STYLE_MARKER}._x";']
 
 
 def _path_lines() -> list:
@@ -742,10 +760,7 @@ def layout_header() -> str:
     lines += _rect_lines('Bye', client_rect(BYE_BUTTON))
     lines += _rect_lines('DispositionFill', client_rect(DISPOSITION_FILL))
     lines += _modal_lines()
-    lines += [''] + _scalar_lines() + ['']
-    for key, (r, g, b) in FONT_COLORS.items():
-        lines.append(f'constexpr unsigned kColor{_camel(key)} = '
-                     f'0x{r:02X}{g:02X}{b:02X};')
+    lines += [''] + _scalar_lines() + [''] + _palette_lines()
     lines += [''] + _path_lines() + [''] + _metric_lines()
     lines += ['', '}  // namespace tesruntime::mw::layout', '']
     return '\n'.join(lines)
@@ -762,6 +777,10 @@ def main() -> None:
                     help='where the C++ layout header goes')
     ap.add_argument('--export-root', default='export',
                     help='where the Morrowind install is registered')
+    ap.add_argument('--icons', choices=ICON_SETS, default=None,
+                    help="Morrowind's icons or Oblivion's (default: whichever is installed)")
+    ap.add_argument('--style', choices=STYLES, default=None,
+                    help="Morrowind's look or Skyrim's (default: Morrowind's when installed)")
     ap.add_argument('--preview',
                     help='also write the composed window to this PNG')
     ap.add_argument('--uncompressed', action='store_true',
@@ -770,7 +789,8 @@ def main() -> None:
 
     os.makedirs(args.out, exist_ok=True)
     path = os.path.join(args.out, 'morrowind_dialogue.swf')
-    movie = hello_world() if args.hello else dialogue_window(args.export_root)
+    art = menu_art(args.export_root, args.style, args.icons)
+    movie = hello_world() if args.hello else dialogue_window(art)
     data = movie.serialize(compress=not args.uncompressed)
     with open(path, 'wb') as fh:
         fh.write(data)
@@ -779,7 +799,7 @@ def main() -> None:
             fh.write(layout_header())
         print(f'layout -> {args.header}')
     if args.preview and not args.hello:
-        compose_window(args.export_root).convert('RGB').save(args.preview)
+        compose_window(art).convert('RGB').save(args.preview)
         print(f'preview -> {args.preview}')
     print(f'wrote {path} ({len(data)} bytes, '
           f'{"FWS" if args.uncompressed else "CWS"}, '

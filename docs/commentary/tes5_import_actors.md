@@ -95,9 +95,17 @@ see [tes_runtime_crime.md](tes_runtime_crime.md#bounty-realms).
 TES4, FO3 and FNV FACT `DATA.Flags` bit 1 is Evil (xEdit `wbDefinitionsTES4`,
 `wbDefinitionsFO3`): any crime against a member carries no bounty (UESP
 Oblivion talk:Factions). Skyrim has no such flag; an actor is a crime victim
-exactly when it has a crime faction. So an NPC in any Evil faction, this
-plugin's or a master's, gets no `CRIF` and no crime-faction membership, the
-same treatment as one that attacks on sight. Guard classes keep theirs.
+exactly when it has a crime faction. So an NPC whose factions, this plugin's
+or a master's, are ALL Evil gets no `CRIF` and no crime-faction membership,
+the same treatment as one that attacks on sight. Guard classes keep theirs.
+
+🛑 **One non-Evil faction makes the actor a victim again** (same UESP page:
+"as soon as they are in a single non-evil faction they cause a bounty").
+Morroblivion puts nearly every actor in `0factMorrowind` (Hidden + Evil) beside
+its town or guild faction. Testing ANY Evil faction stripped crime status from
+3,120 of Morrowind_ob's 3,146 NPCs; only 749 are in Evil factions alone. In
+Oblivion.esm the two readings give 886 and 770, and in Nehrim.esm 325 and 269.
+All of `AbtruennigeMagier`'s members are in that faction alone.
 
 Aggression alone cannot catch this: Nehrim's `AbtruennigeMagier` mages in
 `NQ00Karick` have Aggression 5, so they were written as crime victims and the
@@ -593,6 +601,17 @@ vanilla Skyrim's. Dependents' actors used to join nothing: measured on
 TR_Mainland, 0 of 9,264 NPCs carried the compatibility patch's origin faction
 while 4,322 of the patch's 4,647 voiced barks were gated on it, so nearly every
 vanilla Morrowind bark was silent on every Tamriel Rebuilt actor.
+
+🛑 **Only the masters the plugin's own header lists count, never the inherited
+ones.** A plugin also indexes its masters' masters so it can adopt their support
+records (see [phase 0](tes5_import_pipeline.md#phase-0-dependent-skips-support-records)).
+Those inherited masters sit below the header's first slot (`get_formid_index_offset`),
+and `reset_origin_faction` skips their factions. When they were joined, every
+Tamriel_Data, TR_Mainland and Sky_Main NPC (633, 9,243 and 950) became a member
+of Oblivion.esm's faction. Oblivion's greetings then passed for them, since they
+share Oblivion's voice types. Those greetings sit in quests up to priority 90 and
+the Morrowind barks in `TES4GenericHELO` at 0, so the Oblivion line won and the
+Morrowind ones went unheard.
 
 Dependents used to stay ungated, so a DLC could hand the master's NPCs new
 generic lines. Measured on the Morroblivion build before the change: 95 new

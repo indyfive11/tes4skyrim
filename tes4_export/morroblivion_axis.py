@@ -17,6 +17,11 @@ while another base sharing the mesh is not.  Entries are therefore accepted on
 a spike -- one value carrying >=80% of the references -- and `Z_RESEAT` keys on
 the base EditorID rather than the mesh.
 
+A pitch is applied two ways, matching how Morroblivion placed its own refs:
+`AXIS_PITCH_DEG` turns the MODEL about its own X before the reference's
+rotation, so a yawed ref stays upright; `ROTX_ADD_DEG` adds to RotX alone,
+which is what Morroblivion did to its lava rocks.
+
 `SUBSTITUTION_BLACKLIST` names Morroblivion replacements that are a DIFFERENT
 object, not a moved one -- a hanging lamp became a floor candlestick, and three
 entries name a mesh no game ships at all.  Those are never substituted, so the
@@ -24,20 +29,15 @@ Morrowind mesh converts instead.
 
 See: docs/audits/morroblivion_mesh_axis_rotation.md#the-correction
 See: docs/audits/morroblivion_mesh_axis_rotation.md#substitution-blacklist
+See: docs/audits/morroblivion_mesh_axis_rotation.md#pitch-must-compose
 """
 
 import math
 
-#: Mesh (archive path, lowercase '/') -> pitch degrees the refs gained.
+#: Mesh (archive path, lowercase '/') -> model-side pitch degrees, composed.
 AXIS_PITCH_DEG: dict = {
     'fire/fireopenmedium.nif': 270,
     'fire/fireopenmediumsmoke.nif': 270,
-    'morro/i/inulavaurocku14.nif': 180,
-    'morro/i/inulavaurocku16.nif': 180,
-    'morro/i/inulavaurocku17.nif': 180,
-    'morro/i/inulavaurocku18.nif': 180,
-    'morro/i/inumoldurocku17.nif': 180,
-    'morro/i/inupyurocku13.nif': 180,
     'morroblivion/lights/common/candle_01.nif': 270,
     'morroblivion/lights/common/candle_02.nif': 270,
     'morroblivion/lights/common/candle_05.nif': 270,
@@ -45,6 +45,16 @@ AXIS_PITCH_DEG: dict = {
     'morroblivion/lights/dunmer/candle_13.nif': 270,
     'morroblivion/lights/dunmer/candle_16.nif': 270,
     'morroblivion/lights/dunmer/candle_17.nif': 270,
+}
+
+#: Mesh -> degrees Morroblivion added to RotX alone, yaw untouched.
+ROTX_ADD_DEG: dict = {
+    'morro/i/inulavaurocku14.nif': 180,
+    'morro/i/inulavaurocku16.nif': 180,
+    'morro/i/inulavaurocku17.nif': 180,
+    'morro/i/inulavaurocku18.nif': 180,
+    'morro/i/inumoldurocku17.nif': 180,
+    'morro/i/inupyurocku13.nif': 180,
 }
 
 #: Base EditorID (lowercase) -> Z offset its references gained.
@@ -138,13 +148,38 @@ AXIS_PITCH_UNSURE: dict = {
 }
 
 
+def _key(model: str) -> str:
+    """A model path in the tables' spelling: lowercase, '/', no leading slash."""
+    return model.lower().replace('\\', '/').lstrip('/')
+
+
 def pitch_for_model(model: str) -> float:
-    """Radians to add to a reference's RotX for this model."""
-    if not model:
-        return 0.0
-    key = model.lower().replace('\\', '/').lstrip('/')
-    deg = AXIS_PITCH_DEG.get(key)
+    """Radians the model turns about its own X before the ref's rotation."""
+    deg = AXIS_PITCH_DEG.get(_key(model)) if model else None
     return math.radians(deg) if deg else 0.0
+
+
+def rotx_add_for_model(model: str) -> float:
+    """Radians to add to a reference's RotX alone for this model."""
+    deg = ROTX_ADD_DEG.get(_key(model)) if model else None
+    return math.radians(deg) if deg else 0.0
+
+
+def compose_pitch(rx: float, ry: float, rz: float, pitch: float) -> tuple:
+    """(RotX, RotY, RotZ) placing the model pitched about its own X, then as authored.
+
+    Same `(Rz·Ry·Rx)ᵀ` convention as `rot_matrix`; with RotY = RotZ = 0 it
+    equals adding `pitch` to RotX.  `rot_matrix` is imported here to break the
+    cycle navmesh.world -> record_types -> dialogue -> morrowind_patch -> here.
+    See: docs/audits/morroblivion_mesh_axis_rotation.md#pitch-must-compose
+    """
+    from tes5_import.navmesh.world import rot_matrix
+    n = (rot_matrix(rx, ry, rz) @ rot_matrix(pitch, 0.0, 0.0)).T
+    sy = max(-1.0, min(1.0, -float(n[2][0])))
+    y = math.asin(sy)
+    if math.cos(y) > 1e-9:
+        return (math.atan2(n[2][1], n[2][2]), y, math.atan2(n[1][0], n[0][0]))
+    return (math.atan2(sy * n[0][1], sy * n[0][2]), y, 0.0)
 
 
 def z_reseat_for_base(editor_id: str) -> float:
@@ -158,4 +193,4 @@ def is_unsure(model: str) -> bool:
     """Whether this model is mis-authored but deliberately not corrected."""
     if not model:
         return False
-    return model.lower().replace('\\', '/').lstrip('/') in AXIS_PITCH_UNSURE
+    return _key(model) in AXIS_PITCH_UNSURE

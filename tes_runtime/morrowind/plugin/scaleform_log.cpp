@@ -83,8 +83,12 @@ bool OnDisk(const std::string& relative) {
 
 }  // namespace
 
+// AE only: the state bag's layout and slots were read on 1.6.x, never checked
+// on SE 1.5.97 or VR, and the log is a diagnostic the menus do not need.
+// See: docs/reference/address_library_formats.md#pre-ae-tables
 void InstallScaleformLog(void* loader) {
-    if (g_installed || !loader) return;
+    constexpr std::uint32_t kRuntimeAe = 0x01060000u;
+    if (g_installed || !loader || g_versionDb.runtime() < kRuntimeAe) return;
     g_installed = true;
     void* bag = *reinterpret_cast<void**>(static_cast<char*>(loader) +
                                           ids::kOffLoaderStateBag);

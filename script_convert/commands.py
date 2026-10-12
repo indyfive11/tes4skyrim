@@ -19,10 +19,10 @@ argument text -- so those are properties of the CALL and live on it.
 from script_convert import resolve_name as _resolve_name
 from script_convert.constants import (
     ACTOR_SIGS, ANIM_GROUP_EVENTS, ATTRIBUTE_STUB_VALUE, AV_ARGUMENT_NAMES,
-    CASTABLE, FORCE_FLEE_QUEST, FORCE_GREET_QUEST, PLACED_REF_SIGS,
-    PRIMARY_STATS, SELF_NAMES, SEQUENCE_OBJECT_SIGS, SPLIT_SKILLS,
-    TES4_ASSAULT_BOUNTY, TES4_MISC_STAT_NAMES, TES4_MURDER_BOUNTY,
-    TES4_SCRIPT_OWNED_MISC_STATS,
+    CASTABLE, CONV_WALK_VAR, FORCE_FLEE_QUEST, FORCE_GREET_QUEST,
+    PLACED_REF_SIGS, PRIMARY_STATS, SELF_NAMES, SEQUENCE_OBJECT_SIGS,
+    SPLIT_SKILLS, TES4_ASSAULT_BOUNTY, TES4_MISC_STAT_NAMES,
+    TES4_MURDER_BOUNTY,
     TES4_STEAL_BOUNTY, is_generated_script_type, mgef_family_keyword_name,
     record_type_to_papyrus, safe_property_name, papyrus_script_name
 )
@@ -44,6 +44,9 @@ from tes5_import.actors.confidence import (
     FACTION_EDID as CONFIDENCE_FACTION, FLEE_SPELL_EDID as CONFIDENCE_FLEE_SPELL,
     MARGIN_FACTION_EDID as FLEE_MARGIN_FACTION, SCALE_EDID as FLEE_HEALTH_SCALE)
 from tes5_import.dialogue.say_topics import flee_key
+from script_convert.stat_access import actor_subject, attribute_call, kept_skill_call
+from script_convert.misc_stats import is_script_kept, misc_stat_global
+from tes5_import.base.owned_records import CHARGEN_REQUEST_GLOBAL
 
 #: TES4 command name (lowercase) -> handler `(ctx, call) -> str | None`.
 REGISTRY: dict = dict(FALLOUT_HANDLERS)
@@ -246,20 +249,26 @@ def get_first_ref(ctx, call) -> str:
 
 @command('getpcmiscstat', 'modpcmiscstat')
 def pc_misc_stat(ctx, call) -> str:
-    """Get/ModPCMiscStat <index> [amount] -- Skyrim names the stat instead of numbering it.
+    """Get/ModPCMiscStat <index> [amount] -- Skyrim names the stat instead of numbering it;
+    one Oblivion's engine kept is our TES4MiscStat<NN> global (plus Skyrim's on a read).
 
     See: docs/commentary/script_convert.md#pc-misc-stat-names
+    See: docs/commentary/morrowind_runtime.md#statistics-tab
     """
     src = call.source(0).strip()
     idx = int(src) if src.isdigit() else -1
     name = TES4_MISC_STAT_NAMES[idx] if 0 <= idx < len(TES4_MISC_STAT_NAMES) else ''
-    if not name:
-        return ctx.note(f'{call.raw_name} {src} - Skyrim tracks no such stat')
-    if call.name == 'modpcmiscstat' and idx not in TES4_SCRIPT_OWNED_MISC_STATS:
-        return ctx.note(f'{call.raw_name} {src} - the engine keeps this stat; a script writing it repurposed it')
+    if not is_script_kept(idx):
+        if not name:
+            return ctx.note(f'{call.raw_name} {src} - Skyrim tracks no such stat')
+        if call.name == 'modpcmiscstat':
+            return f'Game.IncrementStat("{name}", {call.arg(1, "1")})'
+        return f'Game.QueryStat("{name}")'
+    held = misc_stat_global(idx)
+    ctx.sc.property_refs[held] = 'GlobalVariable'
     if call.name == 'modpcmiscstat':
-        return f'Game.IncrementStat("{name}", {call.arg(1, "1")})'
-    return f'Game.QueryStat("{name}")'
+        return f'{held}.Mod({call.arg(1, "1")})'
+    return f'(Game.QueryStat("{name}") + {held}.GetValueInt())' if name else f'{held}.GetValueInt()'
 
 
 @command('call')
@@ -337,12 +346,28 @@ def start_conversation(ctx, call) -> str:
     if len(parts) >= 2 and parts[1].strip():
         topic = parts[1].strip().split()[0]
         ctx._mark_topic_property(topic)
-        lines = ctx.conversation_chains.get(topic.lower())
-        if lines:
-            return _replay_chain(ctx, ref, call, lines)
+        route = ctx.conversation_starts.get(topic.lower())
+        if route:
+            return _walk(ctx, call, route)
         return f'{ref}.Say({call.arg(1)})'
     ctx.sc.property_refs['GREETING'] = 'Topic'
     return f'{ref}.Say(GREETING)'
+
+
+def _walk(ctx, call, route: str) -> str:
+    """The plugin's StartConversation walk; in a poll, bracketed by the overlap deadline.
+
+    The walk waits out the whole conversation, so the poll's insurance pass
+    must not re-run the call meanwhile.
+    See: docs/commentary/tes5_import_dialogue.md#script-started-conversation-chains
+    """
+    listener = ctx._cast(ctx.arg_expr(0, call.extends), 'Actor')
+    run = f'{route}.Run({_actor_arg(ctx, call)}, {listener}, {call.arg(1)})'
+    if ctx._current_event != 'Event OnUpdate()':
+        return run
+    ctx.sc.uses_conv_walk = True
+    return '\n  '.join((f'{CONV_WALK_VAR} = TES4Polyfill.WalkDeadline()', run,
+                        f'{CONV_WALK_VAR} = 0.0'))
 
 
 def _force_greet(ctx, ref: str, parts: list) -> str:
@@ -384,30 +409,6 @@ def force_flee(ctx, call) -> str:
     ctx.sc.property_refs[FORCE_FLEE_QUEST] = 'Quest'
     return (f'TES4Polyfill.FillPoolSlot({FORCE_FLEE_QUEST}, {slot[0]}, '
             f'{slot[1]}, {_actor_arg(ctx, call)})')
-
-
-#: SayLine's assumed length for an unmeasured line, and the beat between them.
-_CHAIN_LINE_SECONDS = 3.0
-_CHAIN_BEAT = 0.6
-
-
-def _replay_chain(ctx, ref: str, call, lines: int) -> str:
-    """Say a multi-line NPC-to-NPC topic once per line, alternating speakers.
-
-    Oblivion's StartConversation handed the whole chain to the scheduler;
-    `Say` plays one line, so the chain must be walked here. Line selection
-    stays with the engine -- each Say picks the first INFO whose conditions
-    pass -- so End fragments advance the counter exactly as before.
-    See: docs/commentary/tes5_import_dialogue.md#script-started-conversation-chains
-    """
-    listener = ctx._cast(ctx.arg_expr(0, call.extends), 'Actor')
-    out = []
-    for n in range(lines):
-        speaker = ref if n % 2 == 0 else listener
-        out.append(f'Utility.Wait(TES4Polyfill.SayLine({speaker}, '
-                   f'{call.arg(1)}, {_CHAIN_LINE_SECONDS:g}) '
-                   f'+ {_CHAIN_BEAT})')
-    return '\n  '.join(out)
 
 
 @command('addtopic')
@@ -460,7 +461,7 @@ def play_group(ctx, call) -> str:
         sig = sig or _traced_signature(ctx, call.ref)
         is_actor = sig in ACTOR_SIGS if sig else True
     else:
-        is_actor = call.extends == 'Actor'
+        is_actor = call.extends in ('Actor', 'ActiveMagicEffect', 'TopicInfo')
 
     if is_actor:
         # SendAnimationEvent takes an ObjectReference, and TES4 aims PlayGroup
@@ -879,6 +880,14 @@ def is_spell_target(ctx, call) -> str:
         return ctx.note(f'{call.written()} (spell has no convertible effect)',
                         value='False')
     return _effect_family_test(ctx, call, code)
+
+
+@command('isplayable', 'isplayable2')
+def is_playable(ctx, call) -> str:
+    """OBSE IsPlayable [object]: the argument's playable flag, else the receiver's."""
+    target = (call.arg(0) if len(call)
+              else ctx._resolve_objref_ref(call.ref, call.extends))
+    return f'TES4Polyfill.IsPlayable({target})'
 
 
 @command('hasmagiceffect')
@@ -1408,16 +1417,13 @@ def dispel(ctx, call) -> str:
 
 @command('showclassmenu', 'showbirthsignmenu')
 def chargen_menu(ctx, call) -> str:
-    """ShowClassMenu / ShowBirthsignMenu -- the modal chargen pickers.
-
-    Show() parks only its own thread, so the busy latch stops a queued poll
-    tick re-entering the menu: a POLLED body Returns on a latched-out pass
-    (falling through fired `setstage 44` mid-menu), a ONE-SHOT site falls
-    through so a race never drops the authored tail.  Show() returns -1 while
-    a menu transition is in flight, so the box is retried briefly.  The modal
-    closes the dialogue it opened from, so the dialogue partner is captured
-    first and re-evaluates his packages once the menu closes.
+    """ShowClassMenu / ShowBirthsignMenu -- MorrowindRuntime's menu, which sets the
+    choice and grants the spells, else (Ask gives -1) the modal message pages, whose
+    pick this grants. A busy latch stops a queued poll tick re-entering it: a POLLED
+    body Returns on a latched-out pass, a ONE-SHOT site falls through. The dialogue
+    partner is captured first and re-evaluates his packages after the menu.
     See: docs/commentary/script_convert.md#chargen-menu-reopens-the-dialogue
+    See: docs/commentary/morrowind_runtime.md#chargen-menus
     """
     key = 'birthsign' if call.name == 'showbirthsignmenu' else 'class'
     plan = (ctx.chargen_menus or {}).get(key)
@@ -1430,26 +1436,22 @@ def chargen_menu(ctx, call) -> str:
     var, retry, partner = (f'TES4_menuPick{seq}', f'TES4_menuRetry{seq}',
                            f'TES4_menuPartner{seq}')
     first = safe_property_name(plan['pages'][0][0])
-    ctx.sc.property_refs[first] = 'Message'
-
+    choice = safe_property_name(plan['choice_global'])
+    for name, kind in ((first, 'Message'), (choice, 'GlobalVariable'),
+                       (CHARGEN_REQUEST_GLOBAL, 'GlobalVariable')):
+        ctx.sc.property_refs[name] = kind
+    show = [f'{var} = {first}.Show()', f'Int {retry} = 0',
+            f'While {var} < 0 && {retry} < 20', '  Utility.Wait(0.5)',
+            f'  {var} = {first}.Show()', f'  {retry} += 1', 'EndWhile']
+    show += _chargen_pages(ctx, plan['pages'], var)
+    show += _chargen_spells(ctx, plan['actions'], var)
+    show += [f'If {var} >= 0', f'  {choice}.SetValue({var} + 1)', 'EndIf']
     lines = [f'Actor {partner} = TES4Polyfill.DialogueSpeaker()'
              '  ; the modal closes the dialogue TES4 kept open',
              'TES4_ChargenMenuBusy = True',
-             f'Int {var} = {first}.Show()'
-             '  ; TES4 modal chargen menu - pauses the game like the original',
-             f'Int {retry} = 0',
-             f'While {var} < 0 && {retry} < 20',
-             '  Utility.Wait(0.5)',
-             f'  {var} = {first}.Show()',
-             f'  {retry} += 1',
-             'EndWhile']
-    lines += _chargen_pages(ctx, plan['pages'], var)
-    lines += _chargen_spells(ctx, plan['actions'], var)
-    gname = plan.get('choice_global')
-    if gname:
-        safe = safe_property_name(gname)
-        ctx.sc.property_refs[safe] = 'GlobalVariable'
-        lines += [f'If {var} >= 0', f'  {safe}.SetValue({var} + 1)', 'EndIf']
+             f'Int {var} = TES4_Chargen.Ask({CHARGEN_REQUEST_GLOBAL}, '
+             f'{1 if key == "class" else 2}, {choice})',
+             f'If {var} == -1'] + ['  ' + line for line in show] + ['EndIf']
     lines += ['TES4_ChargenMenuBusy = False',
               f'If {partner} != None',
               f'  {partner}.EvaluatePackage()'
@@ -1525,14 +1527,56 @@ def get_is_id(ctx, call) -> str:
     return f'{ref}.GetBaseObject() == {arg}'
 
 
+def _chosen(ctx, key: str) -> str:
+    """The chargen menu's choice global for `key`, registered as a property."""
+    choice = safe_property_name(ctx.chargen_menus[key]['choice_global'])
+    ctx.sc.property_refs[choice] = 'GlobalVariable'
+    return f'{choice}.GetValueInt()'
+
+
+def _player_class_test(ctx, operand: str) -> str:
+    """The player's class, as the class menu's choice global holds it: the class's
+    row, or no choice yet for the class the player record starts in; '' when
+    the menu does not know the class.
+
+    See: docs/commentary/morrowind_runtime.md#chargen-menus
+    """
+    plan = (ctx.chargen_menus or {}).get('class') or {}
+    edid = operand.lower()
+    index = plan.get('edid_to_index', {}).get(edid)
+    starting = bool(edid) and edid == plan.get('start')
+    if index is None and not starting:
+        return ''
+    chosen = _chosen(ctx, 'class')
+    tests = ([f'{chosen} == {index + 1}'] if index is not None else []) + \
+            ([f'{chosen} == 0'] if starting else [])
+    return f"({' || '.join(tests)})"
+
+
+@command('getplayerbirthsign')
+def get_player_birthsign(ctx, call) -> str:
+    """GetPlayerBirthsign (OBSE): the sign's choice global, 0 until chosen.
+
+    See: docs/commentary/morrowind_runtime.md#chargen-menus
+    """
+    if 'birthsign' not in (ctx.chargen_menus or {}):
+        return ctx.note(f'{call.raw_name} - no birthsign menu in this game')
+    return _chosen(ctx, 'birthsign')
+
+
 @command('getisclass', 'getpcisclass')
 def get_is_class(ctx, call) -> str:
-    """GetIsClass -- the CLAS operand is read off the ActorBase.
+    """GetIsClass -- the CLAS operand is read off the ActorBase; the player's
+    class is the class menu's choice (_player_class_test).
 
     Actor has no GetClass of its own, so the reference has to reach its base
     first.
     """
     arg = call.arg(0, 'None')
+    on_player = call.name == 'getpcisclass' or (call.ref or '').lower() in PLAYER_TOKENS
+    chosen = _player_class_test(ctx, call.source(0).strip()) if on_player and len(call) else ''
+    if chosen:
+        return chosen
     if len(call):
         ctx.sc.property_refs[call.source(0).strip()] = 'Class'
     if call.name == 'getpcisclass':
@@ -1588,27 +1632,24 @@ _SPLIT_READS = frozenset({'GetActorValue'})
 
 
 def _attribute_access(ctx, call, raw: str) -> str:
-    """A TES4 attribute: Speed through the walk formula, other reads the stub, writes dropped.
+    """A TES4 attribute: Speed through the walk formula, the player's others through
+    their globals, another actor's through its stat faction; an attribute Skyrim
+    keeps nowhere (FNV's Perception) reads the stub and drops its writes.
 
     See: docs/commentary/script_convert.md#skyrim-has-no-attributes
     """
-    speed = _speed_access(ctx, call) if raw.lower() == 'speed' else None
-    if speed:
-        return speed
+    modding = _AV_PAPYRUS.get(call.name) == 'ModActorValue'
+    access = ((_speed_access(ctx, call) if raw.lower() == 'speed' else None)
+              or attribute_call(ctx, call, raw, modding))
+    if access:
+        return access
     if call.name in ACTOR_VALUE_READ_FUNCTIONS:
         return ATTRIBUTE_STUB_VALUE
     return f';TES4 attribute {raw} has no Skyrim equivalent -- write dropped'
 
 
-def _actor_subject(ref: str, extends: str) -> str:
-    """The subject as an Actor expression: `ref`, `Self`, or `(Self as Actor)`."""
-    if ref != 'Self' or extends == 'Actor':
-        return ref
-    return '(Self as Actor)'
-
-
 def _unmapped_actor_value(ctx, call, raw: str) -> str:
-    """An FO3/FNV actor value Skyrim's table lacks: an inert read, or a dropped write.
+    """An FO3/FNV actor value Skyrim lacks: an inert read, or a dropped write.
 
     See: docs/commentary/script_convert.md#fallout-actor-value-names
     """
@@ -1619,7 +1660,8 @@ def _unmapped_actor_value(ctx, call, raw: str) -> str:
 
 @command(*sorted(ACTOR_VALUE_FUNCTIONS))
 def actor_value(ctx, call) -> str:
-    """Get/Set/Mod ActorValue with the AV name quoted; attributes stubbed, split skills read the higher.
+    """Get/Set/Mod ActorValue with the AV name quoted; attributes and kept skills through
+    stat_access, split skills read the higher.
 
     See: docs/commentary/script_convert.md#actor-value-reads
     """
@@ -1647,8 +1689,11 @@ def actor_value(ctx, call) -> str:
         papyrus = 'SetActorValue'
     if call.name in _AV_PLAYER_ONLY:
         return f'Game.GetPlayer().{papyrus}({", ".join(args)})'
+    kept = kept_skill_call(ctx, call, raw, papyrus == 'ModActorValue', av)
+    if kept:
+        return kept
     ref = ctx._resolve_self_ref(call.ref, call.extends, actor_func=True)
-    subject = _actor_subject(ref, call.extends)
+    subject = actor_subject(ref, call.extends)
     split = SPLIT_SKILLS.get(raw.lower())
     if split and papyrus in _SPLIT_READS:
         return f'TES4Polyfill.HigherActorValue({subject}, "{split[0]}", "{split[1]}")'
@@ -1659,13 +1704,15 @@ def actor_value(ctx, call) -> str:
 def _speed_access(ctx, call):
     """A Speed read or write through the subject's TES4 walk formula, or None.
 
-    Reads and writes share one baseline, so a saved-and-restored Speed round-trips.
-    The player's baseline is ATTRIBUTE_STUB_VALUE, what its other attribute reads return.
+    Reads and writes share one baseline, so a saved-and-restored Speed round-trips;
+    a Mod adds to the Speed read back. The player's movement baseline is
+    ATTRIBUTE_STUB_VALUE.
     See: docs/commentary/script_convert.md#speed-write-becomes-speedmult
     """
     formula = ctx.walk_speed_formula(call.ref)
     reading = call.name in ACTOR_VALUE_READ_FUNCTIONS
-    if formula is None or not (reading or (call.name in _AV_SET and len(call) > 1)):
+    modding = _AV_PAPYRUS.get(call.name) == 'ModActorValue'
+    if formula is None or not (reading or ((call.name in _AV_SET or modding) and len(call) > 1)):
         return None
     base, low, high = formula
     if (call.ref or '').lower() in PLAYER_TOKENS:
@@ -1673,9 +1720,11 @@ def _speed_access(ctx, call):
     ref = ctx._resolve_self_ref(call.ref, call.extends, actor_func=True)
     if ref == 'Self' and call.extends == 'ObjectReference':
         ref = '(Self as Actor)'
+    current = f'TES4Polyfill.GetTES4Speed({ref}, {base}, {low}, {high})'
     if reading:
-        return f'TES4Polyfill.GetTES4Speed({ref}, {base}, {low}, {high})'
-    return f'TES4Polyfill.SetTES4Speed({ref}, {call.arg(1)}, {base}, {low}, {high})'
+        return current
+    value = f'{current} + ({call.arg(1)})' if modding else call.arg(1)
+    return f'TES4Polyfill.SetTES4Speed({ref}, {value}, {base}, {low}, {high})'
 
 
 #: AV commands naming the PLAYER by definition, whatever script calls them.

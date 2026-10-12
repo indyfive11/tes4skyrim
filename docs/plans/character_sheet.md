@@ -13,6 +13,28 @@ crafting thresholds, level-up multipliers) and example character values.
 
 Work order: [bugs first](#bugs), then the [MVP](#mvp).
 
+**Built first, Morrowind only (unconfirmed in game):** the stats window (C, from the perks menu), the
+level-up dialog after Skyrim's own level-up, and skill increases credited to
+the governing attribute, all inside `MorrowindRuntime.dll` over the stat store
+it already keeps. It uses Morrowind's own governing attributes (each Skyrim skill
+through its namesake Morrowind skill), not the [one table](#governing) below,
+which is for the multi-game sheet. See
+[morrowind_runtime.md](../commentary/morrowind_runtime.md#character-sheet).
+On top of it: the [attribute buffs](../commentary/morrowind_runtime.md#attribute-buffs),
+Morrowind's [attribute effects](../commentary/morrowind_runtime.md#attribute-effects),
+the [skill cap](../commentary/morrowind_runtime.md#skill-cap), and one ini switch,
+on by default, whose off reads every attribute as 100
+([sheet off](../commentary/morrowind_runtime.md#sheet-off)).
+
+**Built since (2026-10-02, unconfirmed in game):**
+- every converted game with attributes uses it ([TES4 tables](../commentary/morrowind_runtime.md#tes4-tables));
+- [class and birthsign menus](../commentary/morrowind_runtime.md#chargen-menus), without major and minor skills;
+- NPC attributes and kept skills as [stat faction ranks](../commentary/morrowind_runtime.md#npc-attributes), read by scripts and conditions (M3, M4, M5);
+- the [Statistics tab](../commentary/morrowind_runtime.md#statistics-tab) (M9).
+
+The player's kept skills still read their Skyrim stand-ins: nothing grows
+them yet.
+
 ## <a id="decisions"></a>Settled decisions
 
 | Question | Decision |
@@ -24,7 +46,9 @@ Work order: [bugs first](#bugs), then the [MVP](#mvp).
 | Who has stats | The player **and** NPCs. The Morrowind runtime's NPC stats move under the same store |
 | Generic or not | Not generic. This is a mod, so Nehrim tables are fixed data. Converter bugs found on the way stay generic fixes |
 | Leveling | Skyrim's own level-up in the skills menu, then the sheet opens to choose attributes |
-| Health, Magicka, Stamina | Skyrim's flat +10 choice stays. Attributes never feed the pools |
+| Health, Magicka, Stamina | Skyrim's +10 choice stays, scaled by the governing attribute: normal × (0.5 + attribute / 100). The full chart is in [attribute buffs](../commentary/morrowind_runtime.md#attribute-buffs) |
+| On or off | One ini switch, on by default. Off: attributes read 100 (Personality reads Speech), no buffs, no cap. The skill cap has its own key, on by default |
+| Kept skills when off | Read 100, like the attributes (not yet built) |
 | New-game options | Attribute rules (Standard or Strict), plus a Nehrim-only "slowed skill growth" option |
 | Nehrim's journal settings page | Dropped |
 | Enderal's system | Not ported. Kept as a reference (`ScriptsEnderal.zip` in the Enderal SE install) |
@@ -310,6 +334,7 @@ one copy. See [the menu must render itself](../commentary/morrowind_runtime.md#t
 - **Starting values:**
   - NPCs start from their authored record: Oblivion/Nehrim `NPC_` `DATA` attributes (`tes4_export/record_types/actors.py:142`) and `CREA` `DATA` attributes (`:187`); Morrowind from the runtime's existing `ActorDef`.
   - The player starts from the chosen game's race attributes (`RACE` `ATTR`, male/female, `actors.py:370`).
+  - **A chargen choice is retroactive** (race now; class and birthsign when their menus exist): when one moves a base attribute, every pick buff already earned is re-scored as if the attribute had always had its new value. Level-up gains on top are kept. This is unlike a level-up or a script's change, which is never retroactive.
 - **Morrowind:** `script_ops_stats.cpp`'s own `stat|` store moves under this one. The Morrowind runtime reads and writes through TESRuntime, so there is one store and one read.
 - **Player values** are mirrored into TESGameSelect globals (a new hand-assigned block; see [TESGameSelect records](../commentary/tesgameselect.md#records)) so dialogue conditions can read them with `GetGlobalValue` and saves carry them.
 - **NPC values** live in the TESRuntime co-save. The co-save already exists for the journal: `tes_runtime/tes/journal_log.*`, `plugin.cpp`.
@@ -369,19 +394,80 @@ Today these conditions are dropped at import
 | Standing | Fame, Infamy (Oblivion) | `TES4Fame` / `TES4Infamy` globals ([B5](#bug-fame)) |
 | | Reputation (Morrowind) | Morrowind runtime `State().reputation` |
 | | Bounty per game | the game's crime factions (`TES4CrimeFactions`) and the Morrowind runtime's |
-| Oblivion | Oblivion Gates Shut, Artifacts Found, Lockpicks Broken, Jokes Told | stats the converter drops today (blank entries in `TES4_MISC_STAT_NAMES`); `ModPCMiscStat` for them goes to the store instead |
+| Oblivion | Oblivion Gates Shut, Artifacts Found | globals of ours: the Daedric quests' `ModPCMiscStat 19`, and `CloseCurrentOblivionGate`, whose engine code counted 13. Lockpicks Broken and Jokes Told only Oblivion's minigames counted, so they are dropped ([statistics tab](../commentary/morrowind_runtime.md#statistics-tab)) |
 | Nehrim | the four relabeled stats ([B2](#bug-nehrim-misc-stats)), bank balance, bank interest | labels from `sMisc*` game settings; bank from `ErothinBankQuest.PlayerKontostand`; interest by the journal's rule: 2% before MQ14 stage 20, 1% before MQ19 stage 70, then 3% |
 
 #### <a id="m10-input"></a>M10. Opening the sheet
 
-- **Hotkey:** to be chosen. The mockup's C collides with Skyrim's Auto-Move (verify).
+- **Hotkey:** C, only in Skyrim's perks menu, where it is free; the sheet opens
+  from there and nowhere else, through the key or a **[C] CHARACTER** button
+  (built 2026-10-03, [perks button](../commentary/morrowind_runtime.md#perks-button)).
 - **Other ways in:** the Nehrim journal item, and a Tween-menu entry if the engine allows it ([L9](#learn)).
-- **Gamepad** navigation.
+- **Gamepad:** the engine's stick cursor (right stick, A clicks, B closes) and Y
+  in the perks menu (built 2026-10-03, [controllers](../commentary/morrowind_runtime.md#controller)).
+
+### <a id="oblivion-plan"></a>Oblivion and Nehrim: plan of attack (proposed 2026-10-02)
+
+Morrowind already has the whole chain: a stat store, buffs, the skill cap,
+attribute magic, the level-up step, race starts, tooltips and the menus. The
+Oblivion work reuses it rather than building a second one.
+
+**Where they stand today (read in the code, counted in `export/`):**
+
+| Area | Today | Count |
+|---|---|---|
+| Script reads and writes (`GetAV Strength`, `ModAV`, …) | reads stubbed to 100, writes dropped (`script_convert/constants.py` `TES4_ATTRIBUTES`, `ATTRIBUTE_STUB_VALUE`) | Oblivion 51 calls, Nehrim 55 |
+| Dialogue/package conditions on attributes | dropped at import (`dialog_conditions._TES4_AV_ATTRIBUTES`) | not yet counted (the census query found none, so it was wrong) |
+| Attribute magic (FOAT, DRAT, DGAT, ABAT, REAT) | mapped onto a stand-in Skyrim value (`magic.ATTRIBUTE_TO_AV`: Strength → CarryWeight, Endurance → Health, …) | Oblivion ≈1,270 uses on SPEL/ENCH/ALCH/INGR/SGST, Nehrim ≈1,000 |
+| Level-up | Skyrim's only | — |
+| Race starts | none | — |
+
+**Order of attack.** Each step is one build and one in-game check, and each
+leaves the game working.
+
+1. **One sheet, every game.** The store, buffs, cap, leveling, tooltips and
+   menus stay in MorrowindRuntime (it ships in the same `TESRuntime.zip`) and
+   switch on when any converted game with attributes is installed, not only
+   Morrowind. Which game's rules apply comes from `TESGS_CurrentGame` ([M7](#m7-options)).
+   No code is copied into TESRuntime: parts are ported from OpenMW (GPL), so
+   moving them under MIT would need a rewrite for nothing.
+2. **The tables, per game, in the sidecar the TES4 import writes:** SKIL
+   (governing attribute and specialization from `DATA`), RACE (the `ATTR`
+   male/female starts, keyed by Skyrim race exactly as `RACE.txt` is), and
+   the NPC_/CREA authored attributes. These are the same file formats the
+   Morrowind sidecar uses, so the runtime reads both.
+3. **Scripts.** The 106 calls become Papyrus natives the runtime registers
+   (`TES4Polyfill.GetAttribute/SetAttribute/ModAttribute` for any actor),
+   replacing the stub. `--scripts-only` for every masterless plugin (static
+   scripts rule).
+4. **Magic.** FOAT/DRAT/DGAT/ABAT/REAT move off the stand-in values onto the
+   per-attribute runtime variants Morrowind already uses
+   (`magic_variants.build_av_variants` and the effect table), so one tick
+   handles all three games. Changed MGEFs keep their FormIDs; new variants are
+   hashed by EditorID. Measure drift before shipping.
+5. **Conditions.** Count them correctly first. Player-subject ones become
+   `GetGlobalValue` on TESGameSelect globals the runtime mirrors ([M5](#m5-conditions)).
+   NPC-subject ones are decided after the count shows how many there are.
+6. **Leveling per game.** Oblivion's step is Morrowind's (three attributes ×
+   `iLevelUp##Mult`, Luck +1), so it reuses the code with Oblivion's own SKIL
+   and GMST rows. The sheet's skill list comes from the current game's SKIL
+   table (21 skills, not 27). Nehrim keeps its own rules ([M8](#m8-nehrim)).
+7. **Menus.** Oblivion and Nehrim get the Skyrim style with their own icons
+   (built 2026-10-02, `menu_art.OblivionIcons`).
+8. **Chargen.** Native class and birthsign menus, for Morrowind mode and for
+   the Papyrus calls that open them today. Each feeds the starting attributes
+   through the same retroactive rule as race ([M3](#m3-store)).
+
+**Decisions needed before step 1:**
+- Should an Oblivion-only install (no Morrowind) still use the sheet's
+  hotkey, or open it from the journal or Tween menu only?
+- Standard or Strict ([rules](#rules)): do Oblivion attributes also give the
+  buffs and the cap, or only gate content?
 
 ### <a id="not-mvp"></a>Not in the MVP
 
 - Strict's gameplay bonuses and the kept skills' effects (magnitudes to decide).
-- Classes, birthsigns, major/minor skills.
+- Major and minor skills (classes and birthsigns are built).
 - Morrowind's own class-based leveling (replaced by Skyrim's).
 - Nehrim's Endurance-based health and Intelligence-based magicka (Skyrim's pools stay).
 - A sheet for players without a Morrowind install.

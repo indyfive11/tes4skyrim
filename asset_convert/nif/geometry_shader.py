@@ -25,6 +25,7 @@ from asset_convert.nif.shaders import (ALPHA_BLEND_ENABLED, ALPHA_DST_ONE,
                                        collect_shader_inputs, collect_uv_ctrls,
                                        has_spec_mask, plan_flipbook_atlas,
                                        resolve_lowres, resolve_normal_for)
+from asset_convert.nif.morroblivion_textures import substitute
 from asset_convert.nif.nif_flags import NIF_FLAGS
 from asset_convert.nif.tex_paths import rewrite_tex_path
 from asset_convert.nif.uv_transform import apply_static_uv
@@ -232,6 +233,19 @@ def _normal_slot(diffuse, authored_normal, fix_textures, stats):
     return found
 
 
+def _upgraded_diffuse(diffuse_path, stats):
+    """Morroblivion's higher-res twin for this diffuse, or the original.
+
+    See: docs/commentary/asset_convert_texture.md#morroblivion-texture-substitution
+    """
+    twin = substitute(diffuse_path)
+    if twin is None:
+        return diffuse_path
+    if stats is not None:
+        stats['mw_texture_upgraded'] = stats.get('mw_texture_upgraded', 0) + 1
+    return twin
+
+
 def _fill_texture_slots(tex_set, diffuse_path, authored_normal,
                         fix_textures, stats):
     """Write the diffuse and normal slots, neither ever left empty.
@@ -246,6 +260,7 @@ def _fill_texture_slots(tex_set, diffuse_path, authored_normal,
             stats['untextured_diffuse_defaulted'] = (
                 stats.get('untextured_diffuse_defaulted', 0) + 1)
         return
+    diffuse_path = _upgraded_diffuse(diffuse_path, stats)
     diffuse = (resolve_lowres(rewrite_tex_path(diffuse_path), stats)
                if fix_textures
                else diffuse_path.decode('utf-8', errors='replace'))

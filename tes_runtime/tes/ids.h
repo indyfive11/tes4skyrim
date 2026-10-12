@@ -37,14 +37,13 @@ constexpr std::size_t kFactionWait = 0x68;
 constexpr std::size_t kFactionStolen = 0x70;
 constexpr std::size_t kFactionInventory = 0x78;
 
-// PlayerCharacter's vtable (1.6.1170 0x18ab9c0). Slot 186 is ServeTime
+// PlayerCharacter's vtable (engine_ids.h kPlayerVtable). Slot 186 is ServeTime
 // (0x747740, id 40657; Game.ServeTime tail-calls it and nothing calls it
 // directly): its first call fades out and sets kServeFadePending, its second
 // passes the days and hands back the player-inventory chest. Slot 187 is
 // PayCrimeGold(faction, goToJail, removeStolen) (0x747a10). kPlayerJailFaction
 // is the faction whose jail holds the player. Both fields are 1.6.x offsets:
 // read them through PlayerField (0x728 and 0xbed on 1.7.104).
-constexpr std::uint64_t kPlayerVtable = 208040;
 constexpr std::size_t kVtServeTime = 186;
 constexpr std::size_t kVtPayCrimeGold = 187;
 constexpr std::size_t kPlayerJailFaction = 0x720;

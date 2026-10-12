@@ -27,8 +27,10 @@ from .equivalents import TES4_ITEM_FORMID_TO_SKYRIM
 from .conditions_falloutnv import (FALLOUT_AV_TO_TES5, FALLOUT_CTDA_SIZE,
                                    fallout_ctda, fallout_function, fallout_run_on)
 from ..generated.ctda_param_types import CTDA_FORMID_PARAMS
-from .owned_records import MGEF_FAMILY_KEYWORDS, WELL_KNOWN_PROPERTIES
+from .owned_records import (MGEF_FAMILY_KEYWORDS, PLAYER_ATTRIBUTE_GLOBALS,
+                            WELL_KNOWN_PROPERTIES)
 from .race_factions import race_faction
+from ..actors.stat_factions import stat_faction
 from .split_skill_conditions import split_skill_ctdas
 from .text_reader import (_ENGINE_FIXED_FORMIDS, get_formid_index_offset,
                           remap_formid)
@@ -40,6 +42,8 @@ CTDA_USE_GLOBAL = 0x04    # comparison value is a GLOB FormID, not a float
 
 # --- Dialogue-critical function indices (identical in both games) --------------
 FUNC_GET_IS_ID = 72            # GetIsID(ref)
+FUNC_GET_RANDOM_PERCENT = 77   # GetRandomPercent(), 0-99: a constant when compared with 0
+_SOURCE_PLAYER_NPC = 0x00000007  #: the source's Player NPC_, the base of every target-run "is the player" test
 
 # DIAL FormIDs (24-bit) whose INFOs are reached ONLY through a TES4
 # `Say <topic> <flag> <speak-as NPC> <flag>`.  Filled once per run by
@@ -84,6 +88,7 @@ def _remap_global(fid: int, offset: int) -> int:
 
 
 FUNC_GET_IN_FACTION = 71       # GetInFaction(fact)
+FUNC_GET_FACTION_RANK = 73
 #: GetOffersServicesNow(): true only while the actor is actively vending/training.
 FUNC_GET_OFFERS_SERVICES_NOW = 255
 FUNC_GET_STAGE = 58            # GetStage(quest)
@@ -267,17 +272,8 @@ _TES4_AV_TO_TES5 = {
     68: 42,   # ResistShock     -> ResistShock
 }
 
-#: Skyrim condition functions taking an actor value. See: docs/commentary/tes5_import_conditions.md#av-param-funcs
-_AV_PARAM_FUNCTIONS = {
-    'GetActorValue': 14,
-    'IsWeaponSkillType': 109,
-    'GetBaseActorValue': 277,
-    'GetPermanentActorValue': 494,
-    'GetActorValuePercent': 640,
-}
-
-#: The indices of _AV_PARAM_FUNCTIONS, for membership tests.
-_AV_PARAM_FUNCS = frozenset(_AV_PARAM_FUNCTIONS.values())
+#: TES5 functions whose param1 is an actor value. See: docs/commentary/tes5_import_conditions.md#av-param-funcs
+_AV_PARAM_FUNCS = frozenset({14, 109, 277, 494, 640})
 
 
 def _map_race_param(fid: int) -> 'int | None':
@@ -351,11 +347,8 @@ _VM_VAR_FUNCS = {
     GET_SCRIPT_VARIABLE: GET_VM_SCRIPT_VARIABLE,
     GET_QUEST_VARIABLE: GET_VM_QUEST_VARIABLE,
 }
-# CIS2 name for a script variable that does not exist: no converted script
-# ever declares it, so the read yields 0 — the value TES4's GetScriptVariable
-# returns for a scriptless ref or a missing variable.  See
-# convert_script_var_ctda.
-_UNRESOLVED_VAR_SENTINEL = '::TES4NoSuchVariable_var'
+#: CIS2 for a variable no script declares: reads 0, as TES4's GetScriptVariable did for a missing one.
+UNRESOLVED_VAR_SENTINEL = '::TES4NoSuchVariable_var'
 
 
 def papyrus_var_name(var: str) -> str:
@@ -519,22 +512,36 @@ def _convert_params(func_idx: int, param1: int, param2: int,
     return param1, param2
 
 
-#: TES4 Fame and Infamy actor values -> the conversion-owned global converted scripts keep them in.
-_FAME_GLOBALS = {38: 'TES4Fame', 39: 'TES4Infamy'}
+#: TES4 actor value -> the conversion-owned global the player's value lives in: attributes, Fame, Infamy.
+_PLAYER_GLOBALS = {**dict(enumerate(PLAYER_ATTRIBUTE_GLOBALS)), 38: 'TES4Fame', 39: 'TES4Infamy'}
 
 
-def _fame_global(raw: bytes, type_byte: int, func_idx: int, param1: int) -> 'tuple | None':
-    """(type byte, GetGlobalValue, global FormID) for a PLAYER Fame/Infamy read, else None.
+def _player_global(raw: bytes, type_byte: int, func_idx: int, param1: int) -> 'tuple | None':
+    """(type byte, GetGlobalValue, global FormID) for a PLAYER attribute, Fame or Infamy read.
 
-    Only the run-on-target (player) form moves: an NPC's own Fame read 0 in Oblivion and still does.
+    Only the run-on-target (player) form moves: an NPC's own Fame read 0 in
+    Oblivion and still does, and an NPC's attribute has no global.
     See: docs/plans/character_sheet.md#bug-fame
+    See: docs/commentary/morrowind_runtime.md#tes4-tables
     """
-    edid = _FAME_GLOBALS.get(param1)
+    edid = _PLAYER_GLOBALS.get(param1)
     if (not edid or len(raw) == FALLOUT_CTDA_SIZE or func_idx not in _AV_PARAM_FUNCS
             or not type_byte & CTDA_RUN_ON_TARGET):
         return None
     fid = WELL_KNOWN_PROPERTIES.get(edid, 0)
     return (type_byte & ~CTDA_RUN_ON_TARGET, FUNC_GET_GLOBAL_VALUE, fid) if fid else None
+
+
+def _stat_faction_rank(raw: bytes, type_byte: int, func_idx: int, param1: int) -> int:
+    """The stat faction an NPC-subject attribute or kept-skill read becomes a
+    GetFactionRank on, or 0; the player's run-on-target reads keep their own route.
+
+    See: docs/commentary/morrowind_runtime.md#npc-attributes
+    """
+    if (len(raw) == FALLOUT_CTDA_SIZE or func_idx not in _AV_PARAM_FUNCS
+            or type_byte & CTDA_RUN_ON_TARGET):
+        return 0
+    return stat_faction(param1)
 
 
 def _effect_family(func_idx: int, param1: int) -> tuple:
@@ -567,6 +574,26 @@ def _target_run_on(func_idx: int, run_on_target_ref: 'int | None',
     if drop_run_on_target or run_on_target_ref is not None:
         return None
     return 1, 0
+
+
+def _settled_player_identity(type_byte: int, comp_raw: int, func_idx: int,
+                             param1: int, run_on_target_ref) -> 'bytes | None':
+    """A constant CTDA for a target GetIsID whose target is the player, else None.
+
+    The player is the source's Player NPC (0x7): GetIsID(Player) is 1, any
+    other actor 0. Returned with the source's OR flag.
+    See: docs/commentary/tes5_import_conditions.md#player-target-identity
+    """
+    if (func_idx != FUNC_GET_IS_ID or run_on_target_ref != _PLAYER_REF_FORMID
+            or not type_byte & CTDA_RUN_ON_TARGET):
+        return None
+    outcomes = bool_outcomes(type_byte, comp_raw)
+    if outcomes is None:
+        return None
+    passes = outcomes[0] if param1 == _SOURCE_PLAYER_NPC else outcomes[1]
+    return build_ctda(FUNC_GET_RANDOM_PERCENT, comp_value=0.0,
+                      operator=0x60 if passes else 0x80,
+                      is_or=bool(type_byte & CTDA_OR))
 
 
 def _ctda_head(raw: bytes, offset: int, in_speak_as_topic: bool):
@@ -642,12 +669,19 @@ def convert_ctda(raw: bytes, offset: 'int | None' = None,
     if not isinstance(head, tuple):
         return head
     type_byte, comp_raw, func_idx, param1, param2, run_on, reference = head
+    settled = None if drop_run_on_target else _settled_player_identity(
+        type_byte, comp_raw, func_idx, param1, run_on_target_ref)
+    if settled:
+        return settled
     if type_byte & CTDA_USE_GLOBAL:
         comp_raw = _remap_global(comp_raw, offset)
-    fame = _fame_global(raw, type_byte, func_idx, param1)
+    fame = _player_global(raw, type_byte, func_idx, param1)
+    stat = 0 if fame else _stat_faction_rank(raw, type_byte, func_idx, param1)
     if fame:
         type_byte, func_idx, gfid = fame
         params, fields = (gfid, 0), (type_byte, 0, 0)
+    elif stat:
+        func_idx, params, fields = FUNC_GET_FACTION_RANK, (stat, 0), (type_byte, run_on, reference)
     else:
         av_table = FALLOUT_AV_TO_TES5 if len(raw) >= FALLOUT_CTDA_SIZE else _TES4_AV_TO_TES5
         params = _convert_params(func_idx, param1, param2, offset, av_table)
@@ -730,7 +764,7 @@ def convert_ctda_list_with_strings(rec: dict, script_vars: dict = None,
         if not raw_hex:
             continue
         try:
-            raw = bytes.fromhex(raw_hex)
+            raw = fallout_ctda(bytes.fromhex(raw_hex))
         except ValueError:
             continue
 
@@ -787,7 +821,11 @@ def convert_script_var_ctda(raw: bytes, script_vars: dict, offset: int,
     GetQuestVariable(quest, varIdx) -> GetVMQuestVariable(quest, '::var_var').
 
     `authored_name` is the variable name an export states outright, for a
-    condition that names no reference to resolve an index against.
+    condition that names no reference to resolve an index against. A variable
+    no script has (no script, no such index, deleted ref) reads
+    UNRESOLVED_VAR_SENTINEL, which returns 0 exactly as Oblivion did; dropping
+    the condition instead would fail open.
+    See: docs/commentary/tes5_import_package.md#status-after
     """
     data = raw + b'\x00' * max(0, 24 - len(raw))
     type_byte = data[0]
@@ -799,19 +837,7 @@ def convert_script_var_ctda(raw: bytes, script_vars: dict, offset: int,
     ref = _remap_formid(param1, offset)
     name = (authored_name
             or script_vars.get(param1 & 0x00FFFFFF, {}).get(param2))
-    if name:
-        cis2 = papyrus_var_name(name)
-    else:
-        # No such script variable on that ref/quest — the base has no script,
-        # the script has no variable at that index, or the ref was deleted
-        # (param1 = 0).  Oblivion's GetScriptVariable returns 0 in every one
-        # of those cases, and Skyrim's GetVMScriptVariable returns 0 for a
-        # name no attached script declares — so a NEVER-declared name
-        # reproduces the TES4 value exactly, and the authored comparison and
-        # Or-flag keep doing their job.  Dropping the condition instead
-        # failed OPEN: SE08's five Xedilian victims force-greeted and fled
-        # unconditionally, and 14 jailor packages ran with the player free.
-        cis2 = _UNRESOLVED_VAR_SENTINEL
+    cis2 = papyrus_var_name(name) if name else UNRESOLVED_VAR_SENTINEL
 
     if type_byte & CTDA_USE_GLOBAL:
         comp_raw = _remap_global(comp_raw, offset)

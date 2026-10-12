@@ -110,7 +110,11 @@ no single offset is right and it is excluded.
 
 ### The tables
 
-- `AXIS_PITCH_DEG` — 33 meshes. Pitch delta, keyed on the mesh.
+- `AXIS_PITCH_DEG` — 9 meshes pitched 270° (2 fires, 7 candles). The pitch is
+  composed on the model side, never summed into `RotX`
+  ([pitch-must-compose](#pitch-must-compose)).
+- `ROTX_ADD_DEG` — 6 meshes, the 180° lava rocks, summed into `RotX` exactly as
+  Morroblivion did.
 - `Z_RESEAT` — 15 bases. Keyed on the base EditorID, not the mesh, because the
   fixes were hand-made: Morroblivion moved `0torchU256` by −5.0 (129 of 131
   refs) while leaving `0lightUcomUtorchU01` at 0.0, though both use
@@ -160,7 +164,46 @@ TR was 96% upright on those meshes beforehand. The control and the held meshes
 are untouched, so the correction is scoped. In the built `TR_Mainland.esm`, all
 36 references to base `012C0134` read RotX=270°.
 
-**Not yet verified in-game.**
+**Superseded:** "upright" in this table was read from `RotX` alone, which hid
+the tilt [pitch-must-compose](#pitch-must-compose) describes.
+
+## <a id="pitch-must-compose"></a>A pitch must compose with the reference's rotation, not add to RotX
+
+Reported: TR fire ref `xxE92C53` (base `0LightUFire`,
+`Fire\FireOpenMediumSmoke.nif`) on its side.
+
+The engine builds a reference's rotation as `(Rz·Ry·Rx)ᵀ` (`rot_matrix` in
+`tes5_import/navmesh/world.py`, verified by navmesh placement): **RotZ turns the
+model first, then RotX pitches it about the world X axis.** Adding 270° to
+`RotX` stands a Y-up mesh up only when RotZ is 0 or 180°. TR authored only a yaw
+(this ref: RotX 0, RotZ 1.2 rad), so after the sum the pitch turns the model
+about an axis no longer perpendicular to its up axis. The fire's up ended
+69° from vertical.
+
+Measured as the tilt of the mesh's +Y off world vertical, using that matrix:
+
+| | Upright (<15°) | Tilted ≥15° |
+|---|---|---|
+| Oblivion.esm, `fireopen*` | 443 of 444 | 1 |
+| Morrowind_ob.esm, both fires and 7 pitched candles | 629 of 636 | 7 (at ~90°) |
+| TR_Mainland, `fireopenmedium` / `fireopenmediumsmoke` | 195 of 266 | **71** |
+| TR_Mainland, the 7 pitched candles | 519 of 1,496 | **977** |
+
+Bethesda's and Morroblivion's own refs are upright because their authors set
+all three angles together. The tilt is ours.
+
+**The fix (`compose_pitch` in `tes4_export/morroblivion_axis.py`, applied by
+`_compose` in `morroblivion.py`):** `M' = M · P`, where `M` is the ref's
+`(Rz·Ry·Rx)ᵀ` and `P = rot_matrix(pitch, 0, 0)` turns the model about its own X
+first; `M'` is then decomposed back to (RotX, RotY, RotZ) in the same
+convention. For a ref with only a yaw ψ that gives RotX 270°, RotY ψ, RotZ 0,
+and with RotY = RotZ = 0 it equals the old sum, so no unyawed ref moves.
+
+**The 180° lava rocks are NOT composed.** Morroblivion corrected its own rock
+refs by adding 180° to `RotX` alone and keeping the yaw: about 300 of them read
+RotX 180°, RotY 0°, with a nonzero RotZ. Summing reproduces exactly what
+Morroblivion shipped, so they sit in `ROTX_ADD_DEG`. Composing would turn them
+differently from Morroblivion, since `Rx(π)·Rz(ψ) = Rz(−ψ)·Rx(π)`.
 
 ## <a id="regenerating"></a>Regenerating the tables
 
@@ -332,12 +375,12 @@ The three meshes present in neither Morroblivion, Oblivion nor Skyrim are the
 strongest entries: those bases currently render **nothing at all**.
 
 **The `fire/` meshes are NOT blacklisted**, although they measure as swaps
-(150×216×69 for a 18×17×114 standing fire). Confirmed in game as looking
-correct, so the geometric test is overruled by the observation. They keep their
-measured corrections instead: 270° pitch (92% / 87%) and +13.30 on the six
-`0lightUFire*` bases (100%). A fire is a particle effect whose vertex bounds
-describe its emitter volume, not an object's silhouette, which is why the
-size comparison misreads it.
+(150×216×69 for a 18×17×114 standing fire). A fire's vertex bounds describe its
+emitter volume, not a silhouette, so the size test misreads it, and the user
+prefers Oblivion's flame to Morrowind's. They keep the 270° pitch (92% / 87%)
+and +13.30 on the six `0lightUFire*` bases (100%). The earlier in-game "looks
+correct" held only for refs with no yaw until the pitch was composed
+([pitch-must-compose](#pitch-must-compose)).
 
 ### <a id="needs-verification"></a>🛑 NEEDS IN-GAME VERIFICATION
 
@@ -357,10 +400,12 @@ Watch for these when testing:
   changes by reference count.
 - **`morro/f/furnudeutableu01`** (145 refs) and **`furnudeubookshelfu02`**
   (178 refs) — furniture, where a wrong pivot is obvious.
+- **Fires and the 7 pitched candles on yawed refs** — the composed pitch
+  ([pitch-must-compose](#pitch-must-compose)) is checked offline only.
 
-The 13 surviving pitches are the 6 lava rocks (ratio 1.00/1.00/1.00, the
-strongest evidence in the table) and 7 candles that measure as genuine axis
-permutations.
+The surviving corrections are 9 composed 270° pitches (2 fires, 7 candles that
+measure as genuine axis permutations) and 6 summed 180° lava-rock flips (ratio
+1.00/1.00/1.00, the strongest evidence in the table).
 
 ### <a id="zero-delta-objects"></a>A floating object is not always a missing correction
 

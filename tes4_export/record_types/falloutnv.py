@@ -461,6 +461,30 @@ def _emit_effect_deltas(lines: list, rec: Record):
             lines.append(f"{pfx}.Condition[{j}].Raw={raw.hex().upper()}")
 
 
+#: IDLE lines the TES4 export_IDLE reads with Oblivion's layout; FO3/FNV swap ANAM and DATA.
+SUPERSEDED_IDLE_KEYS = ("ANAM.", "DATA.")
+
+
+def _emit_idle_deltas(lines: list, rec: Record):
+    """IDLE ANAM (Parent, Previous) and DATA (section, looping, delay, flags) in xEdit FNV order.
+
+    See: docs/commentary/tes4_export_falloutnv.md#idle-anam-data-swapped
+    """
+    anam = get_subrecord(rec, "ANAM")
+    if anam and len(anam.data) >= 8:
+        parent, previous = struct.unpack_from("<II", anam.data, 0)
+        lines.append(f"ANAM.Parent={get_formid_str(parent)}")
+        lines.append(f"ANAM.Previous={get_formid_str(previous)}")
+    data = get_subrecord(rec, "DATA")
+    if data and len(data.data) >= 3:
+        lines.append(f"DATA.AnimGroupSection={data.data[0]}")
+        lines.append(f"DATA.LoopMin={data.data[1]}")
+        lines.append(f"DATA.LoopMax={data.data[2]}")
+    if data and len(data.data) >= 7:
+        lines.append(f"DATA.ReplayDelay={struct.unpack_from('<h', data.data, 4)[0]}")
+        lines.append(f"DATA.Flags={data.data[6]}")
+
+
 #: Effect lines the TES4 emit_effects writes from a layout FO3/FNV does not use.
 SUPERSEDED_EFFECT_KEYS = ("EffectCount=", "Effect[")
 
@@ -484,6 +508,7 @@ _DELTA_DISPATCH = {
     "ENCH": _emit_effect_deltas,
     "INGR": _emit_effect_deltas,
     "QUST": emit_quest_deltas,
+    "IDLE": _emit_idle_deltas,
 }
 
 #: Types carrying an OBND that TES4 has no field for; Skyrim reads it natively.

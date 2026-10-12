@@ -29,8 +29,10 @@ from core.plugin_masters import (export_root, export_source,
 from tes4_export.morrowind_ids import encode_editor_id, load_index
 from tes4_export.morrowind_patch import PATCH_NAME, START_SCRIPTS_SIG
 
-from .morrowind_placements import (SCRIPTED_EXPORTS, export_records,
-                                   folder_tables, forget_folder_tables, placement)
+from .morrowind_placements import (SCRIPTED_EXPORTS, TES4_PLUGIN_PREFIX,
+                                   export_records, folder_tables,
+                                   forget_folder_tables, master_scripted,
+                                   placement, rebased_formid)
 from .morrowind_sidecar_source import (forget_gathered, gather,
                                        own_dialogue_blocks, source_chain)
 from .morrowind_temples import skyrim_rows
@@ -85,6 +87,9 @@ CRIME_TABLE = 'crime_formid.txt'
 #: Every GMST of the chain, `name=type,value`, and the SKIL rows persuasion credits skill use from.
 GMST_TABLE = 'GMST.txt'
 SKILLS_TABLE = 'SKIL.txt'
+
+#: Each race's starting attributes under the Skyrim races a player of it wears: `FORMID=race|male|female`.
+RACES_TABLE = 'RACE.txt'
 
 #: What AddItem and its kin need: `item id=Plugin.esm|FormID`.
 ITEMS_TABLE = 'items_formid.txt'
@@ -153,10 +158,6 @@ _SCRIPT_EXPORT = 'SCPT.txt'
 _DECLARATION = re.compile(r'^\s*(short|long|float)\s+([A-Za-z_][A-Za-z0-9_]*)',
                           re.IGNORECASE)
 
-#: Morroblivion's plugins: their SCPTs are TES4's language, never MWScript.
-_TES4_PLUGIN_PREFIX = 'morrowind_ob'
-
-
 def plugin_stem(plugin_name: str) -> str:
     """`Morrowind.esm` -> `Morrowind`, the per-plugin sidecar folder name."""
     return os.path.splitext(os.path.basename(plugin_name))[0]
@@ -199,20 +200,6 @@ def table_dirs(export_dir: str, plugin_name: str) -> list:
         if os.path.isfile(os.path.join(candidate, _GLOBAL_EXPORT)):
             dirs.append((candidate, master))
     return dirs
-
-
-def _formid_here(formid: str, folder: str, master: str, header: list):
-    """A master's own FormID as THIS plugin's export spells it, or None.
-
-    The low 24 bits are the record; the index byte is where the owner sits
-    in a load order. A master's own records carry ITS master count there, and
-    this plugin refers to them by that master's position in its own header.
-    """
-    own = f'{len(masters_from_export_header(folder)):02X}'
-    names = [name.lower() for name in header]
-    if formid[:2].upper() != own or master.lower() not in names:
-        return None
-    return f'{names.index(master.lower()):02X}{formid[2:]}'
 
 
 #: What an out-of-range or NaN FLTV reads as; the engine clamps to this.
@@ -314,24 +301,24 @@ def _script_tables(dirs: list) -> tuple:
     🛑 The two halves have DIFFERENT scopes. `by_formid` spans every dir, so a
     SCRI naming a master's script still resolves; the staged lines cover only
     `dirs[0]`, because a master stages its own. A Morroblivion plugin stages no
-    body at all -- in that mode alone is a TES3 plugin's master a TES4 one.
+    body. A dir this plugin cannot name a FormID in claims no name: the
+    authored Morrowind.esm export would hide the patch's `OutsideBanner`.
     See: docs/plans/morrowind_object_scripts.md#masters-stage-themselves
     """
     lines, bodies, by_formid, seen = [], [], {}, set()
     header = masters_from_export_header(dirs[0][0])
-    tes4 = plugin_stem(dirs[0][1]).lower().startswith(_TES4_PLUGIN_PREFIX)
+    tes4 = plugin_stem(dirs[0][1]).lower().startswith(TES4_PLUGIN_PREFIX)
     for index, (folder, plugin) in enumerate(dirs):
         for rec in export_records(os.path.join(folder, _SCRIPT_EXPORT),
                                   ('FormID', 'EditorID', 'SCTX')):
             name = rec.get('EditorID', '')
-            if not name or name.lower() in seen:
+            formid = rec.get('FormID', '')
+            here = formid if index == 0 else rebased_formid(formid, folder,
+                                                            plugin, header)
+            if not name or not here or name.lower() in seen:
                 continue
             seen.add(name.lower())
-            formid = rec.get('FormID', '')
-            here = formid if index == 0 else _formid_here(formid, folder,
-                                                          plugin, header)
-            if here:
-                by_formid[here.upper()] = name
+            by_formid[here.upper()] = name
             if index:
                 continue
             source = rec.get('SCTX', '')
@@ -344,7 +331,8 @@ def _script_tables(dirs: list) -> tuple:
 
 
 def _scripted_bases(export_dir: str, by_formid: dict) -> dict:
-    """`base FormID -> (TES3 id, script name)` per scripted object.
+    """`base FormID -> (TES3 id, script name)` per scripted object this plugin
+    can place: its own, then its MWScript masters' (`master_scripted`).
 
     The id rides along because a bare `Activate` or `Enable` inside the body
     acts on the object running it, which the runtime resolves BY id.
@@ -354,6 +342,12 @@ def _scripted_bases(export_dir: str, by_formid: dict) -> dict:
         script = by_formid.get(rec.get('SCRI', '').upper())
         if script and rec.get('FormID'):
             bases[rec['FormID'].upper()] = (rec.get('EditorID', ''), script)
+    header = masters_from_export_header(export_dir)
+    for base, rec, master_dir, master in master_scripted(export_dir):
+        scri = rebased_formid(rec['SCRI'], master_dir, master, header) or ''
+        script = by_formid.get(scri.upper())
+        if script:
+            bases.setdefault(base, (rec.get('EditorID', ''), script))
     return bases
 
 
@@ -755,6 +749,7 @@ def _stage_dialogue(export_dir: str, out_dir: str, present: list,
     staged = len(DIALOGUE_FILES)
     for name, key in ((ACTORS_TABLE, 'actors'), (FACTIONS_TABLE, 'own_factions'),
                       (GMST_TABLE, 'own_gmsts'), (SKILLS_TABLE, 'skills'),
+                      (RACES_TABLE, 'own_races'),
                       (START_SCRIPTS_TABLE, 'start_scripts'),
                       (TRAVEL_TABLE, 'travel')):
         staged += _write_lines(os.path.join(out_dir, name),

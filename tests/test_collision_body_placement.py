@@ -114,3 +114,33 @@ def test_scale_multiplies_before_translation():
         _Node(translation=(100.0, 0.0, 0.0), scale=2.0, body=body)]))
     place = ce._body_placements(data)[id(body)]
     assert place((3.0, 0.0, 0.0)) == pytest.approx((106.0, 0.0, 0.0))
+
+
+def _body_t(w, z, translation):
+    """A bhkRigidBodyT turned about Z by quaternion (w, 0, 0, z), translated in Skyrim havok units."""
+    from pyffi.formats.nif import NifFormat
+    body = NifFormat.bhkRigidBodyT()
+    body.rotation.w, body.rotation.x, body.rotation.y, body.rotation.z = w, 0.0, 0.0, z
+    body.translation.x, body.translation.y, body.translation.z = translation
+    return body
+
+
+def test_body_transform_places_the_shape():
+    """The hoisted cage wall's bodyT (z -15.641 havok) puts its shape below.
+
+    See: docs/commentary/asset_convert_collision.md#nested-owner-transform
+    """
+    place = ce._body_transform(_body_t(1.0, 0.0, (0.0, 0.0, -15.641)))
+    assert place((1.0, 2.0, 3.0)) == pytest.approx((1.0, 2.0, 3.0 - 15.641 * 70.0))
+
+
+def test_body_transform_rotates_before_translating():
+    """A quarter turn about Z sends +X to +Y, then the translation offsets it."""
+    half = 0.5 ** 0.5
+    place = ce._body_transform(_body_t(half, half, (1.0, 0.0, 0.0)))
+    assert place((10.0, 0.0, 0.0)) == pytest.approx((70.0, 10.0, 0.0))
+
+
+def test_identity_body_transform_places_nothing():
+    """A plain-identity bodyT (every folded CMS body) adds no placer."""
+    assert ce._body_transform(_body_t(1.0, 0.0, (0.0, 0.0, 0.0))) is None

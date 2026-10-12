@@ -14,7 +14,6 @@
 #include <set>
 
 #include "ids.h"
-#include "log.h"
 
 namespace tesruntime::mw {
 namespace gamecalls {
@@ -31,11 +30,6 @@ constexpr const char* kFactionRow = "sanctuary";
 // saved in one session may name something else in the next.
 constexpr std::uint8_t kFormTypeCharacter = 0x3E;
 
-// Actor.SetFactionRank(Faction, int), as game_calls_state.cpp calls it.
-using SetFactionRankFn = void (*)(void* vm, std::uint32_t stack, void* actor,
-                                  void* faction, std::int32_t rank);
-SetFactionRankFn g_setRank = nullptr;
-
 // The staged faction, once it resolves; the load order cannot change after.
 void* Faction() {
     static void* faction = nullptr;
@@ -51,18 +45,15 @@ bool Rank(void* actor, std::uint32_t id, void* faction) {
     const long summed = std::lround(ActiveMagnitude(actor, kSanctuaryEffect));
     const int rank = static_cast<int>(std::clamp<long>(summed, 0, kSanctuaryCap));
     const auto known = State().sanctuaryRanks.try_emplace(id, -1).first;
-    if (known->second != rank) {
-        g_setRank(PapyrusVm(), 0, actor, faction, rank);
-        known->second = rank;
-    }
+    if (known->second != rank && SetFactionRank(actor, faction, rank)) known->second = rank;
     return rank > 0;
 }
 
-bool IsActor(void* ref) {
+}  // namespace
+
+bool IsActorRef(void* ref) {
     return ref && At<std::uint8_t>(ref, ids::kOffFormType) == kFormTypeCharacter;
 }
-
-}  // namespace
 
 void WatchSanctuary(std::uint32_t actorId) {
     if (actorId) State().sanctuaryHolders.insert(actorId);
@@ -73,23 +64,17 @@ void WatchSanctuary(std::uint32_t actorId) {
 // reference is not loaded keeps its rank and its place.
 void TickSanctuary(void* player) {
     void* faction = Faction();
-    if (!faction || !g_setRank) return;
+    if (!faction) return;
     if (player) Rank(player, FormIdOf(player), faction);
     std::set<std::uint32_t>& holders = State().sanctuaryHolders;
     for (auto it = holders.begin(); it != holders.end();) {
         void* actor = RefByRuntimeId(*it);
-        if (IsActor(actor) && !Rank(actor, *it, faction)) {
+        if (IsActorRef(actor) && !Rank(actor, *it, faction)) {
             it = holders.erase(it);
         } else {
             ++it;
         }
     }
-}
-
-void InstallSanctuaryCalls() {
-    g_setRank = Native<SetFactionRankFn>("Actor.SetFactionRank",
-                                         ids::kActorSetFactionRank);
-    Log("sanctuary: faction rank %s", g_setRank ? "resolvable" : "NOT resolvable");
 }
 
 }  // namespace gamecalls

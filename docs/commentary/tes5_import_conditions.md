@@ -13,6 +13,8 @@ Parameter remapping and the crash rule are in
 
 - [Actor-value indices diverge from the BOOK skill table](#actor-value-vs-book-skill-table)
 - [Fallout actor values use Fallout's own table](#fallout-actor-values)
+- [Short Fallout CTDAs: the source decides, not the length](#fallout-short-ctda)
+- [Which functions carry an actor value](#av-param-funcs)
 - [Chargen-identity conditions become menu-choice globals](#chargen-identity-to-menu-globals)
 - [Speak-as topics drop the actor-interrogating conditions](#non-actor-speaker-drop)
 - [GetInCell names a prefix family, not a cell](#getincell-prefix-family)
@@ -311,24 +313,6 @@ Infamy, which read 0 in Oblivion too. FO3/FNV conditions are left alone; their
 indices 38 and 39 are Melee Weapons and Repair
 ([Fallout's table](#fallout-actor-values)).
 
-### <a id="av-param-funcs"></a>Which functions carry an actor value
-
-**Code:** `conditions.py` `_AV_PARAM_FUNCTIONS`.
-
-Every Skyrim condition function whose param1 is an actor value (xEdit
-`wbDefinitionsTES5.pas`, `ParamType1: ptActorValue`) needs that index
-translated, or dropped when the source value has no Skyrim counterpart:
-`GetActorValue` (14), `IsWeaponSkillType` (109), `GetBaseActorValue` (277),
-`GetPermanentActorValue` (494) and `GetActorValuePercent` (640). Before, only
-14 and 277 were listed, so a New Vegas `GetPermanentActorValue` (2 in
-FalloutNV.esm) passed Fallout's raw index straight through. TES4's own
-`GetWeaponSkillType` (109) is dropped earlier (`_FUNC_DROP`, semantics
-changed), and TES4-only functions (2571 GetBaseAV3, 2577 IsMajorRef, 1124
-IsClassSkill) are in `_FUNC_DROP` or have no TES5 counterpart, so neither
-reaches this table. `EPMagic_IsAdvanceSkill` (681) and
-`EPMagic_SpellHasSkill` (696) also take one, but only perk entry-point
-conditions use them and no source perk is converted yet.
-
 ## <a id="fallout-ctda"></a>A Fallout CTDA is 28 bytes and numbers its functions differently
 
 **Code:** `tes5_import/base/conditions_falloutnv.py`, applied by `convert_ctda`;
@@ -372,29 +356,36 @@ to the VM reads, every other path drops them.
 
 ### <a id="fallout-short-ctda"></a>Short Fallout CTDAs: the source decides, not the length
 
-**Code:** `conditions_falloutnv.py` `fallout_ctda`, applied first in `convert_ctda`.
+**Code:** `conditions_falloutnv.py` `fallout_ctda`, applied in `convert_ctda` and
+`convert_ctda_list_with_strings` (so `split_skill_ctdas` sees the padded raw too).
 
 xEdit marks everything from Run On onward optional (`wbConditions`
-`.SetOptionalFrom(7)`), and the masters use it. Census of the exports' INFO,
-QUST, PACK and IDLE conditions:
-
-| Master | 20 bytes | 24 bytes | 28 bytes |
-|---|---|---|---|
-| Fallout3.esm | 2,370 | 52 | 47,701 |
-| FalloutNV.esm | 123 | 2 | 65,830 |
-
-A 20-byte CTDA omits Run On and Reference, a 24-byte one Reference. Judged
-by length alone they took the TES4 path, which reads the function through
-TES4's numbering: of those 2,547, **90** (53 Fallout 3, 37 New Vegas) got the
-wrong function, among them `GetHitLocation` as `IsPC1stPerson` (68),
-`HasFriendDisposition` as `GetRelationshipRank` (6) and one `GetIsVoiceType`
-as `GetPlantedExplosive`. (`GetQuestVariable` and `GetScriptVariable` count
-too but are treated the same on both paths.)
+`.SetOptionalFrom(7)`), and the masters use it. FalloutNV.esm's INFO, QUST,
+PACK, IDLE, PERK, MESG, TERM, NOTE, CHAL and RCPE conditions: 65,830 are 28
+bytes, 123 are 20 bytes and 2 are 24 bytes. A 20-byte CTDA omits Run On and
+Reference, a 24-byte one Reference. Judged by length they took the TES4 path,
+which reads the function through TES4's numbering: 37 of the 125 name a
+function Fallout numbers differently (391 ×34, 392 ×2, 427 `GetIsVoiceType`
+×1), and 21 are `GetActorValue`, whose value went through TES4's table. A
+24-byte `GetActorValue` 14 would also have been split as TES4 Blade.
 
 So a CTDA shorter than 28 bytes is Fallout's whenever the source plugin is
-(`is_fallout_source`, set once per plugin at import start), and is zero-padded
-to 28: Run On 0 is Subject, the omitted fields' meaning. A TES4 source keeps
-the length rule.
+(`is_fallout_source`, set once per plugin in `build_actor_indexes`), and is
+zero-padded to 28: Run On 0 is Subject, the omitted fields' meaning. A TES4
+source keeps the length rule.
+
+### <a id="av-param-funcs"></a>Which functions carry an actor value
+
+**Code:** `conditions.py` `_AV_PARAM_FUNCS`.
+
+Every Skyrim condition function whose param1 is an actor value (xEdit
+`wbDefinitionsTES5.pas`, `ParamType1: ptActorValue`) needs that index
+translated, or dropped when the source value has none: `GetActorValue` (14),
+`IsWeaponSkillType` (109), `GetBaseActorValue` (277), `GetPermanentActorValue`
+(494) and `GetActorValuePercent` (640). FNV and FO3 number `GetPermanentActorValue`
+495, remapped to 494 before this lookup; with only 14 and 277 listed, its
+Fallout index passed straight through. TES4's 109 (`GetWeaponSkillType`) is
+in `_FUNC_DROP` and never reaches the table.
 
 ### <a id="fallout-actor-values"></a>Actor values: Fallout's own table
 
@@ -480,8 +471,7 @@ dialogue menu on every NPC. `CTDA_FORMID_PARAMS` is keyed by the POST-remap
 (TES5) index because that is the function the output invokes. Actor-value
 parameters are a raw index into each game's own table, which do not align:
 attributes have no Skyrim equivalent and drop (fail open); skills and shared
-derived values translate through `_TES4_AV_TO_TES5` for a TES4 source and
-`fallout_actor_value` for FO3/FNV ([Fallout actor values](#fallout-actor-values)). Race parameters translate
+derived values translate through `_TES4_AV_TO_TES5`. Race parameters translate
 to the Skyrim race the converted NPCs actually use (`_map_race_param`), except
 a plugin-authored race in `GetIsRace` (below).
 
@@ -543,3 +533,23 @@ an identity function is likewise dropped: the listener IS the NPC the call
 site addresses, so the authored check is statically satisfied (first hit: the
 restored NPC-conversation head topics, whose GetIsID(listener)[Target]
 otherwise survived as a dead Run On = Target).
+
+<a id="player-target-identity"></a>**When the listener is the player, a
+target GetIsID is settled, not dropped** (`_settled_player_identity`). Dropping
+is only right when the test passes. Against the player, "target is the Player
+NPC" is true, but "target is Martin" and "target is not the player" are false.
+Dropping those made lines written for another listener play to the player.
+Oblivion's HELLO `000ADC6C` ("Good to see you.") is a Goodbye-flagged blocking
+line, so nobody starts a random conversation with Martin. With its
+`GetIsID(Martin)[Target]` dropped, only voice types were left. Every NPC with
+one of those voices greeted the player with it, and the Goodbye flag ended the
+talk before the menu opened (Imperial City market: Gin-Wulm, Simplicia the
+Slow, a Watch guard, Dynari Amnis; NPCs with other voices opened menus). The
+test now becomes a constant, `GetRandomPercent >= 0` when it passes and `< 0`
+when it fails. It keeps its OR flag, so a false member of an OR group only
+drops out of the group. `GetIsClass` still drops, because the player's class
+is not the source's. Oblivion.esm: of the GREETING and HELLO lines with a
+target identity test, 628 test "is the player" and stay as they were. 70 HELLO
+lines name another NPC and 31 test "not the player"; these can no longer reach
+the player. Three `GetIsClass` lines are unchanged. Tests:
+`tests/test_dialog.py::TestCTDAConversion::test_player_target_identity_is_settled`.

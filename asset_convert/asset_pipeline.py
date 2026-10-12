@@ -25,6 +25,7 @@ from asset_convert.game_paths import (namespace_for, owns_namespace,
                                        set_namespace)
 from asset_convert.sources import bsa_extract
 from asset_convert.nif import grass_profile
+from asset_convert.nif import morroblivion_textures
 from asset_convert.character import hair_pipeline
 from asset_convert.texture import landscape_normals
 from asset_convert.texture import image_transcode
@@ -39,6 +40,7 @@ from asset_convert.collision import clutter_plan
 from asset_convert.collision import resting_items_plan
 from asset_convert.nif import door_plan
 from asset_convert.nif import fixture_plan
+from asset_convert.nif import furniture_travel
 
 
 # Shared-folder resolution lives in output_layout (one module, three
@@ -127,10 +129,14 @@ def _write_parallax_notice(plugin_dir):
 def _activate_namespace(rec_dir) -> str:
     """Install this plugin's asset namespace before any path is rewritten.
 
+    The Morroblivion texture map is armed here too: it rewrites the same paths,
+    and like the namespace it must reach every spawned worker.
     See: docs/commentary/asset_convert_texture.md#per-game-asset-namespace
+    See: docs/commentary/asset_convert_texture.md#morroblivion-texture-substitution
     """
     ns = namespace_for(rec_dir)
     set_namespace(ns)
+    morroblivion_textures.activate(rec_dir)
     return ns
 
 
@@ -179,10 +185,16 @@ def _convert_mesh_tree(mesh_src, mesh_dst, asset_dir, export_root, plugin,
     print(f"  Dynamic clutter plan: {len(masses)} item models")
     doors = door_plan.build_door_models(rec_dir)
     plan[door_plan.DOOR_KEY] = doors
-    print(f"  Door animation plan: {len(doors)} door models")
+    plan[door_plan.REACH_KEY] = door_plan.places_morrowind_doors(rec_dir)
+    print(f"  Door animation plan: {len(doors)} door models"
+          f"{', Morrowind-placed' if plan[door_plan.REACH_KEY] else ''}")
     fixtures = fixture_plan.build_fixture_models(rec_dir)
     plan[fixture_plan.FIXTURE_KEY] = fixtures
+    plan[fixture_plan.ANIMATED_KEY] = fixture_plan.build_animated_models(rec_dir)
     print(f"  Placed fixture plan: {len(fixtures)} scenery models")
+    plan[furniture_travel.SIT_TRAVEL_KEY] = furniture_travel.sit_travels(rec_dir)
+    print(f"  Sit travel plan: {len(plan[furniture_travel.SIT_TRAVEL_KEY])} "
+          f"marker ids with an authored enter animation")
     resting, stocked = resting_items_plan.write_index(export_root, plugin)
     plan[resting_items_plan.RESTING_KEY] = resting
     print(f"  Resting items plan: {stocked} fixture models share a cell "
@@ -247,8 +259,11 @@ def convert_meshes(source_file, extract_dir='export', output_dir='output',
     if mesh_subdirs:
         return stats
 
+    if not textures_only:
+        _profile_hair_and_grass(
+            rec_dir, plugin_dir, stats, skip_hair or not mesh_src.exists(),
+            _master_meshes(rec_dir, output_dir, extract_dir))
     if mesh_src.exists() and not textures_only:
-        _profile_hair_and_grass(rec_dir, plugin_dir, stats, skip_hair)
         _split_magic_art(rec_dir, mesh_src, plugin_dir / 'meshes' / ns, stats)
 
     # -----------------------------------------------------------------------
@@ -278,12 +293,26 @@ def _report_case_paths(plugin_dir) -> None:
     case_paths.report()
 
 
-def _profile_hair_and_grass(rec_dir, plugin_dir, stats, skip_hair):
-    """Run the hair (unless `skip_hair`) and grass post-passes over the converted mesh tree."""
+def _master_meshes(rec_dir, output_dir, extract_dir) -> list:
+    """Each direct master's converted meshes root, nearest first.
+
+    A first-match lookup must meet a later master before the base game.
+    See: docs/commentary/tes5_import_mod_merge.md#base-order-nearest-first
+    """
+    return [_out_root(output_dir, name, extract_dir) / 'meshes'
+            for name in reversed(masters_from_export_header(str(rec_dir)))]
+
+
+def _profile_hair_and_grass(rec_dir, plugin_dir, stats, skip_hair,
+                            master_meshes=()):
+    """Run the hair (unless `skip_hair`) and grass post-passes over the converted mesh tree.
+
+    A grass model may be a master's converted mesh, found under `master_meshes`.
+    """
     if not skip_hair:
         stats['hair'] = hair_pipeline.run(rec_dir, plugin_dir / 'meshes')
     processed, modified, missing = grass_profile.run(
-        rec_dir, plugin_dir / 'meshes')
+        rec_dir, plugin_dir / 'meshes', master_meshes)
     stats['grass_profile'] = {
         'processed': processed, 'modified': modified, 'missing': missing}
     print(f"  Grass models: {processed} placed under landscape\\grass"

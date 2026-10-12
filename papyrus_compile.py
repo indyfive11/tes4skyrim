@@ -400,4 +400,4 @@ def phase_compile(file_name: str, config: dict, output_dir: str = None):
         print(f"  Batch compile: {time.time() - started:.1f}s")
 
     _report(file_name, ok_count, total, errors, run.script_out)
-    return ok_count > 0
+    return total == 0 or ok_count > 0

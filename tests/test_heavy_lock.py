@@ -189,6 +189,33 @@ def test_needs_follows_pipeline_order():
     assert needs(dict(_WORK, steps=['build_patch']), _SCRIPTS)
 
 
+def test_needs_only_the_plugins_lineage():
+    """With its masters listed, an import needs its own and its masters' imports, not a stranger's."""
+    work = dict(_WORK, masters=['Tamriel_Data.esm'])
+    assert not needs(work, _OTHER) and needs(work, dict(_WORK, plugins=['tamriel_data.esm']))
+    assert needs(work, dict(_WORK, steps=['export']))
+    assert not needs(work, dict(_OTHER, plugins=['Sky_Main_Grass.esp']))
+
+
+@_WINDOWS
+def test_a_strangers_import_does_not_block_a_replacement(tmp_path):
+    """Import, another plugin's import, the first import again: the newer one replaces the first."""
+    work = dict(_WORK, masters=[])
+    running = _start(tmp_path, 4, work=_SCRIPTS)
+    assert _held(running.stdout.readline())
+    queued = _start(tmp_path, 0, work=work)
+    assert "Waiting" in queued.stdout.readline()
+    stranger = _start(tmp_path, 0, work=dict(_OTHER, masters=[]))
+    assert "Waiting" in stranger.stdout.readline()
+    newer = _start(tmp_path, 1, code=7, work=work)
+    newer_out, _ = newer.communicate(timeout=60)
+    stranger_out, _ = stranger.communicate(timeout=60)
+    queued.wait(timeout=60)
+    running.wait(timeout=60)
+    assert f"Replacing queued job pid {queued.pid}" in newer_out and queued.returncode == 7
+    assert _held(newer_out)[1] < _held(stranger_out)[1]
+
+
 @_WINDOWS
 def test_a_replacement_never_jumps_a_job_it_needs(tmp_path):
     """Scripts, import, scripts queued: new scripts replace only the scripts behind the import."""

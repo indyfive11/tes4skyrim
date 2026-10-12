@@ -15,9 +15,9 @@
 // way, in ActionManager::activate().
 // See: docs/commentary/morrowind_runtime.md#the-control-switches
 //
-// Of the chargen menus only EnableRaceMenu has a Skyrim equivalent
-// (Game.ShowRaceMenu). Name, class, birthsign and the stat review have none,
-// so they stay stubs that say so.
+// Of the chargen menus EnableRaceMenu opens Skyrim's own (Game.ShowRaceMenu)
+// and EnableClassMenu and EnableBirthMenu the runtime's (chargen_menu.h).
+// Name and the stat review have none, so they stay stubs that say so.
 //
 // `EnableTeleporting` / `DisableTeleporting` flip a switch of the runtime's
 // own, which the teleport effects read.
@@ -99,6 +99,20 @@ class OpShowRaceMenu : public Interpreter::Opcode0 {
     }
 };
 
+// `EnableClassMenu` (1) / `EnableBirthMenu` (2): the runtime's own menus.
+// See: docs/commentary/morrowind_runtime.md#chargen-menus
+class OpShowChargenMenu : public Interpreter::Opcode0 {
+public:
+    explicit OpShowChargenMenu(int kind) : mKind(kind) {}
+
+    void execute(Interpreter::Runtime&) override {
+        if (Hooks().showChargenMenu) Hooks().showChargenMenu(mKind);
+    }
+
+private:
+    int mKind;
+};
+
 }  // namespace
 
 void InstallControlOps(OpcodeInstaller& into) {
@@ -112,6 +126,8 @@ void InstallControlOps(OpcodeInstaller& into) {
         into.Real<OpGetControlDisabled>(C::opcodeGetDisabled + i, i);
     }
     into.Real<OpShowRaceMenu>(Compiler::Gui::opcodeEnableRaceMenu);
+    into.Real<OpShowChargenMenu>(Compiler::Gui::opcodeEnableClassMenu, 1);
+    into.Real<OpShowChargenMenu>(Compiler::Gui::opcodeEnableBirthMenu, 2);
     into.Real<OpSetTeleporting>(Compiler::Misc::opcodeEnableTeleporting, true);
     into.Real<OpSetTeleporting>(Compiler::Misc::opcodeDisableTeleporting,
                                 false);

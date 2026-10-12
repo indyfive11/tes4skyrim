@@ -77,6 +77,14 @@ bool CrimeGold(float* out) {
     return true;
 }
 
+// One realm's bounty, for the Statistics tab.
+bool FactionCrimeGold(const std::string& plugin, std::uint32_t formId, float* out) {
+    void* faction = FormFromFile(plugin.c_str(), formId & kLocalMask);
+    if (!faction || !g_getCrimeGold) return false;
+    *out = static_cast<float>(g_getCrimeGold(PapyrusVm(), 0, faction));
+    return true;
+}
+
 void ClearAndSet(void* faction, float gold) {
     if (!faction || !g_setCrimeGold || !g_setCrimeGoldViolent) return;
     g_setCrimeGoldViolent(PapyrusVm(), 0, faction, 0);
@@ -176,6 +184,7 @@ void InstallCrimeCalls(GameHooks& hooks) {
     g_topicManager = Native<void**>("MenuTopicManager singleton",
                                     ids::kMenuTopicManagerSingleton);
     hooks.crimeGold = CrimeGold;
+    hooks.factionCrimeGold = FactionCrimeGold;
     hooks.setCrimeGold = SetCrimeGold;
     hooks.payFine = PayFine;
     hooks.goToJail = GoToJail;

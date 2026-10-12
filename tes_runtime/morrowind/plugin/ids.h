@@ -33,6 +33,57 @@ constexpr std::uint64_t kMenuManagerSingleton = 400327;
 // See: docs/commentary/morrowind_runtime.md#the-tick-stops-while-the-game-is-paused
 constexpr std::size_t kOffMenuNumPauseGame = 0x160;
 
+// MenuManager::IsMenuOpen(this, BSFixedString* name) (0xfa37b0 on 1.6.1170,
+// SKSE's own address for it): looks the interned name up in the menu table at
+// +0x128 and tests flag 0x40, which the engine sets while a menu is on the stack.
+// SE 1.5.97 (0xebe150) and VR (0xf1a3b0) inline the lookup but test the same.
+// See: docs/reference/address_library_formats.md#hand-proven
+constexpr std::uint64_t kMenuManagerIsMenuOpen = 82074;
+
+// That menu table, walked to reach a menu's own object: capacity at +0x134,
+// entries at +0x150, each 0x20 bytes holding the interned name at +0, the
+// IMenu at +8 and the chain link at +0x18, null in an empty slot. The same on
+// all three builds' IsMenuOpen.
+constexpr std::size_t kOffMenuTableCapacity = 0x134;
+constexpr std::size_t kOffMenuTableEntries = 0x150;
+constexpr std::size_t kMenuTableEntrySize = 0x20;
+constexpr std::size_t kOffMenuEntryMenu = 0x8;
+constexpr std::size_t kOffMenuEntryNext = 0x18;
+
+// The perks menu's skills in label order: StatsMenu's array of actor values
+// at +0x50, its count at +0x60. Its fill (0x962450 on 1.6.1170, 0x8c20c0 on
+// 1.5.97) hands entry n's level, name and color to the movie's SkillText<n>.
+// VR's perks menu has neither the fill nor those labels.
+// See: docs/commentary/morrowind_runtime.md#capped-skills
+constexpr std::size_t kOffPerksSkills = 0x50;
+constexpr std::size_t kOffPerksSkillCount = 0x60;
+
+// GFxValue's ObjectInterface::ReleaseManaged(iface, value, data) (0xfac750,
+// skse64's ReleaseManaged_Internal), what the engine calls on every value the
+// movie owns once it is done with it -- a string read back from a movie is one.
+constexpr std::uint64_t kGfxReleaseManaged = 82270;
+
+// Skyrim's perks menu as the manager names it. Its constructor (0x95ed58 on
+// 1.6.1170) leaves IMenu's default depth, 3, and sets flags 0x8189.
+// See: docs/commentary/morrowind_runtime.md#perks-button
+constexpr const char* kPerksMenu = "StatsMenu";
+
+// StatsMenu's MenuEventHandler vtable (0x1901438 on 1.6.1170) and the
+// CanProcess its slot 1 holds (0x961030). MenuControls (0x947db0) offers every
+// input event to EVERY registered handler whose CanProcess agrees -- none can
+// consume one for the rest -- so a click on our button reaches the perks menu
+// unless its own gate refuses it. An InputEvent carries its device at +0x8
+// (1 mouse; the loop compares 2, the gamepad) and its type at +0xC (0 a
+// button, dispatched to ProcessButton).
+// See: docs/commentary/morrowind_runtime.md#perks-button
+constexpr std::uint64_t kPerksHandlerVtable = 215975;
+constexpr std::uint64_t kPerksCanProcess = 52518;
+constexpr std::size_t kCanProcessSlot = 0x8;
+constexpr std::size_t kOffInputDevice = 0x8;
+constexpr std::size_t kOffInputType = 0xC;
+constexpr std::uint32_t kDeviceMouse = 1;
+constexpr std::uint32_t kInputButton = 0;
+
 // MenuManager::Register(this, const char* name, IMenu* (*creator)())
 // (0xfa5480). Found as the jmp target shared by 10 distinct menu-name call
 // sites; identical to the RVA SKSE hardcodes.
@@ -115,6 +166,32 @@ constexpr std::uint32_t kEventMouseDown = 2;
 constexpr std::uint32_t kEventMouseUp = 3;
 constexpr std::size_t kMouseEventXOffset = 0x4;
 constexpr std::size_t kMouseEventButtonOffset = 0x10;
+// A GFxKeyEvent (type 5 down) holds the key code (Windows' virtual key) at
+// +4, the ASCII character at +8 and the modifier bits at +0x10 (CommonLibSSE
+// GFxKeyEvent, sizeof 0x14).
+constexpr std::uint32_t kEventKeyDown = 5;
+constexpr std::size_t kKeyEventCodeOffset = 0x4;
+constexpr std::size_t kKeyEventAsciiOffset = 0x8;
+constexpr std::size_t kKeyEventModsOffset = 0x10;
+// A GFxCharEvent (type 13, Scaleform's numbering, which types 1-6 above
+// follow) holds the typed character, case and all, as a UTF-32 code at +4.
+// Skyrim sends it only while text input is allowed.
+constexpr std::uint32_t kEventChar = 13;
+constexpr std::size_t kCharEventCodeOffset = 0x4;
+
+// The ControlMap (SKSE's InputManager) singleton POINTER (0x30fda10 on
+// 1.6.1170), and ControlMap::AllowTextInput(this, bool) (0xcd5910): a counter
+// byte at +0x128 that it raises or lowers; while it is above 0 the game sends
+// menus character events. Read off the function on 1.6.1170, where a menu
+// closing calls it with false.
+constexpr std::uint64_t kControlMapSingleton = 400863;
+constexpr std::uint64_t kControlMapAllowTextInput = 68552;
+// TESRace's TESFullName (at +0x20) holds its name's BSFixedString at +8.
+constexpr std::size_t kOffRaceFullName = 0x28;
+// TESQuest's current stage, a u16: Quest.GetCurrentStageID tail-calls a
+// getter that is only `movzx eax, word [rcx+0x228]` on 1.6.1170, 1.5.97 and
+// VR alike.
+constexpr std::size_t kOffQuestCurrentStage = 0x228;
 
 // TESNPC's primary vtable (0x17e4d50 on 1.6.1170), whose slot 0x1b8 is
 // Activate(this, ref, activator, ...). `TESObjectREFR::ActivateRef` dispatches
@@ -533,14 +610,18 @@ constexpr std::uint64_t kSpellCast = 55747;
 // `movss xmm0,[r8+0x34]`, a two-instruction leaf, so the field is read.
 constexpr std::size_t kOffGlobalValue = 0x34;
 
-// The player's faction standing, pushed onto the converted FACT. Live-image
-// RVAs (1.6.1170), GOG 1.6.659 in brackets:
+// The player's faction standing, pushed onto the converted FACT, and a TES4
+// actor's stat faction ranks. Live-image RVAs (1.6.1170), GOG 1.6.659 in
+// brackets:
+//   int  Actor.GetFactionRank(Faction)        0x9e87a0  [0x989af0]
+//        tail-calls the rank lookup with (actor, faction, actor == player).
 //   void Actor.SetFactionRank(Faction, int)   0x9ea340  [0x98b690]
 //        `lea r9` form; the rank rides at [rsp+0x28] and is read as a byte.
 //        Adds the actor to the faction when it is not already in it.
 //   void Faction.SetPlayerExpelled(bool)      0xa1dc80  [0x9befc0]
 //        stored-after form; sets or clears bit 4 of the faction's +0x58 flags.
 // See: docs/commentary/morrowind_runtime.md#player-factions
+constexpr std::uint64_t kActorGetFactionRank = 54686;
 constexpr std::uint64_t kActorSetFactionRank = 54750;
 constexpr std::uint64_t kFactionSetPlayerExpelled = 55843;
 
@@ -579,12 +660,67 @@ constexpr std::uint64_t kActorGetLevel = 54927;
 constexpr std::uint64_t kActorGetValuePercent = 54677;
 constexpr std::uint64_t kGameAdvanceSkill = 55449;
 
+// What the character sheet reads to count skill increases, on 1.6.1170:
+//   float Actor.GetBaseActorValue(BSFixedString* name)  0x9e8460, the r9 of
+//         its registration, as GetActorValue (54675) and the percentage
+//         (54677) beside it are
+//   Race  Actor.GetRace()  0x9f5340, `mov rax,[r8+0x1f8]; ret`, stored at
+//         +0x50 of the native object its registration builds inline
+// See: docs/commentary/morrowind_runtime.md#leveling
+constexpr std::uint64_t kActorGetBaseValue = 54678;
+constexpr std::uint64_t kActorGetRace = 54930;
+
 // Game.ShowTrainingMenu(Actor) (0xa127a0 on 1.6.1170, 0x9b3af0 on 1.6.659),
 // the r9 of its registration beside 'ShowTrainingMenu' under 'Game'. GLOBAL:
 // the self slot is a tag, and the callback hands its fourth argument, the
 // trainer, on as rcx.
 // See: docs/commentary/morrowind_runtime.md#barter
 constexpr std::uint64_t kGameShowTrainingMenu = 55582;
+
+// The character sheet's skill cap, read on 1.6.1170 and checked on 1.7.104.
+//   PlayerCharacter::AdvanceSkill(av, points, form, unk)   0x736e20, id 40488:
+//        PlayerCharacter vtable slot 247 (byte 0x7b8) on both builds; the hook
+//        finds the slot holding it rather than assuming one, since VR's Actor
+//        carries more virtuals. Every skill-USE experience arrives here
+//        virtually -- no direct call to it exists -- and so does
+//        Game.AdvanceSkill (0xa0baf0, `call [rax+0x7b8]`). It forwards to
+//        PlayerSkills::AdvanceSkill (0x77ae60, id 41561).
+//   TrainingMenu's train step(menu)                        0x96e710, id 52667:
+//        session limit, the trainer's maximum, the gold check, then the gold
+//        is taken and the skill at menu+0x40 incremented. Its one caller is
+//        id 52662 (+0xd8). Books (id 17842) and Game.IncrementSkill (id 55616)
+//        reach the increment by other callers, so the cap leaves them alone.
+// See: docs/commentary/morrowind_runtime.md#skill-cap
+constexpr std::uint64_t kPlayerAdvanceSkill = 40488;
+constexpr std::size_t kMaxPlayerVirtuals = 400;
+constexpr std::uint64_t kTrainingMenuTrain = 52667;
+constexpr std::uint64_t kTrainingMenuTrainCaller = 52662;
+constexpr std::size_t kTrainingCallerScan = 0x200;
+constexpr std::size_t kOffTrainingMenuSkill = 0x40;
+// VR's IMenu is 0x10 longer, so its train step (0x8fb9c0 on 1.4.15) reads the
+// skill at +0x50; SE 1.5.97's (0x8ce8e0) reads +0x40 as AE does.
+constexpr std::size_t kVrOffTrainingMenuSkill = 0x50;
+
+// The player's sex and skill progress, read on 1.6.1170 and 1.7.104 alike.
+//   TESNPC::GetSex (0x3a8df0; 0x3afeb0 on 1.7.104), what the ActorBase.GetSex
+//        native jumps to: `cmp byte [rcx+0x1a],0x2b; movzx eax,byte
+//        [rcx+0x38]; and eax,1` -- an NPC_ is female when bit 0 of +0x38 is set.
+//   PlayerCharacter::AdvanceSkill (id 40488) loads the PlayerSkills pointer by
+//        `mov rcx,[rcx+disp32]` 0x10 in: 0x9b8 on 1.6.1170, 0x9c0 on 1.7.104,
+//        so the offset is read from that instruction. Its data block holds a
+//        {level, points, pointsMax} per skill from +0x08, 12 bytes each, actor
+//        value 6 first: PlayerSkills::AdvanceSkill (id 41561) adds to
+//        [data + 12*(av-6) + 0xc] and compares it with +0x10. The player
+//        level's {points, pointsMax} open the block, at +0x00 and +0x04
+//        (skse64's PlayerSkills::Data levelPoints, levelPointsMax).
+// See: docs/commentary/morrowind_runtime.md#skill-tooltips
+constexpr std::uint8_t kFormTypeNpc = 0x2B;
+constexpr std::size_t kOffNpcSexFlags = 0x38;
+constexpr std::size_t kAdvanceSkillLoadAt = 0x10;
+constexpr std::size_t kLevelPoints = 0x00;
+constexpr std::size_t kSkillDataFirst = 0x08;
+constexpr std::size_t kSkillDataStride = 0x0C;
+constexpr int kFirstSkillValue = 6;
 
 // The character-creation and control natives, each the registration callback
 // beside its name string under script `Game` on 1.6.1170:
@@ -658,6 +794,10 @@ constexpr std::size_t kMovieViewSetVariableSlot = 0x10;
 constexpr std::size_t kMovieViewGetVariableSlot = 0x11;
 constexpr std::size_t kMovieViewInvokeSlot = 0x16;
 constexpr std::size_t kMovieViewAdvanceSlot = 0x25;
+// GetVisibleFrameRect 0x1F (skse64 ScaleformMovie.h, after Get/SetViewScaleMode
+// and Get/SetViewAlignment at 0x1B-0x1E): the part of the stage on screen as
+// left, top, right, bottom floats, returned through a hidden pointer.
+constexpr std::size_t kMovieViewVisibleRectSlot = 0x1F;
 constexpr std::size_t kMovieViewRenderSlot = 0x26;
 constexpr std::size_t kMovieViewHandleEventSlot = 0x2d;
 
@@ -668,6 +808,9 @@ constexpr std::size_t kGfxValueTypeOffset = 0x8;
 constexpr std::size_t kGfxValueDataOffset = 0x10;
 constexpr std::uint32_t kGfxValueTypeMask = 0x8f;
 constexpr std::uint32_t kGfxValueNumber = 3;
+// A string's data is its `const char*`, or a pointer to one when managed.
+constexpr std::uint32_t kGfxValueString = 4;
+constexpr std::uint32_t kGfxValueManaged = 0x40;
 
 // Debug.Notification(string) (0xa07340), global, the callback stored beside
 // "Notification": the same shape as Debug.MessageBox one id before it. What

@@ -19,7 +19,8 @@ from output_layout import record_dir
 from source_paths import resolve_plugin_path
 from tes5_import.base.text_reader import parse_export_file
 
-from .morroblivion_axis import (SUBSTITUTION_BLACKLIST, pitch_for_model,
+from .morroblivion_axis import (SUBSTITUTION_BLACKLIST, compose_pitch,
+                                pitch_for_model, rotx_add_for_model,
                                 z_reseat_for_base)
 from .tes3_reader import get_string, get_subrecord, read_file
 
@@ -210,7 +211,7 @@ class MorroblivionModels:
 def remap_vanilla_models(out: dict, ctx) -> tuple:
     """Rewrite every non-creature model line to Morroblivion's model.
 
-    Returns (models changed, records re-seated, references pitched). A mesh the
+    Returns (models changed, records origin-shifted, references corrected). A mesh the
     plugin ships itself is left alone, and so is one Morroblivion does not
     replace: the compatibility patch converts those.
 
@@ -255,6 +256,21 @@ def _bump(lines: list, key: str, delta: float) -> bool:
     return False
 
 
+def _compose(lines: list, pitch: float) -> bool:
+    """Pitch the model about its own X under the ref's rotation; False if unrotated.
+
+    See: docs/audits/morroblivion_mesh_axis_rotation.md#pitch-must-compose
+    """
+    keys = ('RotX=', 'RotY=', 'RotZ=')
+    at = {k: i for i, line in enumerate(lines) for k in keys if line.startswith(k)}
+    if len(at) != 3:
+        return False
+    rot = compose_pitch(*(float(lines[at[k]][5:]) for k in keys), pitch)
+    for k, value in zip(keys, rot):
+        lines[at[k]] = f'{k}{value!r}'
+    return True
+
+
 def _fix_placements(out: dict, models: dict, editor_ids: dict) -> int:
     """Apply Morroblivion's hand corrections to every placed reference.
 
@@ -273,10 +289,10 @@ def _fix_placements(out: dict, models: dict, editor_ids: dict) -> int:
             if not base:
                 continue
             low = base.lower()[2:]
-            pitch = pitch_for_model(models.get(low, ''))
+            model = models.get(low, '')
+            pitch, add = pitch_for_model(model), rotx_add_for_model(model)
             dz = z_reseat_for_base(editor_ids.get(low, ''))
-            if pitch and _bump(lines, 'RotX=', pitch):
-                fixed += 1
-            if dz and _bump(lines, 'PosZ=', dz):
-                fixed += 1
+            fixed += bool(pitch) and _compose(lines, pitch)
+            fixed += bool(add) and _bump(lines, 'RotX=', add)
+            fixed += bool(dz) and _bump(lines, 'PosZ=', dz)
     return fixed

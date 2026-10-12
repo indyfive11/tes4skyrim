@@ -8,6 +8,7 @@
 // See: docs/commentary/morrowind_runtime.md#stat-commands
 
 #include <algorithm>
+#include <cstring>
 #include <string>
 
 #include <components/compiler/opcodes.hpp>
@@ -91,7 +92,32 @@ float Authored(const std::string& actor, Family family, int index) {
                                    : 0.0f;
 }
 
-float ReadStat(const std::string& actor, const Stat& stat, Family family,
+// The character sheet's [CharacterSheet] Enabled and SkillCap, set once at
+// install.
+bool g_sheetOn = true;
+bool g_skillCapOn = true;
+
+constexpr const char* kPlayerId = "player";
+constexpr int kPersonality = 6;
+
+// With the sheet off the player has no attributes of its own: each reads as
+// a full 100, so no TES3 gate shuts on one, and Personality reads Skyrim's
+// Speech, which persuasion and barter weigh it beside.
+// See: docs/commentary/morrowind_runtime.md#sheet-off
+constexpr float kSheetOffAttribute = 100.0f;
+
+bool IsPlayer(const std::string& actor) {
+    return actor.size() == 6 && _strnicmp(actor.c_str(), kPlayerId, 6) == 0;
+}
+
+float SheetOffAttribute(int index) {
+    if (index != kPersonality || !Hooks().actorValue) return kSheetOffAttribute;
+    return Hooks().actorValue(kPlayerId, "Speechcraft");
+}
+
+// What a stat holds before active magic moves it: what a Set wrote, else the
+// authored column, or the Skyrim actor value that carries it.
+float ReadBase(const std::string& actor, const Stat& stat, Family family,
                int index) {
     if (stat.skyrim) {
         if (!Hooks().actorValue) return 0.0f;
@@ -102,6 +128,18 @@ float ReadStat(const std::string& actor, const Stat& stat, Family family,
     const std::string owner = StatOwner(actor);
     return State().HasVar(owner, stat.name) ? State().Var(owner, stat.name)
                                             : Authored(actor, family, index);
+}
+
+// What a stat reads as: an attribute follows the sheet's rule -- for the
+// player 100 when it is off; with it on, any actor's base moved by active
+// magic, never below 0.
+float ReadStat(const std::string& actor, const Stat& stat, Family family,
+               int index) {
+    if (family != Family::Attribute) return ReadBase(actor, stat, family, index);
+    if (!g_sheetOn && IsPlayer(actor)) return SheetOffAttribute(index);
+    const float base = ReadBase(actor, stat, family, index);
+    if (!g_sheetOn || !Hooks().attributeEffect) return base;
+    return std::max(0.0f, base + Hooks().attributeEffect(actor, index));
 }
 
 void WriteStat(const std::string& actor, const Stat& stat, float value) {
@@ -126,8 +164,8 @@ private:
     void execute(Interpreter::Runtime& runtime) override {
         const std::string actor = R::Target(runtime);
         const bool integer = mFamily == Family::Effect;
-        const float now = ReadStat(actor, mStat, mFamily, mIndex);
         if (mVerb == Verb::Get) {
+            const float now = ReadStat(actor, mStat, mFamily, mIndex);
             if (integer) {
                 runtime.push(static_cast<int>(now));
             } else {
@@ -135,9 +173,11 @@ private:
             }
             return;
         }
+        // A write moves the base: a Fortify active now must not be baked in.
         const float operand = integer ? static_cast<float>(PopInt(runtime))
                                       : PopFloat(runtime);
-        WriteStat(actor, mStat, mVerb == Verb::Mod ? now + operand : operand);
+        const float base = ReadBase(actor, mStat, mFamily, mIndex);
+        WriteStat(actor, mStat, mVerb == Verb::Mod ? base + operand : operand);
     }
 
     Stat mStat;
@@ -210,11 +250,40 @@ float ActorSkill(const std::string& actor, int tes3Index) {
                        Family::Skill, tes3Index);
 }
 
+void SkyrimSkillsOf(int tes3Index, const char** first, const char** second) {
+    const bool known = tes3Index >= 0 && tes3Index < Compiler::Stats::numberOfSkills;
+    *first = known ? kSkills[tes3Index].skyrim : nullptr;
+    *second = known ? kSkills[tes3Index].also : nullptr;
+}
+
 float ActorAttribute(const std::string& actor, int tes3Index) {
     return StatByIndex(actor, kAttributes,
                        Compiler::Stats::numberOfAttributes, Family::Attribute,
                        tes3Index);
 }
+
+float ActorBaseAttribute(const std::string& actor, int tes3Index) {
+    if (tes3Index < 0 || tes3Index >= Compiler::Stats::numberOfAttributes) return 0.0f;
+    return ReadBase(actor, kAttributes[tes3Index], Family::Attribute, tes3Index);
+}
+
+void SetActorAttribute(const std::string& actor, int tes3Index, float value) {
+    if (tes3Index < 0 || tes3Index >= Compiler::Stats::numberOfAttributes) return;
+    WriteStat(actor, kAttributes[tes3Index], value);
+}
+
+float ActorAuthoredAttribute(const std::string& actor, int tes3Index) {
+    if (tes3Index < 0 || tes3Index >= Compiler::Stats::numberOfAttributes) return 0.0f;
+    return Authored(actor, Family::Attribute, tes3Index);
+}
+
+void SetSheetEnabled(bool on) { g_sheetOn = on; }
+
+bool SheetEnabled() { return g_sheetOn; }
+
+void SetSkillCapEnabled(bool on) { g_skillCapOn = on; }
+
+bool SkillCapEnabled() { return g_sheetOn && g_skillCapOn; }
 
 void InstallStatOps(OpcodeInstaller& into) {
     namespace S = Compiler::Stats;

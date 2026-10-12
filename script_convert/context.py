@@ -120,6 +120,8 @@ class ScriptContext:
     uses_msg_buttons: bool = False
     #: A `Message` converted to TES4_Notify, so the helper is due.
     uses_notify: bool = False
+    #: A StartConversation walk runs inside the poll, so the poll's overlap guard is due.
+    uses_conv_walk: bool = False
 
     #: Chargen-menu call sites converted here, and whether the re-entrancy
     #: latch declaration is due.

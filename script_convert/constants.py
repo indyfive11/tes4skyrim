@@ -36,10 +36,13 @@ TES4_MISC_STAT_NAMES = (
 )
 
 #: TES4 skills Skyrim split in two; a read takes the higher. See: docs/plans/character_sheet.md#bug-blade-blunt
-SPLIT_SKILLS = {'blade': ('OneHanded', 'TwoHanded'), 'blunt': ('OneHanded', 'TwoHanded')}
+SPLIT_SKILLS = {name: ('OneHanded', 'TwoHanded') for name in ('blade', 'blunt', 'meleeweapons')}
 
 #: Misc stats Oblivion content writes; its engine keeps the rest. See: docs/commentary/script_convert.md#pc-misc-stat-names
 TES4_SCRIPT_OWNED_MISC_STATS = frozenset({14, 15, 16, 19, 27})
+
+#: A page value a quest script variable holds: (quest EditorID, variable, label). Nehrim's journal bank page.
+PAGE_VARIABLES = (('ErothinBankQuest', 'PlayerKontostand', 'Bank balance'),)
 
 from script_convert.reserved_names import papyrus_reserved
 
@@ -61,37 +64,13 @@ TYPE_MAP = {
     'array_var':  'String',
 }
 
-# Actor value name mapping (TES4 -> TES5)
-# TES4 attribute names. SKYRIM HAS NO ATTRIBUTES — Strength, Intelligence,
-# Willpower, Agility, Speed, Endurance, Personality and Luck do not exist as
-# actor values, and no TES5 actor value is a faithful stand-in, because every
-# candidate sits on a different scale than TES4's 0-100.
-#
-# They used to be aliased onto the nearest-looking AV here
-# (strength->UnarmedDamage, endurance->HealRate, agility/speed/acrobatics->
-# SpeedMult, personality->Speechcraft, luck->LuckModifier — which is not even
-# a real AV name, so it failed silently). That broke every Morroblivion guild:
-# the Fighters Guild gates each rank on `Player.GetAV Strength >= 30 &&
-# Player.GetAV Endurance >= 30`, and UnarmedDamage sits near 0, so no character
-# could ever qualify at any level; the Thieves Guild's Agility gate read
-# SpeedMult (~100) and passed unconditionally instead.
-#
-# An attribute read is now a no-op that returns ATTRIBUTE_STUB_VALUE, so the
-# gate falls OPEN, and an attribute write is discarded. Falling open is the
-# faithful outcome: an Oblivion attribute gate exists to keep an
-# under-developed character out, and a Skyrim character cannot raise an
-# attribute at all, so enforcing it would lock the content away permanently
-# rather than merely early. Mirrors dialog_conditions._TES4_AV_ATTRIBUTES,
-# which drops the equivalent CTDA, and TES4Polyfill.IsTES4Attribute.
+#: TES4's attributes, which no Skyrim actor value carries. See: docs/commentary/script_convert.md#skyrim-has-no-attributes
 TES4_ATTRIBUTES = frozenset({
     'strength', 'intelligence', 'willpower', 'agility',
     'speed', 'endurance', 'personality', 'luck',
 })
 
-# Value substituted for a removed attribute read. Above every authored TES4
-# attribute threshold (TES4 attributes cap at 100; the highest in the guild
-# advancement scripts is 35) so `>=` gates pass, and positive so the rarer
-# `> 0` / `!= 0` forms behave the same way.
+#: An attribute read nothing answers (an NPC's): above every authored gate, so it falls open.
 ATTRIBUTE_STUB_VALUE = '100.0'
 
 ACTOR_VALUE_MAP = {
@@ -198,6 +177,7 @@ PAPYRUS_BOOL_FUNCTIONS = {
     'issprinting', 'isonmount', 'isalerted', 'isequipped', 'ismounted',
     'istrespassing', 'isavrecoverydisabled', 'isfurnitureinuse',
     'isflightblocked', 'isinterior', 'islocked',
+    'isactor', 'isactorsaioff', 'isplayable', 'isplayable2',
     'getdead', 'getdisabled', 'getlocked', 'getghost', 'getisalerted',
     'getincombat', 'getnobleedoutrecovery', 'getisplayablerace',
     'getcurrentweatherpercent', 'getiscurrentpackage',
@@ -644,6 +624,9 @@ PLACED_REF_SIGS = ('ACHR', 'ACRE', 'REFR')
 
 #: The importer's force-greet alias quest, which StartConversation's Quest property names.
 FORCE_GREET_QUEST = 'TES4ForceGreets'
+
+#: Poll variable holding a running StartConversation walk's deadline (TES4Polyfill.WalkDeadline).
+CONV_WALK_VAR = 'TES4_WalkUntil'
 
 #: The importer's flee alias quest, which ForceFlee's Quest property names.
 FORCE_FLEE_QUEST = 'TES4ForceFlees'

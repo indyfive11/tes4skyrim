@@ -189,12 +189,6 @@ std::vector<Hot> FindLinks(const std::string& text,
     return out;
 }
 
-std::string HexColor(unsigned rgb) {
-    char buf[16];
-    std::snprintf(buf, sizeof(buf), "#%06X", rgb);
-    return buf;
-}
-
 std::string Path(const char* base, const char* property) {
     return std::string(base) + property;
 }
@@ -303,20 +297,9 @@ struct Pane {
     std::string plain;
 
     void Text(const std::string& text) {
+        html += HtmlText(text);
         for (char c : text) {
-            if (c == '\r') continue;
-            if (c == '\n') {
-                html += "<br>";
-            } else if (c == '&') {
-                html += "&amp;";
-            } else if (c == '<') {
-                html += "&lt;";
-            } else if (c == '>') {
-                html += "&gt;";
-            } else {
-                html += c;
-            }
-            plain += c;
+            if (c != '\r') plain += c;
         }
     }
 
@@ -342,18 +325,18 @@ struct Pane {
 // colour, then the text with each keyword as a link. A notice is one colour.
 void AppendEntry(const Entry& entry, Pane* pane) {
     if (entry.notice) {
-        pane->Colored(entry.text, layout::kColorNotify);
+        pane->Colored(entry.text, Colors().notify);
         return;
     }
     if (!entry.title.empty()) {
-        pane->Colored(entry.title, layout::kColorHeader);
+        pane->Colored(entry.title, Colors().header);
         pane->Text("\n");
     }
     std::size_t at = 0;
     for (const Hot& link : entry.links) {
         pane->Text(entry.text.substr(at, link.begin - at));
         pane->Clickable(entry.text.substr(link.begin, link.end - link.begin),
-                        link, layout::kColorLink, layout::kColorLinkOver);
+                        link, Colors().link, Colors().linkOver);
         at = link.end;
     }
     pane->Text(entry.text.substr(at));
@@ -371,8 +354,8 @@ void AppendAnswers(Pane* pane) {
     }
     for (std::size_t i = 0; i < lines.size(); ++i) {
         pane->Text(i ? "\n" : "\n\n");
-        pane->Clickable(lines[i].first, lines[i].second, layout::kColorAnswer,
-                        layout::kColorAnswerOver);
+        pane->Clickable(lines[i].first, lines[i].second, Colors().answer,
+                        Colors().answerOver);
     }
 }
 
@@ -432,8 +415,8 @@ void PushTopicScrollbar() {
 // ---------------------------------------------------------------- the list
 
 unsigned RowColor(int item) {
-    if (ListLocked()) return layout::kColorDisabled;
-    return item == g_hoverItem ? layout::kColorNormalOver : layout::kColorNormal;
+    if (ListLocked()) return Colors().disabled;
+    return item == g_hoverItem ? Colors().normalOver : Colors().normal;
 }
 
 // Lays the visible rows out: each field is moved to its item's row or hidden,
@@ -552,9 +535,9 @@ void RebuildItems() {
 
 void PushBye() {
     SetMenuText(Path(layout::kFieldBye, ".text").c_str(), layout::kGoodbye);
-    unsigned color = g_hoverBye ? layout::kColorNormalOver
-                                : layout::kColorNormal;
-    if (ByeLocked()) color = layout::kColorDisabled;
+    unsigned color = g_hoverBye ? Colors().normalOver
+                                : Colors().normal;
+    if (ByeLocked()) color = Colors().disabled;
     SetMenuNumber(Path(layout::kFieldBye, ".textColor").c_str(), color);
 }
 
@@ -903,6 +886,7 @@ void OnCancel() {
 
 void OnOpened() {
     g_open = true;
+    PickColors(DialogueMenu());
     PushAll();
 }
 

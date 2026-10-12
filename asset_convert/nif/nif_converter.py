@@ -42,8 +42,10 @@ from asset_convert.nif.geometry_sanitize import sanitize_geometry_data
 from asset_convert.nif.nif_materials_morrowind import carry_havok_material
 from asset_convert.nif.nif_converter_morrowind import (
     animate_doors, attach_morrowind_collision, build_skin_partitions,
-    disable_specular, is_morrowind, latch_root_flags,
-    run_morrowind_fixups, strip_collision_nodes, strip_spinning_doors)
+    disable_specular, is_marker_shape, is_morrowind, latch_root_flags,
+    opaque_unblended_shapes,
+    run_morrowind_fixups, source_root_flags, strip_collision_nodes,
+    strip_spinning_doors)
 from asset_convert.nif.tex_paths import rewrite_tex_path
 from asset_convert.nif.shaders import (ALPHA_BLEND_ENABLED,
                                        ALPHA_DST_ONE, ALPHA_DST_SHIFT,
@@ -151,7 +153,8 @@ from asset_convert.character.dismember_falloutnv import hide_dismember_caps
 from asset_convert.nif.mesh_scan_emit import (record_scan_alias,
                                               record_scan_entry,
                                               record_scan_removal)
-from asset_convert.collision.collision import (hoist_collision,
+from asset_convert.collision.collision import (collision_owner,
+                                               hoist_collision,
                                                mesh_has_held_body,
                                                remove_empty_collision_nodes)
 from asset_convert.collision.collision_anim import node_transform_is_animated
@@ -221,29 +224,25 @@ from asset_convert.nif.furniture_markers import (
     ENTRY_FRONT as _ENTRY_FRONT,
     ENTRY_LEFT as _ENTRY_LEFT,
     ENTRY_RIGHT as _ENTRY_RIGHT,
-    cluster_seats as _cluster_seats,
     drop_superseded_markers,
-    extract_entries as _extract_furniture_entries,
     geometry_center_xy as _geometry_center_xy,
-    origin_shift as _furniture_origin_shift,
+    marker_seats as _marker_seats,
 )
+from asset_convert.nif.furniture_travel import latch_sit_travels, latched_sit_travels
 
 
 def _convert_furniture_markers(markers, root):
-    """Convert Oblivion BSFurnitureMarker blocks (entry points) into one
-    Skyrim BSFurnitureMarkerNode (seat positions).
+    """Convert source BSFurnitureMarker entry points into one Skyrim
+    BSFurnitureMarkerNode of seats, z in re-origined coords (floor = 0).
 
-    Returns (frn, origin_shift) — origin_shift is the +z translation that
-    re-origins the model to the vanilla floor-origin convention.  The
-    engine anchors the seated actor to the REFR z (not the marker z), so
-    the model must be wrapped in an inner NiNode translated by this amount
-    and the importer lowers the REFRs to match (see furniture_markers.py).
-    Returns (None, 0.0) if the markers contain no positions."""
-    entries = _extract_furniture_entries(markers)
-    if not entries:
+    Returns (frn, origin_shift): the +z translation re-origining the model to
+    the vanilla floor-origin convention, which the importer mirrors on the
+    REFRs (see furniture_markers.py).  (None, 0.0) without positions.
+    """
+    seats, shift = _marker_seats(markers, lambda: _geometry_center_xy(root),
+                                 latched_sit_travels())
+    if not seats:
         return None, 0.0
-    shift = _furniture_origin_shift(entries)
-    seats = _cluster_seats(entries, lambda: _geometry_center_xy(root))
 
     frn = NifFormat.BSFurnitureMarkerNode()
     frn.name = b'FRN'
@@ -253,7 +252,7 @@ def _convert_furniture_markers(markers, root):
         dst = frn.positions[ci]
         dst.offset.x = seat['x']
         dst.offset.y = seat['y']
-        dst.offset.z = seat['z'] + shift  # re-origined coords (floor = 0)
+        dst.offset.z = seat['z'] + shift
         dst.heading = seat['heading']
         dst.animation_type = 2 if seat['sleep'] else 1
         ep = dst.entry_properties
@@ -392,13 +391,15 @@ def _is_stripped_node(node):
 
     SecretBigger* are tiny triangles parked far below the origin to inflate
     the bounding sphere; EditorMarker* are hidden in Oblivion by a flag our
-    conversion overwrites.  Both render as stray geometry in Skyrim.
+    conversion overwrites, and Morrowind's MRK-marked shapes by the engine.
+    All render as stray geometry in Skyrim.
     See: docs/commentary/asset_convert_nif.md#nodes-stripped-by-name
     """
     name = getattr(node, 'name', b'') or b''
     if not name:
         return False
-    return any(name.startswith(p) for p in _STRIPPED_NODE_PREFIXES)
+    return (any(name.startswith(p) for p in _STRIPPED_NODE_PREFIXES)
+            or is_marker_shape(node, source_root_flags()))
 
 
 def _walk_geometry(node, fix_textures, stats):
@@ -710,24 +711,12 @@ def _hide_helper_geometry(root, stats):
     _hide_uvless_lit_shapes(root, stats)
 
 
-def _collision_owners(root):
-    """Every descendant owning a collision object."""
-    owners = []
-    stack = [c for c in (getattr(root, 'children', None) or []) if c is not None]
-    while stack:
-        node = stack.pop()
-        if getattr(node, 'collision_object', None) is not None:
-            owners.append(node)
-        stack.extend(c for c in (getattr(node, 'children', None) or [])
-                     if c is not None)
-    return owners
-
-
 def _hoist_root_collision(data, root, wrapped, has_constraints, creature):
     """Move a child's collision onto the root, where Skyrim wants it.
 
     Skipped for a wrapped root (the wrap path already absorbs the transform),
-    when ANY collision node is really moved by animation, for constrained NIFs
+    when the node whose collision the hoist would take (`collision_owner`) is
+    really moved by animation, for constrained NIFs
     (the constraint IS the spatial relationship), for creatures (ragdoll
     collision lives on the bones), and for a mesh of held pieces a script
     releases (each piece must fall on its own).  A keyless stub is not
@@ -738,7 +727,8 @@ def _hoist_root_collision(data, root, wrapped, has_constraints, creature):
         return
     if not hasattr(root, 'collision_object') or root.collision_object is not None:
         return
-    if any(node_transform_is_animated(data, owner) for owner in _collision_owners(root)):
+    owner = collision_owner(root)
+    if owner is not None and node_transform_is_animated(data, owner):
         return
     if (is_fallout_source() and merge_static_parts(root)) or hoist_collision(root):
         remove_empty_collision_nodes(root)
@@ -1006,6 +996,7 @@ def _convert_roots(data, stats, fix_textures, src_path, creature,
     if was_morrowind:
         strip_collision_nodes(data, stats)
         disable_specular(data, stats)
+        opaque_unblended_shapes(data, stats)
         animate_doors(data, stats)
     else:
         strip_spinning_doors(data, stats)
@@ -1166,6 +1157,7 @@ def _authored_wear(src_path, src_meshes_dir, wearable_plan, creature, hair):
                        src_path, src_meshes_dir)
     latch_door_model(wearable_plan, src_path, src_meshes_dir)
     latch_fixture_model(wearable_plan, src_path, src_meshes_dir)
+    latch_sit_travels(wearable_plan)
     if plan is None:
         return bool(hair), 0x02 if hair else 0
     return (wp.is_worn(plan, src_path, src_meshes_dir),

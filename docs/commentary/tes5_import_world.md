@@ -16,6 +16,7 @@ owns it, and what it is linked to. Region decoration (REGN, LSCR, WATR) lives in
 - [TES3 refs ship Don't Havok Settle](#tes3-dont-havok-settle)
 - [Nested interiors inherit a location](#nested-interiors-inherit-location)
 - [LAND DATA flags pass through VERBATIM](#land-data-flags-verbatim)
+- [LAND quadrants with alpha layers and no base layer](#land-quadrants-without-a-base-layer)
 - [WRLD land and water defaults](#wrld-land-and-water-defaults)
 - [Interior range census](#interior-range-census)
 
@@ -205,6 +206,74 @@ value `TWMP_ValenwoodImproved` uses.
 
 Rewriting the flags-12 pair to 28 looked like a fix only because a PARTIAL
 census missed it. `convert_LAND` writes `DATA.Flags` through unchanged.
+
+## <a id="land-quadrants-without-a-base-layer"></a>LAND quadrants with alpha layers and no base layer
+
+**Code:** `build_land_layers` in `tes5_import/record_types/world.py`; the
+override path reaches it through `_rebuild_land_layers` in
+`tes5_import/overrides/builder.py`.
+
+A LAND paints each quadrant with one base texture (BTXT) and a list of alpha
+layers (ATXT, each followed by its VTXT opacities). The base is optional: a
+quadrant can carry alpha layers and no BTXT. `build_land_layers` walked only
+the quadrants that had a BASE, so a quadrant without one was written empty and
+every alpha layer in it was lost. It now walks every quadrant that has a BASE
+or an alpha layer, and writes such a quadrant with no BTXT and the alpha
+layers it would get under one. The same-texture merge, the coverage order and
+the six-layer cap are untouched.
+
+**Verified vanilla-legal.** Skyrim.esm ships **4,237** quadrants with ATXT and
+no BTXT, in 2,368 of its 15,564 LAND, carrying 10,286 alpha layers (one to six
+per quadrant). In every vanilla LAND the quadrants are in ascending order, a
+quadrant's layer indices run 0..n-1 and each ATXT is followed by its VTXT.
+
+Measured over `export/Oblivion.esm/LAND.txt`: 31,823 LAND, 85,166 painted
+quadrants, 82,749 of them with a BASE. A quadrant is counted below when it has
+at least one ALPHA layer with a texture and no BASE layer.
+
+| | Oblivion.esm | of which Tamriel |
+|---|---|---|
+| quadrants with alpha layers and no BASE | 2,417 | 1,463 |
+| LAND holding at least one | 1,221 | 666 |
+| alpha layers authored in those quadrants | 3,612 | 1,885 |
+| ...written before | 0 | 0 |
+| ...written now | 3,548 | 1,864 |
+
+554 of the 1,221 LAND have no BASE in any quadrant, so they were written with
+no layer run at all. The 64 layers still not written are the seventh and
+eighth of 40 quadrants, dropped by the existing cap.
+
+**Nothing else moves.** Converting every Oblivion.esm LAND with the code before
+and after: 30,602 records are byte-identical and 1,221 differ, exactly the
+ones holding such a quadrant. In those 1,221 the 1,199 quadrants that have a
+BTXT are byte-identical, as is every other subrecord; taking the added
+quadrants out of the new run gives back the old run. Knights.esp (61 LAND) and
+DLCFrostcrag.esp (6 LAND) hold no such quadrant and convert byte-identical.
+Morrowind's exporter writes a quadrant's first texture as its BASE
+(`layer_lines`), so it produces none. No Nehrim, Fallout NV or Morroblivion
+export was measured.
+
+The Oblivion numbers come from reading each exported block with
+`parse_file_range` and comparing `convert_LAND` before and after. This counts
+the quadrants in any plugin, vanilla or converted (run it with the repo root
+on `PYTHONPATH` and the plugin's path as its argument; Skyrim.esm prints 4237):
+
+```python
+import sys
+from asset_convert.lod.terrain_lod_textures import decode_land_layers
+from tools.validate.land_record_check import iter_records
+
+data = open(sys.argv[1], 'rb').read()
+runs = [decode_land_layers(body)
+        for sig, _fid, body, *_rest in iter_records(data) if sig == b'LAND']
+print(sum(len(set(run['alpha']) - set(run['base'])) for run in runs))
+```
+
+Terrain LOD is composited from the converted LAND (`decode_land_layers`,
+`composite_cell`), which draws a quadrant's alpha layers over the default land
+texture when it has no BTXT. Seeing the change needs an import rebuild, and a
+terrain LOD rebake for the distant tiles. Not checked in game, and no LOD was
+rebaked for this change.
 
 ## <a id="wrld-land-and-water-defaults"></a>WRLD land and water defaults
 

@@ -35,8 +35,9 @@ FORCE_GREET_SLOTS: dict = {}
 
 _SAYTO_RE = re.compile(r'\bsayto[\s,]+(\w+)[\s,]+(\w+)', re.IGNORECASE)
 _SAY_RE = re.compile(r'\bsay[\s,]+(\w+)', re.IGNORECASE)
-_STARTCONV_RE = re.compile(r'\bstartconversation[\s,]+(\w+)(?:[\s,]+(\w+))?',
-                           re.IGNORECASE)
+#: `StartConversation <target> [<topic>]`: group 1 the target token, group 2 the topic.
+STARTCONV_RE = re.compile(r'\bstartconversation[\s,]+(\w+)(?:[\s,]+(\w+))?',
+                          re.IGNORECASE)
 
 #: A statement calling ForceFlee/Flee, with up to two arguments (cell, reference).
 _FLEE_RE = re.compile(r'^\s*(?:"?\w+"?\s*\.\s*)?(?:forceflee|flee)\b'
@@ -152,7 +153,7 @@ def build_force_greet_slots(by_type: dict) -> dict:
     """
     counts = defaultdict(int)
     for line in script_lines(collect_script_texts(by_type)):
-        for m in _STARTCONV_RE.finditer(line):
+        for m in STARTCONV_RE.finditer(line):
             if m.group(1).lower() in PLAYER_TOKENS:
                 counts[(m.group(2) or '').lower()] += 1
     return _alias_pools(counts)
@@ -182,7 +183,7 @@ def _scan_say_line(line: str, votes: dict, dial_by_edid: dict,
         d = dial_by_edid.get(m.group(2).lower())
         if d is not None:
             votes[d].add(target_fid(m.group(1)))
-    for m in _STARTCONV_RE.finditer(line):
+    for m in STARTCONV_RE.finditer(line):
         if m.group(2):
             d = dial_by_edid.get(m.group(2).lower())
             if d is not None:

@@ -199,7 +199,7 @@ bool FightingPlayer(void* ref, void* player) {
 // reads as `getKnockedDown`. Standing is knock state 0 and life state alive.
 bool KnockedDown(void* ref) {
     const std::uint32_t state = *reinterpret_cast<const std::uint32_t*>(
-        static_cast<const char*>(ref) + ids::kOffActorState1);
+        static_cast<const char*>(ref) + ActorField(ids::kOffActorState1));
     return (state & ids::kKnockStateMask) != 0 ||
            (state & ids::kLifeStateMask) == ids::kLifeUnconscious;
 }

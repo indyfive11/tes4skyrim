@@ -34,6 +34,9 @@ from asset_convert.havok.kf_decode import (CYCLE_CLAMP, CYCLE_LOOP, DEFAULT_FPS,
                                            BoneTrack, DecodedClip)
 from asset_convert.havok.kf_writer import write_skyrim_kf
 from asset_convert.nif.particles_morrowind import LEGACY_EMITTERS
+from asset_convert.nif.timeline_morrowind import (chain, clip_range, groups,
+                                                   interp, key_arrays,
+                                                   text_keys)
 from asset_convert.nif.sse_nif import read_nif
 from asset_convert.sources import base_plugins
 from asset_convert.sources.morrowind_assets import resolve_mesh
@@ -96,24 +99,6 @@ _ANIMATED_PREFIX = 'x'
 _NONACCUM_SUFFIX = ' NonAccum'
 
 
-def _chain(first, link: str):
-    """Every block on a singly linked NIF chain starting at `first`."""
-    block = first
-    while block is not None:
-        yield block
-        block = getattr(block, link, None)
-
-
-def _text_keys(data) -> list:
-    """(time, text) for every text key in the file."""
-    out = []
-    for block in data.blocks:
-        if isinstance(block, NifFormat.NiTextKeyExtraData):
-            out.extend((float(k.time), k.value.decode('cp1252', 'replace'))
-                       for k in block.text_keys)
-    return out
-
-
 def _tracks(data, root_name: str) -> list:
     """(node name, `_key_arrays`) per animated node, from a model or a .kf.
 
@@ -123,9 +108,9 @@ def _tracks(data, root_name: str) -> list:
     root = data.roots[0]
     if isinstance(root, NifFormat.NiSequenceStreamHelper):
         names = [e.string_data.decode('cp1252', 'replace')
-                 for e in _chain(root.extra_data, 'next_extra_data')
+                 for e in chain(root.extra_data, 'next_extra_data')
                  if isinstance(e, NifFormat.NiStringExtraData)]
-        controllers = [c for c in _chain(root.controller, 'next_controller')
+        controllers = [c for c in chain(root.controller, 'next_controller')
                        if isinstance(c, NifFormat.NiKeyframeController)]
         found = [(n, c.data) for n, c in zip(names, controllers) if c.data]
     else:
@@ -133,46 +118,11 @@ def _tracks(data, root_name: str) -> list:
         for node in root.tree():
             if not isinstance(node, NifFormat.NiNode):
                 continue
-            for c in _chain(node.controller, 'next_controller'):
+            for c in chain(node.controller, 'next_controller'):
                 if isinstance(c, NifFormat.NiKeyframeController) and c.data:
                     found.append((get_block_name(node), c.data))
-    return [(n + _NONACCUM_SUFFIX if n == root_name else n, _key_arrays(kd))
+    return [(n + _NONACCUM_SUFFIX if n == root_name else n, key_arrays(kd))
             for n, kd in found]
-
-
-def _groups(keys: list) -> tuple:
-    """({group: {event: time}}, [(time, cue kind, cue value)]) from the text keys.
-
-    A key may carry several lines; each is `Group: Event` or a cue
-    (`SoundGen: Left`, `Sound: SwishL`).
-    """
-    groups, cues = {}, []
-    for time, text in keys:
-        for line in text.replace(chr(13), chr(10)).split(chr(10)):
-            head, sep, tail = line.partition(':')
-            if not sep:
-                continue
-            head, tail = head.strip().lower(), tail.strip()
-            if head in ('soundgen', 'sound'):
-                cues.append((time, head, tail))
-            else:
-                groups.setdefault(head, {}).setdefault(tail.lower(), time)
-    return groups, cues
-
-
-def _clip_range(events: dict):
-    """(start, stop, loops) for one group, or None when it has no span.
-
-    A group with a real loop segment ships only that segment, because Skyrim
-    loops whole clips; a one-shot ships Start..Stop.
-    """
-    start, stop = events.get('start'), events.get('stop')
-    if start is None or stop is None or stop <= start:
-        return None
-    loop_start, loop_stop = events.get('loop start'), events.get('loop stop')
-    if loop_start is not None and loop_stop is not None and loop_stop > loop_start:
-        return loop_start, loop_stop, True
-    return start, stop, False
 
 
 def _segment_stem(group: str, segment: str) -> str:
@@ -216,43 +166,10 @@ def _plan(groups: dict, known_only: bool) -> dict:
             if seg_stem and stop in events and (start is None or start in events):
                 found.append((seg_stem, _segment_events(events, start, stop, hit)))
         for clip_stem, clip_events in found:
-            span = _clip_range(clip_events)
+            span = clip_range(clip_events)
             if span is not None:
                 plan.setdefault(clip_stem, (span, clip_events))
     return plan
-
-
-def _interp(times: np.ndarray, channel: tuple) -> np.ndarray:
-    """Linear interpolation of a (key times, one value row per key) channel at `times`."""
-    key_times, values = channel
-    return np.stack([np.interp(times, key_times, values[:, i])
-                     for i in range(values.shape[1])], axis=1)
-
-
-def _channel(keys, row):
-    """(key times, `row(value)` per key) of one keyframe channel, or None when it is empty."""
-    if not len(keys):
-        return None
-    return (np.array([float(k.time) for k in keys], dtype=np.float64),
-            np.array([row(k.value) for k in keys], dtype=np.float64))
-
-
-def _key_arrays(kd) -> tuple:
-    """(rotation, translation, scale) channels of one node, read once; euler rotations are skipped.
-
-    Quaternions are sign-aligned to their predecessor so interpolation
-    takes the short arc.
-    """
-    rotation = None
-    if kd.rotation_type != 4 and kd.num_rotation_keys:
-        rotation = _channel(kd.quaternion_keys, lambda v: (v.w, v.x, v.y, v.z))
-        quats = rotation[1]
-        for i in range(1, len(quats)):
-            if np.dot(quats[i], quats[i - 1]) < 0:
-                quats[i] = -quats[i]
-    return (rotation,
-            _channel(kd.translations.keys, lambda v: (v.x, v.y, v.z)),
-            _channel(kd.scales.keys, lambda v: (v,)))
 
 
 def _sample(arrays: tuple, times: np.ndarray) -> BoneTrack:
@@ -260,14 +177,14 @@ def _sample(arrays: tuple, times: np.ndarray) -> BoneTrack:
     rotation, translation, scale = arrays
     track = BoneTrack(bone='')
     if rotation is not None:
-        rots = _interp(times, rotation)
+        rots = interp(times, rotation)
         norm = np.linalg.norm(rots, axis=1, keepdims=True)
         norm[norm == 0] = 1.0
         track.rotations = rots / norm
     if translation is not None:
-        track.translations = _interp(times, translation)
+        track.translations = interp(times, translation)
     if scale is not None:
-        track.scales = _interp(times, scale)[:, 0]
+        track.scales = interp(times, scale)[:, 0]
     return track
 
 
@@ -321,7 +238,7 @@ def _strip(data, keep_geometry: bool) -> None:
         if isinstance(block, NifFormat.NiObjectNET):
             if type(block).__name__ not in LEGACY_EMITTERS:
                 block.controller = None
-            extras = [e for e in _chain(block.extra_data, 'next_extra_data')
+            extras = [e for e in chain(block.extra_data, 'next_extra_data')
                       if not isinstance(e, NifFormat.NiTextKeyExtraData)]
             block.extra_data = extras[0] if extras else None
             for a, b in zip(extras, extras[1:] + [None]):
@@ -453,11 +370,11 @@ def split_creature(model_path, out_dir: str, body_name: str, base_anim=None,
     clips = {}
     for path, known_only in layers + [(anim_path, False)]:
         anim = read_nif(str(path))
-        groups, cues = _groups(_text_keys(anim))
+        found, cues = groups(text_keys(anim))
         tracks = _tracks(anim, root_name)
         if tracks:
             clips.update({stem: (span, events, tracks, cues) for stem, (span, events)
-                          in _plan(groups, known_only).items()})
+                          in _plan(found, known_only).items()})
     for stem, (span, events, tracks, cues) in clips.items():
         clip = _clip(stem, span, tracks, events, cues, fps)
         write_skyrim_kf(clip, os.path.join(out_dir, stem + '.kf'))

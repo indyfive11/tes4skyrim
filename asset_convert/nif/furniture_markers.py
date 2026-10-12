@@ -71,11 +71,7 @@ import math
 REF_HEADING = {
     1: -math.pi / 2, 2: math.pi / 2, 3: -math.pi / 2, 4: 0.0,  # bed (sleep)
     11: -math.pi / 2, 12: math.pi / 2, 13: 0.0, 14: math.pi,   # chair (sit)
-    15: 0.0,
 }
-
-#: FO3/FNV's stool entry: the seat lies this far ahead of it and to its left, the sitter facing ahead.
-STOOL_REF, STOOL_FORWARD, STOOL_LEFT = 15, 41.0, 20.5
 SIT_SIDE_DIST = 51.5    # entry-to-seat travel, side sit entries (11/12)
 SIT_FRONT_DIST = 55.0   # entry-to-seat travel, front/behind sit entries (13/14)
 SIT_HEIGHT = 34.0       # vanilla commonchair01 marker z (floor-relative)
@@ -149,16 +145,6 @@ def geometry_center_xy(root):
     return (lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0
 
 
-def stool_seat(entry):
-    """The seat a FO3/FNV stool entry leads to: ahead of it and to its left.
-
-    See: docs/commentary/asset_convert_falloutnv.md#stool-entries
-    """
-    fx, fy = entry['d']
-    x, y = entry['p'][0], entry['p'][1]
-    return x + STOOL_FORWARD * fx - STOOL_LEFT * fy, y + STOOL_FORWARD * fy + STOOL_LEFT * fx
-
-
 def _entry_flag(entry, seat_x, seat_y, heading):
     """Which side of the seat this entry point lies on, relative to the
     occupant's facing direction."""
@@ -179,33 +165,72 @@ def _entry_flag(entry, seat_x, seat_y, heading):
     return ENTRY_LEFT
 
 
+def marker_seats(marker_blocks, center_fn, travels=None) -> tuple:
+    """(seats, origin shift) for source marker blocks; seat z is before the shift.
+
+    `travels` maps a marker id to the (right, forward) travel its authored
+    enter animation carries the sitter, entry to seat; that sitter keeps
+    facing the way it walked in.  Both seat consumers call this.
+    See: docs/commentary/asset_convert_falloutnv.md#stool-entries
+    """
+    entries = extract_entries(marker_blocks)
+    if not entries:
+        return [], 0.0
+    for e in entries:
+        travel = (travels or {}).get(e['ref'])
+        if travel:
+            e['travel'] = travel
+            e['heading'] = math.atan2(e['d'][0], e['d'][1]) % (2 * math.pi)
+    return cluster_seats(entries, center_fn), origin_shift(entries)
+
+
+def _travel_seat(entry) -> tuple:
+    """Entry point plus its authored travel, turned to the approach."""
+    (right, forward), (dx, dy) = entry['travel'], entry['d']
+    return (entry['p'][0] + right * dy + forward * dx,
+            entry['p'][1] - right * dx + forward * dy)
+
+
+def _walk_seat(entry, center: list, center_fn) -> tuple:
+    """The seat down the approach ray: a sleeper's hip at the geometry center, a sitter a fixed distance.
+
+    `center` caches center_fn's (cx, cy) across entries.
+    """
+    if entry['sleep']:
+        if not center:
+            center.append(center_fn())
+        cx, cy = center[0]
+        t = max(0.0, (cx - entry['p'][0]) * entry['d'][0] +
+                (cy - entry['p'][1]) * entry['d'][1])
+    else:
+        t = SIT_SIDE_DIST if entry['ref'] in (11, 12) else SIT_FRONT_DIST
+    return entry['p'][0] + t * entry['d'][0], entry['p'][1] + t * entry['d'][1]
+
+
+def _mean_heading(cluster) -> float:
+    """Circular mean of the entries' headings, in (-pi, pi] as vanilla's."""
+    return math.atan2(sum(math.sin(m['heading']) for m in cluster),
+                      sum(math.cos(m['heading']) for m in cluster))
+
+
 def cluster_seats(entries, center_fn):
     """Convert entry points into seats.
 
-    center_fn: zero-arg callable returning the geometry (cx, cy), invoked only
-    for a sleep entry, whose seat is the HIP position -- that center projected
-    onto the approach ray.  A sit entry travels a fixed distance instead.
+    center_fn: zero-arg callable returning the geometry (cx, cy), called only
+    for a sleep entry, whose seat is the hip: that center projected onto the
+    approach ray.  A sit entry walks a fixed distance, or its authored
+    `travel` (then `authored_entry`).
 
-    Returns seat dicts in an order the NIF converter and FURN importer both
-    reproduce: {'x','y','z','heading','sleep','entry_flags',
+    Returns seat dicts in an order both seat consumers reproduce:
+    {'x','y','z','heading','sleep','entry_flags','authored_entry',
     'members': [(tes4_entry_index, entry_flag_bit), ...]}
     """
     if not entries:
         return []
 
-    center = None
+    center = []
     for e in entries:
-        if e['sleep']:
-            if center is None:
-                center = center_fn()
-            t = max(0.0, (center[0] - e['p'][0]) * e['d'][0] +
-                    (center[1] - e['p'][1]) * e['d'][1])
-        else:
-            # Seat: fixed travel distance along the approach direction
-            t = SIT_SIDE_DIST if e['ref'] in (11, 12) else SIT_FRONT_DIST
-        e['seat'] = (e['p'][0] + t * e['d'][0], e['p'][1] + t * e['d'][1])
-        if e['ref'] == STOOL_REF:
-            e['seat'] = stool_seat(e)
+        e['seat'] = _travel_seat(e) if e.get('travel') else _walk_seat(e, center, center_fn)
 
     clusters = []
     for e in entries:
@@ -224,10 +249,7 @@ def cluster_seats(entries, center_fn):
         sy = sum(m['seat'][1] for m in cluster) / len(cluster)
         sleep = any(m['sleep'] for m in cluster)
         floor_z = min(m['p'][2] for m in cluster)
-        # Circular mean of the entry-derived headings (they agree in practice);
-        # atan2 already yields (-pi, pi] like vanilla marker headings
-        heading = math.atan2(sum(math.sin(m['heading']) for m in cluster),
-                             sum(math.cos(m['heading']) for m in cluster))
+        heading = _mean_heading(cluster)
         members = [(m['index'], _entry_flag(m, sx, sy, heading)) for m in cluster]
         flags = 0
         for _idx, f in members:
@@ -239,6 +261,7 @@ def cluster_seats(entries, center_fn):
             'heading': heading,
             'sleep': sleep,
             'entry_flags': flags,
+            'authored_entry': any('travel' in m for m in cluster),
             'members': members,
         })
     return seats
@@ -253,18 +276,20 @@ def origin_shift(entries):
     return -min(e['p'][2] for e in entries)
 
 
-def furniture_model_info(nif_path):
+def furniture_model_info(nif_path, travels=None):
     """Parse an Oblivion NIF and return its furniture conversion data:
 
       {'seats': [...see cluster_seats; z already in re-origined coords...],
        'origin_shift': float}
 
     Returns {'seats': [], 'origin_shift': 0.0} when the NIF has no
-    furniture markers; raises on read errors.
+    furniture markers; raises on read errors.  `travels` is as for
+    marker_seats.  PyFFI 2.2.3 still calls the removed `time.clock`, so it
+    is restored first.
     """
     import time
     if not hasattr(time, 'clock'):
-        time.clock = time.perf_counter  # PyFFI 2.2.3 uses the removed time.clock
+        time.clock = time.perf_counter
     from pyffi.formats.nif import NifFormat
 
     data = NifFormat.Data()
@@ -272,17 +297,11 @@ def furniture_model_info(nif_path):
         data.inspect(fh)
         data.read(fh)
 
-    marker_blocks = []
     roots = list(data.roots)
-    for root in roots:
-        for ed in getattr(root, 'extra_data_list', []) or []:
-            if _is_superseded_marker(ed):
-                marker_blocks.append(ed)
-    entries = extract_entries(marker_blocks)
-    if not entries:
-        return {'seats': [], 'origin_shift': 0.0}
-    shift = origin_shift(entries)
-    seats = cluster_seats(entries, lambda: geometry_center_xy(roots[0]))
+    marker_blocks = [ed for root in roots
+                     for ed in getattr(root, 'extra_data_list', []) or []
+                     if _is_superseded_marker(ed)]
+    seats, shift = marker_seats(marker_blocks, lambda: geometry_center_xy(roots[0]), travels)
     for s in seats:
         s['z'] += shift
     return {'seats': seats, 'origin_shift': shift}
@@ -329,9 +348,9 @@ def scan_marker_nifs(meshes_dir):
 def furniture_model_info_job(args):
     """(key, info, error) for one NIF — module-level so it is picklable for
     ProcessPoolExecutor (PyFFI parsing is CPU-bound; processes scale it)."""
-    key, nif_path = args
+    key, nif_path, travels = args
     try:
-        return key, furniture_model_info(nif_path), None
+        return key, furniture_model_info(nif_path, travels), None
     except Exception as exc:
         return key, None, f'{type(exc).__name__}: {exc}'
 

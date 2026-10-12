@@ -2,15 +2,33 @@
 Morrowind's own menu art, read from the player's install at build time.
 
 🛑 NOTHING HERE IS COMMITTED. The textures are Bethesda's, so they are read
-from the registered Morrowind install and composed into the generated SWF,
+from the registered installs that hold them (`menu_art.art_sources`: Morrowind,
+Arktwend, ...) and composed into the generated SWF,
 which is itself a build artifact. The repo carries the LAYOUT (which texture
 goes where, at what size) and never the pixels.
+
+`MorrowindArt` binds it all to one install: the art object every menu
+generator takes, which `skyrim_menu_art.SkyrimArt` stands in for.
 
 See: docs/commentary/morrowind_runtime.md#the-real-menu
 """
 
-from asset_convert.sources.morrowind_assets import find_archived_file
+from PIL import Image, ImageChops
+
 from asset_convert.ui.ui_menus import to_image
+
+#: `[FontColor]` from Morrowind.ini, under its own key names; the plugin gets this same table.
+FONT_COLORS = {
+    'normal': (202, 165, 96), 'normal_over': (223, 201, 159),
+    'normal_pressed': (243, 237, 221), 'link': (112, 126, 207),
+    'link_over': (143, 155, 218), 'link_pressed': (175, 184, 228),
+    'answer': (150, 50, 30), 'answer_over': (223, 201, 159),
+    'answer_pressed': (243, 237, 221), 'header': (223, 201, 159),
+    'notify': (223, 201, 159), 'disabled': (179, 168, 135),
+}
+
+#: `[FontColor] color_background`, at the window's own alpha.
+COLOR_BACKGROUND = (0, 0, 0, 245)
 
 #: Border thickness in pixels; every `menu_thick_border_*` edge is 4 px.
 BORDER = 4
@@ -18,8 +36,9 @@ BORDER = 4
 #: MW_Box's thin border is 2 px, not 4.
 BOX_BORDER = 2
 
-#: Stored-path prefix for every UI texture.
-_TEX = 'textures' + chr(92)
+#: The folders UI art is stored under: frames and bars, and item icons such as the gold coin.
+TEXTURES = 'textures'
+ICONS = 'icons'
 
 #: The 9-slice window frame, keyed by the corner or edge each texture fills.
 FRAME = {
@@ -75,26 +94,30 @@ BUTTON = {
 
 
 class MissingArtError(RuntimeError):
-    """The Morrowind install has no such texture, or is not registered."""
+    """No registered install has such a texture."""
 
 
-def load(export_root, name: str):
-    """One UI texture as a Pillow RGBA image, by bare name (no dir, no ext)."""
-    path = find_archived_file(export_root, _TEX + name + '.dds')
-    if path is None:
+# ---------------------------------------------------------------------------
+# The art, composed
+# ---------------------------------------------------------------------------
+
+def load(files, name: str, folder: str = TEXTURES):
+    """One UI texture as a Pillow RGBA image, by its name under `folder` (no
+    ext), read from `files` (`menu_art.FileChain`: the installs holding the art)."""
+    data = files.read(folder + chr(92) + name + '.dds') if files else None
+    if data is None:
         raise MissingArtError(
             f'{name}.dds not found -- register a Morrowind install, or the '
             f'menu cannot be built')
-    return to_image(path.read_bytes())
+    return to_image(data)
 
 
 def _edge(img, width: int, height: int):
     """An edge texture resampled to the run it has to cover."""
-    from PIL import Image
     return img.resize((max(1, width), max(1, height)), Image.LANCZOS)
 
 
-def compose_frame(export_root, width: int, height: int, parts=None,
+def compose_frame(files, width: int, height: int, parts=None,
                   border: int = BORDER, fill=None):
     """Morrowind's bordered panel, composed into ONE `width` x `height` image.
 
@@ -103,10 +126,8 @@ def compose_frame(export_root, width: int, height: int, parts=None,
     the four edges resample, along the one axis they run.
     See: docs/commentary/morrowind_runtime.md#one-bitmap
     """
-    from PIL import Image
-
     parts = parts or FRAME
-    art = {key: load(export_root, name) for key, name in parts.items()}
+    art = {key: load(files, name) for key, name in parts.items()}
     panel = Image.new('RGBA', (width, height), fill or (0, 0, 0, 0))
 
     inner_w = max(1, width - 2 * border)
@@ -123,17 +144,15 @@ def compose_frame(export_root, width: int, height: int, parts=None,
     return panel
 
 
-def compose_box(export_root, width: int, height: int, fill=None):
+def compose_box(files, width: int, height: int, fill=None):
     """MW_Box: the thin-bordered inset the topic list and history sit in."""
-    return compose_frame(export_root, width, height, parts=BOX,
+    return compose_frame(files, width, height, parts=BOX,
                          border=BOX_BORDER, fill=fill)
 
 
 def _tile(img, width: int, height: int):
     """`img` repeated across `width`, resampled only in height, so a pattern
     keeps its pitch however long the run."""
-    from PIL import Image
-
     out = Image.new('RGBA', (max(1, width), max(1, height)), (0, 0, 0, 0))
     strip = img.resize((img.width, max(1, height)), Image.LANCZOS)
     for x in range(0, width, img.width):
@@ -141,26 +160,24 @@ def _tile(img, width: int, height: int):
     return out
 
 
-def compose_head(export_root, width: int, height: int = HEAD_HEIGHT):
+def compose_head(files, width: int, height: int = HEAD_HEIGHT):
     """HB_ALL: the patterned plate behind the title and the Goodbye button.
 
     Its middle is `menu_head_block_middle` TILED rather than stretched -- that
     is the woven pattern running across the caption bar.
     """
-    from PIL import Image
-
     panel = Image.new('RGBA', (width, height), (0, 0, 0, 0))
-    middle = load(export_root, 'menu_head_block_middle')
+    middle = load(files, 'menu_head_block_middle')
     panel.paste(_tile(middle, width - 2 * HEAD_BORDER, height - 2 * HEAD_BORDER),
                 (HEAD_BORDER, HEAD_BORDER))
-    panel.alpha_composite(compose_frame(export_root, width, height,
+    panel.alpha_composite(compose_frame(files, width, height,
                                         parts=HEAD, border=HEAD_BORDER))
     return panel
 
 
-def compose_button(export_root, width: int, height: int):
+def compose_button(files, width: int, height: int):
     """MW_Button: its own 4 px frame, over the window's dark background."""
-    return compose_frame(export_root, width, height, parts=BUTTON,
+    return compose_frame(files, width, height, parts=BUTTON,
                          border=BORDER)
 
 
@@ -176,22 +193,20 @@ ARROW = 10
 _BLACK = (0, 0, 0, 255)
 
 
-def compose_scrollbar(export_root, height: int):
+def compose_scrollbar(files, height: int):
     """MW_VScroll without its thumb: arrow boxes at both ends, track between.
 
     The thumb is composed separately (`compose_thumb`) because it moves.
     """
-    from PIL import Image
-
     panel = Image.new('RGBA', (SCROLL_W, height), (0, 0, 0, 0))
     track_h = height - SCROLL_TRACK[0] - SCROLL_TRACK[1]
-    panel.alpha_composite(compose_box(export_root, SCROLL_W, track_h,
+    panel.alpha_composite(compose_box(files, SCROLL_W, track_h,
                                       fill=_BLACK), (0, SCROLL_TRACK[0]))
     for name, top in (('menu_scroll_up', 0),
                       ('menu_scroll_down', height - SCROLL_END)):
-        panel.alpha_composite(compose_box(export_root, SCROLL_W, SCROLL_END,
+        panel.alpha_composite(compose_box(files, SCROLL_W, SCROLL_END,
                                           fill=_BLACK), (0, top))
-        art = load(export_root, name)
+        art = load(files, name)
         arrow = art.crop(art.split()[-1].getbbox()).resize((ARROW, ARROW),
                                                            Image.LANCZOS)
         panel.alpha_composite(arrow, ((SCROLL_W - ARROW) // 2,
@@ -199,38 +214,158 @@ def compose_scrollbar(export_root, height: int):
     return panel
 
 
-def compose_thumb(export_root, width: int, height: int):
+def compose_thumb(files, width: int, height: int):
     """MW_ScrollTrackV: the thumb, a thin-bordered black block."""
-    return compose_box(export_root, width, height, fill=_BLACK)
+    return compose_box(files, width, height, fill=_BLACK)
 
 
-def compose_line(export_root, width: int):
+def compose_line(files, width: int):
     """MW_HLine: the 2 px rule that separates services from topics."""
-    return _edge(load(export_root, 'menu_thin_border_top'), width, 2)
+    return _edge(load(files, 'menu_thin_border_top'), width, 2)
 
 
-def compose_cap(export_root, side: str, height: int = HEAD_HEIGHT):
+def compose_cap(files, side: str, height: int = HEAD_HEIGHT):
     """One 2 px end cap of HB_ALL; `side` is 'left' or 'right'."""
-    return _edge(load(export_root, HEAD[side]), HEAD_BORDER, height)
+    return _edge(load(files, HEAD[side]), HEAD_BORDER, height)
 
 
-def compose_bar(export_root, width: int, height: int, fraction: float):
+def compose_stat_bar(files, width: int, height: int, rgb: tuple):
+    """MW_Progress_Red/Blue/Green, full: `menu_bar_gray` tinted `rgb` inside a box.
+
+    OpenMW's track skins color the gray bar with the ini's `color_health`,
+    `color_magic` and `color_fatigue`; the value is drawn over it.
+    """
+    panel = Image.new('RGBA', (width, height), (0, 0, 0, 255))
+    inner = (width - 2 * BOX_BORDER, height - 2 * BOX_BORDER)
+    gray = _edge(load(files, 'menu_bar_gray').convert('RGBA'), *inner)
+    tint = Image.new('RGBA', inner, (*rgb, 255))
+    panel.paste(ImageChops.multiply(gray, tint), (BOX_BORDER, BOX_BORDER))
+    panel.alpha_composite(compose_box(files, width, height))
+    return panel
+
+
+def compose_bar(files, width: int, height: int, fraction: float):
     """The disposition bar: `menu_bar_blue` filled to `fraction`, in a box.
 
     The fill is dimmed so the value printed over it stays readable; Morrowind
     prints the number across the whole bar, not just the filled part.
     """
-    from PIL import Image
-
     panel = Image.new('RGBA', (width, height), (0, 0, 0, 255))
     inner = width - 2 * BOX_BORDER
     filled = max(0, min(inner, round(inner * fraction)))
     if filled:
-        bar = load(export_root, 'menu_bar_blue').convert('RGBA')
+        bar = load(files, 'menu_bar_blue').convert('RGBA')
         dim = Image.new('RGBA', (filled, height - 2 * BOX_BORDER),
                         (0, 0, 0, 90))
         piece = _edge(bar, filled, height - 2 * BOX_BORDER)
         piece.alpha_composite(dim)
         panel.paste(piece, (BOX_BORDER, BOX_BORDER))
-    panel.alpha_composite(compose_box(export_root, width, height))
+    panel.alpha_composite(compose_box(files, width, height))
     return panel
+
+
+# ---------------------------------------------------------------------------
+# The art object
+# ---------------------------------------------------------------------------
+
+#: Store<ESM::Attribute>'s icon per attribute, under icons\k, in TES3 order.
+ATTRIBUTE_ICONS = ('attribute_strength', 'attribute_int', 'attribute_wilpower',
+                   'attribute_agility', 'attribute_speed', 'attribute_endurance',
+                   'attribute_personality', 'attribute_luck')
+
+#: Each Skyrim skill (actor value 6..23) as Morrowind pictures it, under icons\k (OpenMW `mwworld/store.cpp`).
+SKILL_ICONS = {6: 'combat_longblade', 7: 'combat_axe', 8: 'stealth_marksman',
+               9: 'combat_block', 10: 'combat_armor', 11: 'combat_heavyarmor',
+               12: 'stealth_lightarmor', 13: 'stealth_sneak', 14: 'stealth_security',
+               15: 'stealth_sneak', 16: 'magic_alchemy', 17: 'stealth_speechcraft',
+               18: 'magic_alteration', 19: 'magic_conjuration', 20: 'magic_destruction',
+               21: 'magic_illusion', 22: 'magic_restoration', 23: 'magic_enchant'}
+
+#: The cover the plugin slides behind a caption: opaque, over the window's own black.
+COVER_RGBA = (0, 0, 0, 255)
+
+
+class MorrowindIcons:
+    """Morrowind's attribute and skill icons, level-up class images and gold coin."""
+
+    def __init__(self, files):
+        self.root = files
+
+    def attribute(self, index: int):
+        """Attribute `index`'s icon (TES3 order)."""
+        return load(self.root, 'k' + chr(92) + ATTRIBUTE_ICONS[index], ICONS)
+
+    def skill(self, av: int):
+        """Skyrim skill `av`'s nearest Morrowind skill icon."""
+        return load(self.root, 'k' + chr(92) + SKILL_ICONS[av], ICONS)
+
+    def class_image(self, name: str):
+        """The level-up picture for class image `name`, at its own 256x128."""
+        return load(self.root, 'levelup' + chr(92) + name)
+
+    def coin(self):
+        """The gold coin the level-up dialog spends."""
+        return load(self.root, 'tx_goldicon', ICONS)
+
+    def birthsigns(self) -> dict:
+        """{sign key: picture}; imported late, as menu_art imports this module."""
+        from asset_convert.ui.menu_art import sign_pictures
+        return sign_pictures(self.root, TEXTURES + chr(92) + 'birthsigns')
+
+
+class MorrowindArt:
+    """Morrowind's look: each `compose_*` above bound to one install, and its colors.
+
+    `skyrim_menu_art.SkyrimArt` has the same members, so a menu changes style
+    by being built with the other object.
+    See: docs/commentary/morrowind_runtime.md#menu-styles
+    """
+
+    style = 'morrowind'
+    colors = FONT_COLORS
+    background = COLOR_BACKGROUND
+    cover = COVER_RGBA
+
+    def __init__(self, files, icons=None):
+        self.root = files
+        self.icons = icons or MorrowindIcons(files)
+
+    def compose_frame(self, width: int, height: int, fill=None):
+        """The window frame."""
+        return compose_frame(self.root, width, height, fill=fill)
+
+    def compose_box(self, width: int, height: int, fill=None):
+        """An inset pane."""
+        return compose_box(self.root, width, height, fill=fill)
+
+    def compose_head(self, width: int, height: int = HEAD_HEIGHT):
+        """The caption plate."""
+        return compose_head(self.root, width, height)
+
+    def compose_button(self, width: int, height: int):
+        """A button."""
+        return compose_button(self.root, width, height)
+
+    def compose_scrollbar(self, height: int):
+        """A scrollbar without its thumb."""
+        return compose_scrollbar(self.root, height)
+
+    def compose_thumb(self, width: int, height: int):
+        """A scrollbar thumb."""
+        return compose_thumb(self.root, width, height)
+
+    def compose_line(self, width: int):
+        """The list rule."""
+        return compose_line(self.root, width)
+
+    def compose_cap(self, side: str, height: int = HEAD_HEIGHT):
+        """A caption end cap."""
+        return compose_cap(self.root, side, height)
+
+    def compose_stat_bar(self, width: int, height: int, rgb: tuple):
+        """A full Health/Magicka/Fatigue bar."""
+        return compose_stat_bar(self.root, width, height, rgb)
+
+    def compose_bar(self, width: int, height: int, fraction: float):
+        """The disposition bar."""
+        return compose_bar(self.root, width, height, fraction)

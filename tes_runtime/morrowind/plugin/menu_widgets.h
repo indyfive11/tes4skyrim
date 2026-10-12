@@ -8,8 +8,17 @@
 #include <string>
 
 #include "menu.h"
+#include "menu_layout.h"
 
 namespace tesruntime::mw {
+
+// The text colors the plugin draws with: Skyrim's palette when the last menu
+// opened carries the movie's SkyrimStyle marker, else Morrowind's.
+// See: docs/commentary/morrowind_runtime.md#menu-styles
+const layout::Palette& Colors();
+
+// Reads `menu`'s movie for the marker. Each menu calls it as it opens.
+void PickColors(CustomMenu& menu);
 
 // A rectangle in stage pixels.
 struct Rect {
@@ -47,5 +56,11 @@ struct ThumbDrag {
 // whole line's.
 double CharWidth(char c);
 double TextWidth(const std::string& text);
+
+// An HTML field's markup: `rgb` as "#RRGGBB"; text escaped, with each newline
+// a <br> (which the field counts as ONE character); and that text in a color.
+std::string HexColor(unsigned rgb);
+std::string HtmlText(const std::string& text);
+std::string HtmlColored(const std::string& text, unsigned rgb);
 
 }  // namespace tesruntime::mw

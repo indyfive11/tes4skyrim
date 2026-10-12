@@ -26,22 +26,33 @@ FIXTURE_TYPES = ('STAT.txt', 'ACTI.txt', 'LIGH.txt', 'CONT.txt', 'DOOR.txt')
 #: Fixture sub-map key inside the wearable plan; norm_model_path never emits it.
 FIXTURE_KEY = '*fixture_models*'
 
+#: The fixtures Morrowind animates from an `x<model>.kf` -- OpenMW's `useAnim()` classes.
+ANIMATED_TYPES = ('ACTI.txt', 'LIGH.txt', 'CONT.txt', 'DOOR.txt')
 
-def fixture_model_ids(export_dir) -> dict:
-    """Map placed-fixture record FormID -> mesh-relative NIF path."""
+#: Animated-fixture sub-map key inside the wearable plan.
+ANIMATED_KEY = '*animated_models*'
+
+
+def fixture_model_ids(export_dir, types=FIXTURE_TYPES, field='FormID') -> dict:
+    """Map placed-fixture record `field` (FormID or EditorID) -> mesh-relative NIF path."""
     out = {}
     export_dir = Path(export_dir)
-    for name in FIXTURE_TYPES:
+    for name in types:
         for rec in iter_records(export_dir / name):
             model = rec.get('Model.MODL', '').strip()
             if model:
-                out[rec.get('FormID', '')] = norm_model_path(model)
+                out[rec.get(field, '')] = norm_model_path(model)
     return out
 
 
 def build_fixture_models(export_dir) -> set:
     """Every mesh-relative NIF path a placed-fixture record names."""
     return set(fixture_model_ids(export_dir).values())
+
+
+def build_animated_models(export_dir) -> set:
+    """Every mesh-relative NIF path an ACTI, LIGH, CONT or DOOR record names."""
+    return set(fixture_model_ids(export_dir, ANIMATED_TYPES).values())
 
 
 def _fixture_key(plan: dict, src_path, meshes_root):
@@ -68,6 +79,12 @@ def latch_fixture_model(plan: dict, src_path, meshes_root) -> None:
 def mesh_is_fixture() -> bool:
     """Whether the NIF being converted is named by a placed-fixture record."""
     return _LATCH[0] is not None
+
+
+def mesh_uses_anim() -> bool:
+    """Whether the NIF being converted is named by a record Morrowind animates."""
+    latched = _LATCH[0]
+    return latched is not None and latched[0] in latched[1].get(ANIMATED_KEY, ())
 
 
 def latched_fixture():

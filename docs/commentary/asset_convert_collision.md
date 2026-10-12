@@ -128,7 +128,11 @@ single-box collision with an item inside it is replaced by the collision the
 render geometry builds (the path a mesh with no RootCollisionNode already
 takes). Every other box -- ramps, anchors, blockers, and shelves nobody stocks --
 ships as authored. A false positive costs nothing: render-geometry collision is
-the shape the player sees.
+the shape the player sees -- unless the render mesh has nothing collidable.
+`editormarker_box_01` (an `MRK` root, used as an invisible blocker) is placed
+with an item inside it by a plugin mastering the Morroblivion patch; its render shapes are all markers, so
+replacing its box shipped no collision at all. A box is replaced only when the
+render mesh yields at least one collidable shape.
 
 Measured on `Morrowind.esm` (2,680 meshes with a RootCollisionNode, 289 of them
 a single 12-triangle node -- the 266 above plus those whose corners are not
@@ -143,13 +147,16 @@ one ramp replaced, `ex_de_shack_steps`, has an item placed on a step inside it.
   naming it). The mesh converts with the plugin whose record names it, and that
   plugin may place none of it: `Furn_De_R_Bookshelf_02` is a STAT the
   Morroblivion compatibility patch defines (`029EE724`) and places 0 times;
-  Morrowind.esm places it 196 times (as `019EE724`), Tribunal 39, and the
-  books on it are Morrowind_ob.esm BOOKs. Reading the patch alone kept the box.
-- The generated patch reads only `PATCH_SOURCES` (Morrowind, Tribunal,
-  Bloodmoon): it is a patch OF those ESMs, and every other plugin mastering it
-  (Tamriel Rebuilt, Tamriel Data, ...) is a third-party mod that does not
-  decide the vanilla meshes' collision. Patch index: 113 fixture models from
-  the three sources, in 1.0 s.
+  the vanilla ESMs place it 235 times. Reading the patch alone kept the box.
+- The generated patch reads its source ESMs (Morrowind, Tribunal, Bloodmoon)
+  straight from the registered Data Files folder, as `export_patch` does
+  (`resting_items_morrowind`), never their exports: the patch is built before
+  any plugin placing its records, and the authored-mode Morrowind.esm export
+  masters nothing and carries its own FormIDs (the shelf is `00D736AB` there),
+  so a FormID join against it found 0 fixture models. Matching is by
+  Morrowind object id, which the patch keeps as EditorID; cells are keyed by
+  interior name or exterior grid; deleted references are skipped. 146 fixture
+  models in 2.6 s.
 - A raw FormID's index byte counts into ITS dump's master list, so every id is
   compared as (owning plugin, object id): the byte names `Master[i]`, or the
   dump itself when it equals the master count. Items are the CLUTTER/WEARABLE
@@ -1006,17 +1013,60 @@ basis the 2010 layout requires, since a zero motor ships a singular basis.
 
 ## <a id="nested-and-multiple-collision"></a>Nested and multiple collision
 
-**Code:** `asset_convert/collision/hoist.py`
+**Code:** `asset_convert/collision/collision.py` (`collision_owner`,
+`hoist_collision`), `asset_convert/nif/nif_converter.py`
+(`_hoist_root_collision`), `asset_convert/collision/collision_falloutnv.py`
+(`merge_static_parts`)
 
 Skyrim reads the `bhkCollisionObject` on the root BSFadeNode. Oblivion and
-FO3/FNV meshes hang collision off child NiNodes, sometimes several (an SCOL has
-one per part) and sometimes two levels down. `hoist_collision()` moves every
-descendant collision object onto the root, carrying each part's transform
-relative to the root: one part goes into its body (`bhkRigidBodyT`) or, for a
-phantom, a `bhkTransformShape`; several static parts (`MO_SYS_FIXED`) merge
-into one root body holding a `bhkListShape` of transform-wrapped shapes. When
-the parts cannot be merged the first is hoisted and the rest are counted in
-`PARTS_DROPPED` for the conversion report.
+FO3/FNV meshes hang collision off child NiNodes, sometimes several and
+sometimes several levels down. `hoist_collision()` moves ONE of them, the
+first `collision_owner()` finds depth-first, onto the root; any others stay
+on their own nodes. For an FO3/FNV source, `merge_static_parts()` runs first
+and, when every collision part is a fixed packed body, merges them all into
+one root body instead.
+
+<a id="every-collision-owner"></a>**The animation gate checks the node the
+hoist will move.** `_hoist_root_collision` skips the hoist when that node is
+moved by animation, so a swinging part keeps its collision on the node its
+animation drives. The gate used to run its own search, reverse depth-first,
+while the hoist searched forward. Where the two met different owners the gate
+approved a still frame and the hoist then moved the moving leaf's collision
+onto the static root: the leaf swung open and its collision stayed shut.
+Census of every exported mesh with two or more collision owners, one of them
+animated (unconstrained): the hoist took an animated owner past a still check
+in 14 Oblivion meshes (the five `ruininteriors/doors` gates, `rfswitch01`,
+`arfloorsmasher01`, `obturretbig01`, `obminetrap01`, the siege crawler
+activator, the Kvatch `postsmash01`/`woodpilecrumble01`, `blackwoodpump02`, a
+citadel ground plate), 12 Nehrim and 22 FalloutNV (`nv_fencepickburntgate01`,
+the vault sliding doors, office doors, `junkdoor`, `vendortrunk01`). Both now
+call `collision_owner()`. The reverse case also changes: 17 Oblivion, 10
+Nehrim and 14 FalloutNV meshes (torture cages, display cases, door frames,
+fridges) where the old gate hit a moving part first and skipped the whole mesh
+now hoist their first, still part, as the 40 Oblivion meshes whose two searches
+already agreed on a still part always did.
+
+<a id="nested-owner-transform"></a>**A nested owner carries its whole
+transform relative to the root** (`_frame_in_root`). The hoist baked only the
+owner's own local transform, so an owner under a moved parent lost that
+parent's offset. `ctorturecage01`'s wall sits on `wall02` (z -296.7) under
+`chain01` (z -798.1): hoisted, its collision landed 798 units above the cage.
+`arwelkydcage01`'s cage collision sat at z -93..1 while the cage hangs at
+-522..-428. A direct child is still baked from its own node, so its output is
+byte-identical; only a nested owner under a moved ancestor changes. Census:
+30 Oblivion, 33 Nehrim and 19 FalloutNV meshes have one; the animated ones
+and creature skeletons never reach the hoist.
+
+**The extractor applies a body's own transform** (`collision_extract._body_transform`).
+It placed a body by its node chain only, on the assumption that conversion
+folds every `bhkRigidBodyT` into the shape. That holds for CMS, which
+`_bake_body_transform_into_tris` folds and demotes to a plain body, but not
+for convex hulls and primitives, which keep the transform on the body. So
+every hoisted non-CMS body with an offset reached the navmesh at its owner's
+origin: the hoisted cage wall extracted at z -6..222 while the converted file
+holds it at -1100..-873. The body transform now applies before the node
+chain; a CMS body carries none, so its extraction is unchanged. The fix bumped
+`COLLISION_SCHEMA_VERSION` to 7 (`TESCOL10`).
 
 ## <a id="collision-extraction-scale"></a>Collision extraction scale
 

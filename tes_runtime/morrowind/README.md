@@ -33,6 +33,15 @@ what they said in Morrowind for the same reasons.
 Skyrim's own characters and every other converted game keep Skyrim's normal
 dialogue; only Morrowind characters use this window.
 
+**Optional, and off unless you turn it on:** Morrowind's character sheet
+(C, or the **CHARACTER** button in Skyrim's perks menu) and its level-up
+screen, where each Skyrim level-up also lets you raise three Morrowind
+attributes. To try it, set `Enabled=1` in the
+`Data\SKSE\Plugins\MorrowindRuntime\MorrowindRuntime.ini` that comes with
+TESRuntime. `Hotkey` there is the
+[virtual-key code](https://learn.microsoft.com/windows/win32/inputdev/virtual-key-codes)
+of the key that opens it from the perks menu, in decimal (67 is C).
+
 ## Should I keep it enabled?
 
 Yes, if you play Morrowind or Tamriel Rebuilt. Without it, Morrowind's

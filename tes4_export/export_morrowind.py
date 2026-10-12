@@ -35,9 +35,8 @@ from .morrowind_markers import MarkerBuilder, marker_lines
 from .morrowind_travel import travel_marker_records
 from .morrowind_pathgrid import pathgrid_records
 from .morrowind_region import region_records
-from .morrowind_grass import (GrassTally, grass_records, is_grass_model,
-                              ltex_grass_lines, master_ltex_fields,
-                              master_texture_grid)
+from .morrowind_grass import (emit_groundcover, grass_master_list,
+                              master_ltex_records, register_groundcover)
 from .morrowind_land import (MAX_QUAD_LAYERS, decode_heights,
                              decode_textures, encode_heights, inner_patch,
                              layer_lines, ltex_index, pad_grid,
@@ -60,6 +59,7 @@ from .record_types.morrowind_magic import (MORROWIND_MAGIC_EXPORTERS,
                                            game_settings,
                                            synthesized_effects)
 from .record_types.morrowind_scripts import MORROWIND_SCRIPT_EXPORTERS
+from .record_types.common import escape_value
 from .tes3_reader import (file_type, get_subrecord, is_tes3, read_file,
                           read_masters)
 
@@ -157,14 +157,16 @@ class MorrowindContext:
         self.master_dirs = []
         self.effect_ranges = {}
         self.game_settings = {}
-        self._init_groundcover()
+        self._init_terrain()
         self._init_barks()
 
-    def _init_groundcover(self) -> None:
-        """The groundcover plugin's own state, empty until one is loaded."""
+    def _init_terrain(self) -> None:
+        """Where this plugin sits among the converted exports, and its land textures."""
         self.grass = None
-        self.grass_models = {}
-        self.grass_ltex = {}
+        self.folded_ltex = set()
+        self.export_root = ''
+        self.own_dir = ''
+        self.master_names = []
 
     def _init_barks(self) -> None:
         """Who can speak a voiced bark, and the audiences already resolved.
@@ -459,6 +461,8 @@ def load_context(export_root: str, masters=(), declared=()) -> MorrowindContext:
             ctx.doors_by_cell.setdefault(cell, []).extend(entries)
     ctx.master_bounds = _master_world_bounds(paths)
     ctx.master_dirs = master_remaps
+    ctx.master_names = names
+    ctx.export_root = export_root
     return ctx
 
 
@@ -587,8 +591,8 @@ def export_plugin(source_path: str, export_dir: str, masters=()) -> dict:
     other stage uses, so nothing downstream needs to know the source was TES3.
     """
     plugin = os.path.basename(source_path)
-    ctx = load_context(export_dir, masters)
     header, records = read_file(source_path)
+    ctx = _plugin_context(export_dir, masters, records, plugin)
     ctx.body_models = load_body_models(source_path, records, export_dir)
     own_meshes = assets_for(record_dir(export_dir, plugin)) / 'meshes'
     ctx.morroblivion = MorroblivionModels(
@@ -601,18 +605,39 @@ def export_plugin(source_path: str, export_dir: str, masters=()) -> dict:
     if out.get('CREA'):
         print(f"  Creatures: {owned} of {len(out['CREA'])} converted here, "
               f"the rest from a master")
-    remapped, shifted, pitched = remap_vanilla_models(out, ctx)
+    remapped, shifted, corrected = remap_vanilla_models(out, ctx)
     if remapped:
         print(f'  Morroblivion models: {remapped} vanilla mesh references remapped'
-              + (f', {shifted} re-seated' if shifted else '')
-              + (f', {pitched} refs axis-pitched' if pitched else ''))
+              + (f', {shifted} origin-shifted' if shifted else '')
+              + (f', {corrected} ref corrections (pitch/Z)' if corrected else ''))
     out_dir = str(record_dir(export_dir, plugin))
     counts = write_export(out, out_dir)
-    write_header(out_dir, _master_list(masters), sum(counts.values()),
+    write_header(out_dir, ctx.master_names, sum(counts.values()),
                  f'Converted from {plugin}', file_type(header) & 1)
     return {'plugin': plugin, 'output': out_dir, 'counts': counts,
             'dropped': sum(ctx.unresolved.values()),
             'unlinked_doors': ctx.unlinked_doors}
+
+
+def _plugin_context(export_dir: str, masters, records,
+                    plugin: str) -> MorrowindContext:
+    """The context, its master list grown by every file owning ground under grass.
+
+    The list is final before any FormID is minted: a groundcover binding
+    overrides the texture under its clumps, so that texture's file must be one.
+    See: docs/commentary/tes4_export_morrowind.md#land-texture-fold
+    """
+    ctx = load_context(export_dir, masters)
+    ctx.own_dir = str(record_dir(export_dir, plugin))
+    names = grass_master_list(export_dir, ctx.master_names,
+                              register_groundcover(records, ctx))
+    if names == ctx.master_names:
+        return ctx
+    print(f"  Groundcover: listing {', '.join(n for n in names if n not in ctx.master_names)}"
+          ' as masters, for the textures under its grass')
+    grown = load_context(export_dir, masters, declared=names)
+    grown.own_dir, grown.grass = ctx.own_dir, ctx.grass
+    return grown
 
 
 def _master_mesh_roots(export_dir: str, masters) -> list:
@@ -660,7 +685,6 @@ def convert_plugin(records, ctx: MorrowindContext) -> dict:
     register_filled_soulgems(records, ctx)
     _register_land_textures(records, ctx)
     _register_land_grids(records, ctx)
-    _register_groundcover(records, ctx)
     register_sound_gens(records, ctx)
 
     out = {sig: [] for sig in
@@ -680,7 +704,7 @@ def convert_plugin(records, ctx: MorrowindContext) -> dict:
     out.setdefault('MGEF', []).extend(magic_effect_records(records, ctx))
     out.setdefault('SLGM', []).extend(
         filled_soulgem_records(records, ctx))
-    _emit_groundcover(out, ctx)
+    emit_groundcover(out, ctx)
     return out
 
 
@@ -725,35 +749,6 @@ def _base_key(rec) -> str:
     if index is None or len(index.data) < 4:
         return ''
     return effect_editor_id(struct.unpack_from('<i', index.data, 0)[0])
-
-
-def _emit_groundcover(out: dict, ctx: MorrowindContext) -> None:
-    """Turn the tallied placements into GRAS records and LTEX bindings.
-
-    The LTEX records are OVERRIDES of the master's own: a groundcover plugin
-    defines no texture itself, and the binding has to land on the texture the
-    terrain actually names.
-    See: docs/commentary/tes4_export_morrowind.md#groundcover-as-grass
-    """
-    if ctx.grass is None:
-        return
-    placed = sum(ctx.grass.pairs.values())
-    bindings = ctx.grass.bindings()
-    records = grass_records(ctx.grass, ctx.grass_models, ctx.grass_id)
-    if not records:
-        print('  Groundcover: no grass survived binding; %d placements dropped'
-              % (placed + ctx.grass.unplaced))
-        return
-    out['GRAS'] = records
-    out.setdefault('LTEX', [])
-    for texture in sorted(bindings):
-        lines = ltex_grass_lines(bindings, texture, ctx.grass_id,
-                                 ctx.grass_ltex.get(texture.upper()))
-        if lines:
-            out['LTEX'].append((texture, lines))
-    print('  Groundcover: %d placements -> %d GRAS over %d textures '
-          '(%d off-terrain)'
-          % (placed, len(records), len(bindings), ctx.grass.unplaced))
 
 
 def map_marker_records(ctx: MorrowindContext) -> list:
@@ -813,6 +808,10 @@ def _register_land_textures(records, ctx: MorrowindContext) -> None:
     A LAND names its textures by index, so the whole table has to exist
     before the first terrain record is emitted.
     """
+    shared = {}
+    for fid, fields in master_ltex_records(ctx.master_dirs).items():
+        shared.setdefault(fields.get('EditorID', '').lower(),
+                          (fid, fields.get('ICON', '').lower()))
     for rec in records:
         if rec.type != 'LTEX' or rec.deleted:
             continue
@@ -820,36 +819,23 @@ def _register_land_textures(records, ctx: MorrowindContext) -> None:
         if intv is None or len(intv.data) < 4:
             continue
         ctx.register_ltex(struct.unpack_from('<I', intv.data, 0)[0],
-                          ctx.resolve(rec.record_id, 'LTEX'))
+                          _land_texture_id(rec, ctx, shared))
 
 
-def _register_groundcover(records, ctx: MorrowindContext) -> None:
-    """Note every groundcover static, and open a tally over the master terrain.
+def _land_texture_id(rec, ctx: MorrowindContext, shared: dict) -> str:
+    """The FormID one LTEX converts to: a master's when it is that same texture.
 
-    A plugin with no grass statics leaves `ctx.grass` None, which keeps every
-    ordinary Morrowind plugin on the untouched path.
-    See: docs/commentary/tes4_export_morrowind.md#groundcover-as-grass
+    TES3 re-declares a master's texture only because a LAND can name no other
+    plugin's; the same id over the same image is the master's record.
+    See: docs/commentary/tes4_export_morrowind.md#land-texture-fold
     """
-    for rec in records:
-        if rec.type != 'STAT' or rec.deleted:
-            continue
-        model = get_subrecord(rec, 'MODL')
-        path = '' if model is None else model.data.split(
-            bytes(1))[0].decode('cp1252', 'replace')
-        if is_grass_model(path):
-            ctx.grass_models[rec.record_id] = path
-    if not ctx.grass_models:
-        return
-    grid = {}
-    for master, remap in ctx.master_dirs:
-        for cell, quads in master_texture_grid(master, remap).items():
-            grid.setdefault(cell, quads)
-    ctx.grass = GrassTally(grid)
-    for master, remap in ctx.master_dirs:
-        for fid, edid in master_ltex_fields(master, remap).items():
-            ctx.grass_ltex.setdefault(fid, edid)
-    print('  Groundcover: %d grass statics over %d textured cells'
-          % (len(ctx.grass_models), len(grid)))
+    fid, icon = shared.get(escape_value(rec.record_id).lower(), ('', None))
+    own = [line[len('ICON='):].lower() for line in EXPORTERS['LTEX'](rec, ctx)
+           if line.startswith('ICON=')]
+    if fid and own == [icon]:
+        ctx.folded_ltex.add(rec.record_id.lower())
+        return fid
+    return ctx.resolve(rec.record_id, 'LTEX')
 
 
 def _register_land_grids(records, ctx: MorrowindContext) -> None:
@@ -912,7 +898,9 @@ def _is_convertible(rec, ctx: MorrowindContext) -> bool:
     """Whether this plugin writes a base record of its own for `rec`."""
     return (rec.type in EXPORTERS
             and marker_formid(rec.record_id) is None
-            and ctx.index.lookup(rec.record_id) is None)
+            and ctx.index.lookup(rec.record_id) is None
+            and not (rec.type == 'LTEX'
+                     and rec.record_id.lower() in ctx.folded_ltex))
 
 
 def _collect_cell(rec, ctx: MorrowindContext, out: dict) -> None:
@@ -1153,25 +1141,24 @@ def _exterior_cells(cell, ctx: MorrowindContext) -> tuple:
             lines.append(f'FULL={cell.name}')
         if not ctx.claim_exterior(grid):
             cells.append((form_id, lines))
-        placements.extend(_emit_refs(held, form_id, ctx))
+        placements.extend(_emit_refs(held, form_id, ctx, ctx.grass))
     return cells, placements
 
 
-def _emit_refs(refs, parent_cell: str, ctx: MorrowindContext) -> list:
+def _emit_refs(refs, parent_cell: str, ctx: MorrowindContext,
+               grass=None) -> list:
     """Every emittable placement in one cell, as (signature, FormID, lines).
 
     Keyed on the owning cell's own FormID plus the placement's index, which is
     unique because cell ids already are -- a cell NAME is not, since Morrowind
     leaves most exterior cells unnamed. A placed NPC is an ACHR and a placed
     creature an ACRE; everything else, leveled creatures included, is a REFR.
+    `grass`, the exterior's tally, takes the groundcover it can plant.
     See: docs/commentary/tes4_export_morrowind.md#actors-and-placements
     """
     out = []
     for ref in refs:
-        if ref.deleted:
-            continue
-        if ctx.grass is not None and ref.record_id in ctx.grass_models:
-            ctx.grass.add(ref.record_id, ref.pos, ref.scale)
+        if ref.deleted or (grass is not None and grass.absorb(ref)):
             continue
         lines = ref_lines(ref, parent_cell, ctx)
         if not lines:

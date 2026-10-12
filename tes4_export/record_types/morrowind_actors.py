@@ -425,10 +425,27 @@ def export_CLAS(rec: Tes3Record, ctx) -> list:
     if data:
         specialization, playable, services = data[2], data[13], data[14]
         guard = _CLASS_GUARD if rec.record_id.lower() == _GUARD_CLASS_ID else 0
-        lines.extend([f'DATA.Specialization={specialization}',
+        lines.extend([f'DATA.PrimaryAttribute1={data[0]}',
+                      f'DATA.PrimaryAttribute2={data[1]}',
+                      f'DATA.Specialization={specialization}',
                       f'DATA.Flags={(playable & 1) | guard}',
                       f'DATA.Services={services & _SERVICES_MASK}',
                       'DATA.Teaches=-1', 'DATA.MaxTraining=0'])
+    return lines
+
+
+def export_BSGN(rec: Tes3Record, ctx) -> list:
+    """A birthsign: name, picture, description and its spells, each by the
+    FormID the spell converts to and by its TES3 id, which the runtime grants."""
+    lines = [f'EditorID={escape_value(rec.record_id)}']
+    emit_str(lines, 'FULL', rec, 'FNAM')
+    emit_str(lines, 'ICON', rec, 'TNAM')
+    emit_str(lines, 'DESC', rec, 'DESC')
+    spells = [get_string(sub) for sub in get_all_subrecords(rec, 'NPCS')]
+    lines.append(f'SpellCount={len(spells)}')
+    for index, spell in enumerate(spells):
+        lines.append(f'Spell[{index}]={ctx.resolve(spell, "SPEL")}')
+        lines.append(f'SpellId[{index}]={escape_value(spell)}')
     return lines
 
 
@@ -440,4 +457,5 @@ MORROWIND_ACTOR_EXPORTERS = {
     'LEVC': export_LEVC,
     'FACT': export_FACT,
     'CLAS': export_CLAS,
+    'BSGN': export_BSGN,
 }

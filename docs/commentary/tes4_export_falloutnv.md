@@ -999,3 +999,22 @@ volume was a bare REFR with nothing to enter: `OnTriggerEnter` never fired.
 VCG01 hung on this — `VCG01VigorTesterTriggerSCRIPT` sets stage 60 from
 `onTriggerEnter`, and the tester's `OnActivate` only advances at stage 60.
 The raw subrecord now round-trips as `XPRM.Raw`.
+
+## <a id="idle-anam-data-swapped"></a>IDLE swaps ANAM and DATA
+
+**Code:** `tes4_export/record_types/falloutnv.py:_emit_idle_deltas`,
+`SUPERSEDED_IDLE_KEYS`.
+
+TES4 keeps an IDLE's animation group section in ANAM and its Parent/Previous
+links in DATA. FO3/FNV swap them (xEdit `wbDefinitionsFNV.pas` IDLE): ANAM is
+Parent then Previous (two FormIDs), DATA is the section byte, looping min/max,
+an unused byte, a replay delay (s16) and flags. The TES4 exporter read both
+with its own layout, so every FalloutNV.esm IDLE wrote `ANAM.AnimGroupSection`
+as the low two bytes of its parent (`SitDownStool`: 31102 = 0x797E, from
+parent `0002797E`), and the 748 with an 8-byte DATA wrote animation bytes as
+`DATA.IdleParent`/`IdlePrev`. The idle tree's parent links were lost. The
+FO3/FNV lines are now `ANAM.Parent`, `ANAM.Previous`, `DATA.AnimGroupSection`,
+`DATA.LoopMin`, `DATA.LoopMax`, `DATA.ReplayDelay` and `DATA.Flags`, and the
+TES4-layout lines are dropped for these sources. No importer read the old
+keys; `furniture_travel` walks the tree to find a sit entry's enter
+animation ([stool entries](asset_convert_falloutnv.md#stool-entries)).

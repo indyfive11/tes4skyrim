@@ -15,6 +15,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstring>
+#include <functional>
 #include <string>
 
 #include "actor_stats.h"
@@ -113,6 +114,7 @@ void EffectTick() {
     void* player = PlayerRef();
     FlightTick(player);
     TickSanctuary(player);
+    TickAttributeEffects(player);
 }
 
 // Where the keys and the look point, at the fly speed, in havok units: OpenMW
@@ -225,31 +227,41 @@ SimulateFn SwapSimulate(const char* what, std::uint64_t vtableId,
 
 }  // namespace
 
-// OpenMW's MagicEffects::getOrDefault: every active instance of the effect,
-// in any of its delivery copies, adds its magnitude. An effect whose
-// conditions switched it off counts for nothing.
-float ActiveMagnitude(void* actor, int tes3Index) {
-    if (!actor) return 0.0f;
-    void* target = &At<char>(actor, ids::kOffActorMagicTarget);
+// Every active instance of a runtime-carried effect, in any of its delivery
+// copies. An effect whose conditions switched it off is skipped.
+void ForEachActiveEffect(void* actor,
+                         const std::function<void(const RuntimeEffect&, float)>& fn) {
+    if (!actor) return;
+    void* target = &At<char>(actor, ActorField(ids::kOffActorMagicTarget));
     auto* node = VCall<EffectListFn>(target, ids::kActiveEffectListSlot)(target);
-    float total = 0.0f;
     for (; node; node = static_cast<void**>(node[1])) {
         void* effect = node[0];
         void* item = effect ? At<void*>(effect, ids::kOffActiveEffectItem) : nullptr;
         void* base = item ? At<void*>(item, ids::kOffEffectItemBase) : nullptr;
-        if (!base || RuntimeEffectIndex(FormIdOf(base)) != tes3Index) continue;
-        if (At<std::uint32_t>(effect, ids::kOffActiveEffectFlags) & ids::kActiveEffectInactive) {
+        const RuntimeEffect row = base ? RuntimeEffectOf(FormIdOf(base)) : RuntimeEffect{};
+        if (row.index < 0 ||
+            (At<std::uint32_t>(effect, ids::kOffActiveEffectFlags) & ids::kActiveEffectInactive)) {
             continue;
         }
-        total += At<float>(effect, ids::kOffActiveEffectMagnitude);
+        fn(row, At<float>(effect, ids::kOffActiveEffectMagnitude));
     }
+}
+
+// OpenMW's MagicEffects::getOrDefault: every active instance of the effect
+// adds its magnitude.
+float ActiveMagnitude(void* actor, int tes3Index, int attribute) {
+    float total = 0.0f;
+    ForEachActiveEffect(actor, [&](const RuntimeEffect& row, float magnitude) {
+        if (row.index == tes3Index && (attribute < 0 || row.attribute == attribute)) {
+            total += magnitude;
+        }
+    });
     return total;
 }
 
 void InstallFlightCalls(GameHooks& hooks) {
     if (hooks.effectTick) return;
     hooks.effectTick = EffectTick;
-    InstallSanctuaryCalls();
     g_controllerOf = Native<ControllerFn>("Actor::GetCharController",
                                           ids::kActorGetCharController);
     g_playerControls = reinterpret_cast<void**>(Resolve(

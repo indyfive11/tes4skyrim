@@ -586,8 +586,16 @@ def _binop(conv, node: N.BinOp, extends: str) -> str:
     numeric = _numeric_cmp(conv, left, right, op, extends)
     if numeric is not None:
         return numeric
-    return (f'{_operand(conv, left, node, extends)} {op} '
-            f'{_operand(conv, right, node, extends, right=True)}')
+    return _plain_binop(conv, left, right, op, node, extends)
+
+
+def _plain_binop(conv, left, right, op: str, node: N.BinOp, extends: str) -> str:
+    """`left op right`; two Bool operands of arithmetic are cast, as Papyrus rejects `Bool + Bool`."""
+    lhs = _operand(conv, left, node, extends)
+    rhs = _operand(conv, right, node, extends, right=True)
+    if op in _ARITH and _is_bool_valued(conv, left) and _is_bool_valued(conv, right):
+        return f'({lhs} as Int) {op} ({rhs} as Int)'
+    return f'{lhs} {op} {rhs}'
 
 
 #: `a op b` reversed, so a literal-first comparison folds on the same path.

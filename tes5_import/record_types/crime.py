@@ -27,7 +27,7 @@ from core.worldspace_names import (converted_worldspace_edid,
                                    converted_worldspace_name, renames_for)
 from output_layout import paths
 
-from ..base.owned_records import WELL_KNOWN_PROPERTIES
+from ..base.owned_records import WELL_KNOWN_PROPERTIES, owner_row
 from ..base.text_reader import get_int, get_str, remap_formid
 from ..base.writer import (pack_formid_subrecord, pack_record,
                            pack_string_subrecord, pack_subrecord)
@@ -71,6 +71,9 @@ _GUARD_CLASSES: set = set()
 
 #: [file, FormID] of this plugin's default crime faction, or [].
 _DEFAULT_REF: list = []
+
+#: (FACT FormID, name) of each realm this plugin owns, main first.
+_OWN_REALMS: list = []
 
 #: REFR record flag Persistent.
 _PERSISTENT_FLAG = 0x400
@@ -714,6 +717,7 @@ def plan_crime(by_type: dict, ctx, writer, export_dir: str, plugin_out_dir: str,
                  masters.default_realm())
     pools = _write_pools(plan, writer)
     plan.world.pool_ids.update(pools)
+    _OWN_REALMS[:] = [(pools[e], _pool_full(plan, e)) for e in plan.owned]
     master_index = getattr(ctx, 'master_index', None) if ctx else None
     if plan.default not in plan.owned and plan.flst and master_index is not None:
         WELL_KNOWN_PROPERTIES[REALM_PROPERTY] = master_index.find_by_edid(
@@ -743,6 +747,12 @@ def default_crime_rows() -> list:
     if not _DEFAULT_REF:
         return []
     return [f'crime={_DEFAULT_REF[0]}|{_DEFAULT_REF[1]:08X}']
+
+
+def bounty_rows(plugin: str, masters: list) -> list:
+    """`bounty.<i>=name|Plugin|FormID` per realm the plugin owns, main first."""
+    return [owner_row(f'bounty.{i}', fid, plugin, masters).replace('=', f"={name.replace('|', '/')}|", 1)
+            for i, (fid, name) in enumerate(_OWN_REALMS)]
 
 
 def is_guard_class(class_fid: int) -> bool:

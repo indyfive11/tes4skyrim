@@ -17,7 +17,7 @@ from script_convert.blocks import (BLOCK_MAP, BLOCK_TYPE_GUARDS,
                                    COMBAT_EVENT_HEADER,
                                    block_filter_guard)
 from script_convert.constants import (
-    LAST_ACTIVATOR_VAR, MENU_ID_NAMES, SLEEP_WAIT_MENU_ID,
+    CONV_WALK_VAR, LAST_ACTIVATOR_VAR, MENU_ID_NAMES, SLEEP_WAIT_MENU_ID,
     UDF_CALLER_PARAM, UDF_RESULT_VAR,
     POLL_BLOCKS, REF_SPECIFICITY, TYPE_MAP, is_generated_script_type,
     safe_property_name, papyrus_script_name
@@ -1063,6 +1063,7 @@ def poll(conv, tree, extends: str) -> list:
     body = _poll_body(conv, tree, extends, interval, load_gated, pacing)
     sc.poll_return_prefix = ''
     sc.glide_secs = ''
+    out = _walk_guard(sc, out)
     arm = _bottom_arm(conv, interval, extends, load_gated, pacing)
     if not passes:
         return out + body + arm + ['EndEvent', '']
@@ -1076,6 +1077,19 @@ def _bottom_arm(conv, interval: str, extends: str, load_gated: bool,
     if pacing:
         return _adaptive_arm(conv, interval, extends, indent=indent)
     return _arm(conv, interval, load_gated, indent=indent)
+
+
+def _walk_guard(sc, head: list) -> list:
+    """`head` (declarations through the insurance arm) plus the walk-overlap guard when due.
+
+    A StartConversation walk in the poll waits out the whole conversation, so
+    an insurance pass skips while its deadline is live.
+    See: docs/commentary/tes5_import_dialogue.md#script-started-conversation-chains
+    """
+    if not sc.uses_conv_walk:
+        return head
+    return ([f'Float {CONV_WALK_VAR} = 0.0'] + head
+            + [f'  If TES4Polyfill.WalkPending({CONV_WALK_VAR})', '    Return', '  EndIf'])
 
 
 def _return_arm(conv, interval: str, extends: str, load_gated: bool,

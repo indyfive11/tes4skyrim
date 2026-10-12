@@ -35,6 +35,7 @@ BLOCK_MAP = {
     'onequip':            ('Event OnEquipped(Actor akActor)', 'EndEvent'),
     'onunequip':          ('Event OnUnequipped(Actor akActor)', 'EndEvent'),
     'ondeath':            ('Event OnDeath(Actor akKiller)', 'EndEvent'),
+    'onknockout':         ('Event OnEnterBleedout()', 'EndEvent'),
     'onhit':              ('Event OnHit(ObjectReference akAggressor, Form akSource, Projectile akProjectile, bool abPowerAttack, bool abSneakAttack, bool abBashAttack, bool abHitBlocked)', 'EndEvent'),
     'onhitwith':          ('Event OnHit(ObjectReference akAggressor, Form akSource, Projectile akProjectile, bool abPowerAttack, bool abSneakAttack, bool abBashAttack, bool abHitBlocked)', 'EndEvent'),
     'onload':             ('Event OnLoad()', 'EndEvent'),

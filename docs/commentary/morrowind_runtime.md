@@ -644,9 +644,9 @@ the simplest single-vtable modal panel the engine ships, and the one SKSE's
 lea   r8,   [rbx + 0x10]        ; &view            -> view    at 0x10
 mov   dword [rsp + 0x20], 3     ; scaleMode = 3, NOT 2
 call  0xf22f80                  ; GFxLoader::LoadMovie  (id 82325)
-mov   byte  [rbx + 0x18], 0xa   ; context          -> 0x18
+mov   byte  [rbx + 0x18], 0xa   ; depth            -> 0x18
 mov   dword [rbx + 0x1c], 0x11  ; flags            -> 0x1C, not 0x20
-mov   dword [rbx + 0x20], 1     ; depth            -> 0x20
+mov   dword [rbx + 0x20], 1     ; input context    -> 0x20
 call  0xc4d690                  ; IsGamepadEnabled (id 68622)
 test  al, al
 jne   skip
@@ -656,9 +656,16 @@ or    dword [rbx + 0x1c], 0x404 ; |= UsesCursor | UpdateUsesCursor
 | Offset | Field | Value a plain modal panel uses |
 |---|---|---|
 | `0x10` | `view` | filled by `LoadMovie` |
-| `0x18` | context | `0xA` |
+| `0x18` | depth (a byte) | `0xA` |
 | `0x1C` | **`flags`** | `0x11` = `kPausesGame \| kModal`, `\| 0x404` for the cursor |
-| `0x20` | depth | `1` |
+| `0x20` | input context | `1` (MenuMode) |
+
+These two were first named the other way round. The 1.6.1170 dispatcher
+settles it: it orders the menu stack by the `0x18` byte and picks the "top"
+menu by comparing it (`movzx eax, byte [rdx+0x18]` at `0xfa3f06`), and IMenu's
+own constructor (`0xfaecc0`) defaults it to 3 and `0x20` to `0x13`, the
+no-context value the close path skips (`0xfa43ca`). See the
+[perks button](#perks-button) for what the depth decides.
 
 Flags are set **after** `LoadMovie`, not before. `scaleMode` is **3**
 (`kNoBorder`) — every vanilla menu pushes 3, and the `2` first used here was a
@@ -932,6 +939,34 @@ when `getGlobalVariableType == ' '`. So `Greeting 0` ordinal 25 —
 every player, and Ordinators set fight 100 and attacked on sight. A `set`
 cannot repair it either: the compiler's `getGlobalType` returns `' '` for an
 unknown global, so `OrdinatorUniform` fails to compile.
+
+### <a id="master-placements"></a>🛑 A placement belongs to the plugin that PLACES it
+
+**Code:** `master_scripted`, `rebased_formid`, `runtime_masters` in
+`tes5_import/dialogue/morrowind_placements.py`; `_scripted_bases`,
+`_script_tables` in `morrowind_sidecar.py`.
+
+A master stages its own script *bodies*, but not the references other plugins
+make to its objects. `SCPT_instances` used to list only references whose base
+the plugin itself defines, so a Tamriel Rebuilt cell holding a Tamriel_Data
+or patch banner ran no script: the runtime never knew the reference was
+there. Each plugin now also stages its own placements of the scripted bases
+its MWScript masters define. TR gained 10,232 instance rows (15,546 → 25,778:
+5,467 on compat-patch bases, 4,380 on Tamriel_Data bases, 385 on TR's own) and
+385 `SCPT_objects` rows; Tamriel_Data gained 39; nothing was removed.
+
+None of them is on a `Morrowind_ob.esm` base. A Morroblivion master's scripts
+are Oblivion script, converted to Papyrus, so `runtime_masters` skips it;
+staging its objects here would run a second script on them. The patch's
+object scripts are authored MWScript (its export ships no Papyrus for them),
+and Tamriel_Data and TR have no script stage, so every new row gives an
+object the only script it has.
+
+The same pass fixed a name collision in `_script_tables`. The first export to
+declare a script name claimed it, even when this plugin could not spell that
+export's FormID. The authored `Morrowind.esm` export claimed `OutsideBanner`,
+so the patch's copy (the one the banners name) was never mapped. A dir now
+claims a name only when its FormID rebases into this plugin's master list.
 
 ### <a id="short-globals-truncate"></a>🛑 A `short`/`long` global TRUNCATES its FLTV
 
@@ -3349,7 +3384,8 @@ runtime's apply sink. Adding one takes these steps, in this order:
    `tes5_import/record_types/magic_morrowind.py`. That one set drives
    everything downstream:
    - `teleports_formid.txt` (`teleport_lines`) lists the effect's MGEF and each
-     delivery clone, so the runtime recognizes it. The file keeps its old name.
+     delivery and Ability clone (`copy_editor_ids`), so the runtime recognizes
+     it. The file keeps its old name.
    - `mw_converts` now counts the effect as working, so a record carrying it
      can be restored.
 3. **Morroblivion mode needs no new code, but it needs the patch rebuilt.**
@@ -3564,6 +3600,50 @@ report the family either way. Fixed by widening `_ARRAY` to the
 `inline constexpr` form, threading the header in beside `extensions0.cpp`, and
 letting a loop name carry an inline prefix and a trailing suffix.
 
+## <a id="object-animation"></a>`PlayGroup`, `LoopGroup` and `SkipAnim` on objects
+
+**Code:** `plugin/script_ops_anim.cpp`, `plugin/game_calls_anim.cpp`,
+`common/gamebryo_sequence.*`; the sequences come from
+`asset_convert/nif/object_anim_morrowind.py`
+([asset_convert_animation.md](asset_convert_animation.md#morrowind-object-animation)).
+
+The queue is OpenMW's `CharacterController::playGroup`/`updateAnimQueue` for a
+non-actor: one group plays and one waits. Mode 0 queues behind the current
+group and modes 1/2 start at once; `PlayGroup` loops forever and `LoopGroup n`
+plays n+1 cycles. A queued group lets a looping one finish the cycle it is in.
+The same looping group asked for again keeps playing, which is how a banner
+script calls `PlayGroup Idle2` every frame. A one-shot holds its last pose,
+and `Idle` is the mesh's `AutoPlay`/`AutoLoop` pair. A looping group plays
+`<Group> Intro` once, then its loop, then `<Group> Outro` once.
+
+🛑 **Starting a sequence is not enough: the manager must be flagged active.**
+`ObjectReference.PlayGamebryoAnimation` (1.6.1170 `0xa2ead0`) does three
+things after `NiControllerSequence::Activate`:
+
+- `manager.flags |= 0x8` (NiTimeController active, +0x10);
+- `MarkChanged(0x10000000)`, the reference's animation change flag (vtable +0x50);
+- `TESForm` slot 0x24 with `true`, which sets form flag 0x2 (vtable +0x120).
+
+Only the first matters while playing. The engine clears the active bit on
+load: the banners shipped flags `0x4C` and read `0x0044` in game before a play,
+`0x004C` after. Without the flag, every sequence started `active` and the
+banners stood still with nothing logged. Setting it is what made them blow
+(confirmed in game, Bal Foyen). The manager is the 3D root's first controller
+(+0x18), as the native reads it.
+
+`SkipAnim` holds the ambient pair still for each tick a script calls it, and
+never a scripted group (OpenMW's `isScriptedAnimPlaying`). It stops the
+sequences, which leaves the pose where it was, and resumes them with
+`Activate` without start-over. The sequence's time is `time + offset` (+0x6c)
+fed through ComputeScaledTime (`0xd93be0`, last time +0x50, weighted time
++0x54). Deactivate folds the time played into the offset, so a resume
+subtracts the time spent held, or the animation jumps ahead. The object tick
+runs at 30 Hz against a faster frame rate, so nudging the offset every tick
+would jitter. Only TR's Necrom undercroft fan uses it on an object.
+
+NPCs and creatures are not handled: they are Skyrim actors with Skyrim
+behavior graphs, not Morrowind animation groups.
+
 ## <a id="crime-is-the-engines"></a>Crime is the engine's: bounty, fines, jail, arrest
 
 **Code:** `plugin/game_calls_crime.cpp`, `plugin/script_runner.cpp`
@@ -3644,3 +3724,885 @@ The boundary runs one way only. MorrowindRuntime compiles the MIT sources in
 every other runtime: MIT code may be distributed inside a GPL binary, and those
 files stay MIT in the source tree. What must never happen is the reverse, a
 `common/` file including anything under `external/openmw/`.
+
+## <a id="character-sheet"></a>The character sheet: stats window and level-up dialog (2026-09-29, unconfirmed in game)
+
+**Code:** `plugin/stats_sheet.cpp`, `plugin/levelup_menu.cpp`,
+`plugin/leveling.cpp`, `plugin/menu.cpp` (`CustomMenu`),
+`plugin/menu_widgets.cpp`; the movies and `plugin/stats_layout.h` from
+`tools/generators/gen_morrowind_stats_swf.py`. The Morrowind-only first step of
+[the character sheet plan](../plans/character_sheet.md).
+
+Two more windows, built and registered exactly as the dialogue window is:
+
+| Menu name | Movie | Layout |
+|---|---|---|
+| `MorrowindStatsMenu` | `Interface/morrowind_stats.swf` | `openmw_stats_window.layout`, 500 x 342 |
+| `MorrowindLevelUpMenu` | `Interface/morrowind_levelup.swf` | `openmw_levelup_dialog.layout`, 440 x 496 |
+
+**More than one menu.** `menu.cpp` now keeps each window's state in a
+`CustomMenu` (up to four). MenuManager calls a creator with no argument, so each
+slot has its own creator function; every window's engine object carries one
+vtable, and the object keeps a pointer to its window at `+0x40`, past the base
+`IMenu` (0x30) in the part of the 0xa8 allocation only a MessageBoxMenu's own
+code would touch. The dialogue window's free functions (`OpenMenu`,
+`SetMenuText`, ...) are its `CustomMenu`'s, unchanged.
+
+**Only with Morrowind content.** `plugin.cpp` installs the sheet only when the
+store loaded a sidecar, so an Oblivion or Fallout game never sees the key or
+the level-up step.
+
+**On by default, one switch.** `[CharacterSheet]` in
+`SKSE\Plugins\MorrowindRuntime\MorrowindRuntime.ini` (source
+`tes_runtime/morrowind/MorrowindRuntime.ini`, packaged by
+`package_runtime_dll.py` as `HavokWorldSize.ini` is) ships `Enabled=1` and
+`SkillCap=1`; a missing ini or key also means on. `Enabled=0` turns off the
+windows, the level-up step, the buffs and the cap together
+([sheet off](#sheet-off)); `SkillCap=0` drops only the [cap](#skill-cap).
+`Hotkey` is a decimal virtual-key code, as `FalloutRuntime.ini`'s keys are, 67
+(C) when absent.
+
+**The default hotkey is C, and it works in the perks menu.** The sheet opens
+only from Skyrim's perks menu ([perks button](#perks-button)), so the key need
+only be free there. Skyrim's own `interface/controls/pc/controlmap.txt` binds C
+(scan code `0x2E`) in two contexts, Main Gameplay (Auto-Move) and Item Menus
+(Item Zoom); the perks menu's context, Stats, binds only `Rotate` (the left
+stick) beside Menu Mode's keys. The first build used K, which the same file
+binds nowhere, while the sheet still opened in the world. The key is read with
+`GetAsyncKeyState` on the shared fixed tick (`main_tick`, every 33 ms, paused
+or not), only while this process owns the foreground window; the key again,
+the button or Tab closes the window.
+
+**What the stats window shows.** Health, Magicka and Fatigue (Skyrim's Stamina)
+as `current/maximum`, the maximum being the current value over
+`GetActorValuePercentage`, drawn as `menu_bar_gray` tinted with
+`Morrowind.ini`'s `color_health`, `color_magic` and `color_fatigue` and covered
+past the value as the disposition bar is. Then Level, Reputation and Bounty; the
+eight attributes and 27 skills from the stat store (`ActorAttribute`,
+`ActorSkill`), so what the window shows is what persuasion, the filter and
+scripts read; the skills under their specialization, by name; and the player's
+factions with the rank name. Every label is a GMST (`sHealth`, `sSkillLongblade`,
+`sSpecializationCombat`, ...).
+
+**Rows are fields the plugin places.** A list's rows are single-line fields at
+18 px, OpenMW's row, moved by `_y` as the dialogue window's topic list is. The
+embedded face's own line pitch is 16-17.4 px, so a multi-line field would drift
+from the layout.
+
+**The level-up dialog** is OpenMW's `LevelupDialog`: the class image for the
+level's combat/magic/stealth increases (`getLevelupClassImage`, all 21
+`textures\levelup` images in the movie, one shown), `sLevelUpMenu1` with the
+level, `sLevelUpMenu2`, three gold coins (`icons\tx_goldicon.dds`), and the eight
+attributes in two columns with `xN` beside any that would rise by more than 1.
+A click spends a coin (the last one moves once all are spent), the value shows
+the result, and OK stays disabled until the coins are spent. It has no cancel,
+as Morrowind's own has none.
+
+### <a id="perks-button"></a>The perks menu's Character button (confirmed in game 2026-10-03)
+
+**Code:** `plugin/perks_button.cpp`, `plugin/stats_sheet.cpp` (`Tick`),
+`plugin/menu.cpp` (overlay menus, `EngineMenuOpen`, `VisibleFrame`);
+`perks_button` in `tools/generators/gen_morrowind_stats_swf.py`.
+
+The sheet opens from Skyrim's perks menu (`StatsMenu`) and nowhere else. While
+that menu is open a key hint, **[C] CHARACTER**, sits in the screen's
+bottom-left corner, in the empty end of vanilla's bottom bar. Clicking it or
+pressing the key opens the sheet over the perks; the hint then reads **BACK TO
+PERKS**, and the click, the key or Tab returns to them. The key cap shows the
+configured `Hotkey`, drawn at 4x so it stays sharp up to a 4K screen.
+
+Measured in game on the user's 3440×1440 screen (log, 2026-10-03): the
+button placed at stage (-202, 666), so the visible stage starts 202 px left
+of the stage's own edge, and a click on it closed the sheet.
+
+**How the engine hands input to stacked menus** (1.6.1170):
+
+| Path | Who gets it | Rule |
+|---|---|---|
+| Mouse down/up | `ClickHandler` (`0x9499c0`) posts to the pseudo-name "Top Menu" | the dispatcher (`0xfa4191`) starts at the topmost menu whose depth is **below 14** (`0xfa3dc0`, cutoff `0xe`), then walks DOWN the stack while each menu returns 2 ("pass on"); a menu with flag `0x10` (modal) stops the walk (`0xfa4525`) |
+| The perks menu's rotation and perk clicks | its own `MenuEventHandler` (`CanProcess` `0x961030`) | runs only while the topmost menu with depth **below 6** is the perks menu itself |
+| The perks menu's movie | `StatsMenu::ProcessMessage` type 6 (`0x95fb39`) | only key events; mouse events never reach its movie, so a button cannot live inside it |
+| Whether the cursor shows | the cursor routine (`0xfa5fd9`-`0xfa60f5`) | the topmost menu with depth **below 11** and without flag `0x10000` decides: flag `0x4` (uses cursor) opens the Cursor Menu, anything else closes it |
+
+IMenu's constructor defaults the depth to 3, and `StatsMenu`'s never changes
+it; the Cursor Menu sits at 13 (`0x913d25`). Hence the two depths:
+
+- **The button is an overlay at depth 12**: flags 0 (no pause, no cursor, not
+  modal), input context `0x13` (none), and it returns "pass on" for every
+  event. It gets clicks (the log shows mouse types 1-3 arriving), yet both
+  the perks menu's below-6 input test and the below-11 cursor rule skip it,
+  so rotating, buying perks and the cursor all behave as in vanilla. The first
+  build put it at 10 with no cursor flag: it became the cursor rule's menu and
+  the cursor vanished from the perks menu, except while the sheet (which has
+  `0x4`) was open.
+- **The sheet opens at depth 4 over the perks.** That makes it the below-6 top
+  menu, so the perks stop reacting to clicks meant for the sheet, and being
+  modal it keeps Tab for itself. At 10 the perks menu would pick a perk under
+  the sheet's every click.
+
+**A click on the button stops there.** Reported in game: clicking the button
+with the mouse also started closing the perks menu. Passing events on is not
+what leaked: the perks menu's mouse buttons come through its own
+`MenuEventHandler`, and `MenuControls` (`0x947db0`) offers every input event to
+every registered handler whose `CanProcess` agrees -- it records the result
+and moves on, so no handler can consume an event for the rest. So the plugin
+swaps that handler's `CanProcess` (slot 1 of `StatsMenu`'s second vtable, id
+215975; the original is id 52518): while the button shows and the movie's
+own mouse is on it, a mouse BUTTON event (device 1 at `+0x8`, type 0 at
+`+0xC`) is refused. Moves, the keyboard and the controller still reach the
+perks.
+
+**Always the bottom-left corner.** The movie loads with show-all scaling,
+which centers the 1280×720 stage, so on an ultrawide or 16:10 screen the
+stage's corner is not the screen's. On every open the plugin reads
+`GFxMovieView::GetVisibleFrameRect` (slot `0x1F`, skse64's
+`ScaleformMovie.h`) and places the button at its left edge plus 18, centered
+in the 72 px bar above its bottom edge. Show-all fits one side of the stage
+exactly, which says whether the rectangle came in pixels or twips; the
+placement is logged once.
+
+**The perks menu is found by name**, `MenuManager::IsMenuOpen` (id 82074,
+`0xfa37b0`, SKSE's own address), with the name interned once. SE 1.5.97 and VR
+have it too (`0xebe150`, `0xf1a3b0`): they inline the table lookup that AE
+calls, so its body matches nothing there and `pre_ae_map` finds no anchor, but
+the sleep/wait toggle calls it with the menu manager on all three builds, and
+it ends in the same `test byte [menu+0x1c], 0x40`
+([hand-proven](../reference/address_library_formats.md#hand-proven)). The
+input gate below resolves on SE too (its `CanProcess` by masked bytes, the
+vtable by its class); VR's perks menu is a different one, so it has neither.
+
+### <a id="capped-skills"></a>A capped skill is named red in the perks menu (2026-10-03, unconfirmed in game)
+
+**Code:** `plugin/perks_skills.cpp`.
+
+While the perks menu is open, every quarter second, each skill the cap holds
+([skill cap](#skill-cap): at or past its governing attribute) has its name
+turned red in the menu's own movie, and turned back when it no longer is.
+
+- **Which label is which skill.** The perks menu keeps its skills' actor
+  values in label order at `+0x50` (count `+0x60`). Its fill (`0x962450` on
+  1.6.1170, `0x8c20c0` on SE) hands entry *n*'s level, name and color to
+  `UpdateSkillList`, which builds
+  `_root.StatsMenuBaseInstance.AnimatingSkillTextInstance.SkillText<n>.LabelInstance`
+  as `NAME <font … color='…'>LEVEL</font>`.
+- **Only the name changes.** The name carries no color of its own, so the first
+  color in the label's `htmlText`, read back, is the name's. That one value is
+  replaced and the rest written back as read, so the level keeps vanilla's
+  green or red. The red is vanilla's own for a lowered skill, `#FF0000`
+  (`0x97b0b0` picks `#FF0000`, `#189515` or `#FFFFFF`).
+- **Rebuilds.** The game rewrites a label when it rebuilds the list; the next
+  pass reads the name's own color again and paints it again.
+- **A string read back is the movie's**, so it is released through
+  `ReleaseManaged` (id 82270, `0xfac750`), as the fill releases its own.
+- Not on VR: its perks menu has no `UpdateSkillList` and no such labels.
+
+### <a id="controller"></a>Controllers: the engine's own stick cursor (confirmed in game 2026-10-03)
+
+**Code:** `plugin/menu.cpp` (`kMenuFlags`, `OnUserEvent`'s Accept),
+`plugin/perks_button.cpp` (`PollPad`).
+
+Our menus are driven by the mouse, and Skyrim already turns a controller into
+one. `controlmap.txt`'s **Cursor** context (9) binds the `Cursor` event to the
+mouse (`0xa`) AND the right stick (`0x000c`), and `Click` to the left mouse
+button AND A (`0x1000`). The Cursor Menu pushes that context when it refreshes
+(`0x913f30`: pop every 9, push one unless the current context binds `Cursor`
+itself, as the Map Menu's does) and handles `Cursor` in its own
+`MenuEventHandler` (`CanProcess` `0x913ec0` compares the event with `Cursor`,
+the input string at `+0x180`; the thumbstick slot calls `0xfba6c0`, which moves
+the cursor). `ClickHandler` turns `Click` into a mouse press for the top menu.
+The input lookup (`0xcd5020`) walks DOWN the context stack (ControlMap `+0x108`,
+count `+0x118`), so a binding lower down still applies when nothing above
+binds that input: B stays Menu Mode's `Cancel`.
+
+Vanilla menus set the cursor flag only without a gamepad (`StatsMenu`:
+`0xcd9100` on the input device manager, then `or [menu+0x1c], 4`); ours set it
+always (`kMenuFlags`), so the cursor and its context come up with a controller
+too. Hence, with no controller code of their own:
+
+| Controller | Does |
+|---|---|
+| Right stick | moves the cursor |
+| A | clicks (`Click`); where Menu Mode is higher on the stack it is `Accept` instead, which our menus also take as a click at the cursor -- except the class menu, which takes typed text and whose Enter is also `Accept` |
+| B | `Cancel`: closes the window, as Tab does |
+
+**Into the sheet: Y in the perks menu.** With a controller the perks menu has
+no cursor (its own gamepad check above), so the button cannot be clicked. Y
+opens and closes the sheet there instead: `controlmap.txt` binds `YButton`
+only in Item Menus, and the perks menu's Stats context binds only `Rotate`.
+It is read through XInput (`xinput1_4`, then `1_3`, then `9_1_0`), the API
+the game's own gamepad device uses, only while the button shows; the key cap
+reads **Y** while a controller is connected. The engine's own gamepad check
+was not used for the label: its id (443396) exists only on 1.6.1170, and its
+body matches nothing on 1.6.659 and twice on 1.7.104.
+
+### <a id="leveling"></a>Leveling: Skyrim levels, Morrowind raises the attributes
+
+Skyrim keeps its skills and decides when the player levels (the skills menu,
++10 Health/Magicka/Stamina, a perk). The runtime adds Morrowind's step:
+
+- **Skill increases.** Every ~330 ms out in the world, `SampleLeveling` reads
+  the BASE of Skyrim's 18 skills (`Actor.GetBaseActorValue`, id 54678). A rise
+  is credited to the governing attribute and specialization of the skill's
+  namesake Morrowind skill, read from the SKIL table: One- and Two-Handed are
+  Long Blade (Strength), Archery Marksman, Pickpocket and Sneak Sneak
+  (Agility), Speech Speechcraft (Personality), Smithing Armorer, and so on
+  (`kTracked` in `leveling.cpp`). A fortify never moves a base, so it is never
+  counted.
+- **What is not an increase.** The first read of a game only records. A change
+  of race (`Actor.GetRace`, id 54930, compared by pointer) re-records without
+  crediting, because the race menu's skill bonuses move bases. A skill that
+  drops (Legendary) is followed from its new value.
+- **Level-ups.** A level gained is a pending step. Once the skills menu and
+  everything else is closed, the dialog opens for the oldest pending level.
+- **Gains.** `iLevelUpNNMult` for the attribute's increases, at most 10
+  counted (Morrowind.esm: 2, 2, 2, 2, 3, 3, 3, 4, 4, 5), 1 with none, never
+  past 100: OpenMW's `getLevelupAttributeMultiplier` and `onOkButtonClicked`.
+  Luck governs nothing, so it always rises by 1. Taking the step resets the
+  credits, as `NpcStats::levelUp` clears `mSkillIncreases`.
+- **Storage.** DialogueState variables under `leveling|player`, so the progress
+  rides the co-save; the attributes are the stat store's, which `SetStrength`
+  and its kin already write.
+
+Not yet decided or known: a trainer, a skill book or a script's
+`SetLongBlade` in Skyrim moves a base too, so it counts as an increase; and the
+player's attributes start at the `player` record's, whatever race was chosen.
+
+### <a id="attribute-buffs"></a>What the attributes do (2026-10-02, unconfirmed in game)
+
+**Code:** `plugin/attribute_buffs.cpp`. One rule: a buff is its normal amount
+times (0.5 + attribute / 100), so 50 plays like vanilla.
+
+| Attribute | Buff | When |
+|---|---|---|
+| Intelligence | Magicka from each Magicka pick | at the step, from the base attribute |
+| Endurance | Health from each Health pick | at the step |
+| Agility | Stamina from each Stamina pick | at the step |
+| Strength | carry weight from each Stamina pick | at the step |
+| Willpower | `MagickaRateMult` + (Willpower − 50) | always |
+| Speed | `StaminaRateMult` + (Speed − 50) | always |
+| Luck | `CritChance` + (Luck − 50) / 10 | always |
+| Personality | nothing: Speech owns prices | |
+
+- **The pick's amount** is Skyrim.esm's: `iAVDhmsLevelUp` 10, and
+  `fLevelUpCarryWeightMod` 5 with Stamina. The step counts a pool's picks as
+  its rise in base since the last step, divided by 10, and pays them at the
+  attributes the step just set: OpenMW's `NpcStats::levelUp` reads the raised
+  base Endurance ("If you increased Endurance this level, the Health increase
+  is calculated from the increased Endurance", `npcstats.cpp:230`). Never
+  retroactive.
+- **The regen values** are the multipliers vanilla's Fortify Regenerate
+  effects move (Skyrim.esm MGEF actor values 156 and 157, 10 effects each).
+  No vanilla MGEF or script writes `CritChance`. **Unverified:** whether the
+  engine's critical roll reads it, and the player's base critical chance.
+- **Magic on a pick buff** lasts as long as the effect: each point is 1/100 of
+  a pick for every pick of that pool, so Fortify Intelligence 10 with 20
+  Magicka picks is +20 Magicka.
+- **Held, not written once.** Each buffed value's base is moved by what its
+  target changed since the last hold, and what is held is kept under
+  `buffs|player`. A pool's raw base (base less what is held) is what picks
+  are counted from, so the buff's own points are never a pick.
+
+### <a id="attribute-tooltips"></a>Attribute tooltips (2026-10-02, unconfirmed in game)
+
+**Code:** `plugin/stat_tip.cpp`; `gen_morrowind_stats_swf.tip_tags`. OpenMW's `AttributeToolTip`
+(`openmw_tooltips.layout`), in both the stats window and the level-up dialog,
+as OpenMW gives both: a `HUD_Box_NoTransp` box, 8 px padding, the attribute's
+`icons\k` icon at 32 px with its name beside it, and the description wrapped
+below. Both movies carry the pieces at the stage origin; the box is three
+sprites (top, a 1 px middle stretched to the description's measured
+`textHeight`, bottom), so it fits the text as OpenMW's auto-sized box does.
+Placement is `ToolTips::position`: 32 px under the pointer, shifted left by the
+pointer's share of the screen width, kept on screen, and above the pointer at
+the bottom edge.
+
+The description is Morrowind's own, cut down to what the attribute does here:
+
+| Attribute | Morrowind | Here |
+|---|---|---|
+| Strength | starting Health, carrying, max Fatigue, melee damage | Affects how much you can carry. |
+| Intelligence | Determines your maximum amount of Magicka. | Affects your maximum amount of Magicka. |
+| Willpower | resist magic, max Fatigue | Affects how quickly your Magicka returns. |
+| Agility | dodge, hit in melee, max Fatigue | Affects your maximum Stamina. |
+| Speed | Determines how fast you can move. | Affects how quickly your Stamina returns. |
+| Endurance | starting Health, Health per level, max Fatigue | Affects your Health gain per level. |
+| Personality | `sPerDesc`, unchanged | |
+| Luck | Affects every action you do in a small way. | Affects your chance of a critical hit, and every other action in a small way. |
+
+Personality reads its GMST, so a translated Morrowind keeps its language; the
+changed lines are English.
+
+### <a id="skyrim-skill-list"></a>The skill list is Skyrim's (2026-10-02, unconfirmed in game)
+
+**Code:** `plugin/stats_sheet.cpp` `BuildRows` / `kSkillGroups`;
+`asset_convert/ui/skyrim_skills.py`.
+
+The player's skills ARE Skyrim's, so the stats window lists Skyrim's 18, in
+the three groups Skyrim's own skills menu draws (warrior, mage, thief) under
+Morrowind's `sSpecializationCombat/Magic/Stealth` headings, each group by
+name, with the actor value's current value. (The first sheet copied OpenMW's
+list of Morrowind's 27 skills, against [the plan](../plans/character_sheet.md#m2-swf);
+that was wrong.) The kept legacy skills join the list when they are built.
+
+The names and descriptions are Skyrim's own, in the install's language:
+`package_runtime_dll.py` reads the 18 skill AVIFs from the player's Skyrim.esm
+(FormIDs 0x44C..0x45D, actor value 6 first; Illusion's is `AVMysticism`), looks
+their FULL and DESC string ids up in `strings\skyrim_<sLanguage>.strings` /
+`.dlstrings` from the Skyrim BSAs, and ships `skyrim_skills.txt`
+(`av=name|description`) beside the menus. Nothing of Bethesda's is committed;
+without the table the runtime shows English names and no description.
+
+### <a id="skill-tooltips"></a>Skill tooltips (2026-10-02, unconfirmed in game)
+
+**Code:** `plugin/stat_tip.cpp` (`StatTip`, which also shows the attribute
+tooltips); `gen_morrowind_stats_swf.tip_tags`. OpenMW's `SkillToolTip`
+(`openmw_tooltips.layout`) laid over a Skyrim skill: its icon (the nearest
+Morrowind or Oblivion skill picture, `SKILL_ICONS` / `OB_SKILLS`), Skyrim's
+name, `sGoverningAttribute`: "Governing Attribute: X" (the attribute the cap
+and the level-up credit use, `GoverningAttribute`), Skyrim's description, then
+`sSkillProgress` ("Progress towards skill increase") over a red bar reading
+`NN/100`, or `sSkillMaxReached` alone at 100. Hovering a skill row shows it;
+headings show nothing, and faction rows show the
+[faction tooltip](#faction-and-level-tooltips).
+
+**The progress** is `PlayerSkills` data's `points / pointsMax` for the skill.
+The pointer's offset in PlayerCharacter differs by build (0x9b8 on 1.6.1170,
+0x9c0 on 1.7.104), so it is read from `PlayerCharacter::AdvanceSkill`'s own
+`mov rcx,[rcx+disp32]`; the 12-byte `{level, points, pointsMax}` entries from
++0x08 are what `PlayerSkills::AdvanceSkill` adds to and compares (`ids.h`, read
+on both builds).
+
+### <a id="faction-and-level-tooltips"></a>Faction and level tooltips (2026-10-03, unconfirmed in game)
+
+**Code:** `plugin/stat_tip.cpp` (`FillFaction`, `FillLevel`);
+`stats_sheet.cpp` `HoverTip`. Both are OpenMW's (`StatsWindow::updateSkillArea`
+and `onFrame`, `FactionToolTip` and `LevelToolTip` in `openmw_tooltips.layout`),
+in the same box as the attribute and skill tooltips, with no icon.
+
+- **A faction row**: the faction in the header color, the rank under it, then
+  while a next rank exists `sNextRank` and its name, the rank's two attribute
+  requirements, `sFavoriteSkills`, and `sNeedOneSkill` / `sand` /
+  `sNeedTwoSkills` with the rank's skill levels. The favored skills are named
+  as the **Skyrim** skills the player's value is read from
+  (`SkyrimSkillsOf`, the same table `ActorSkill` and the rank filter use), so
+  a split skill such as Long Blade lists One-handed and Two-handed, each once.
+  The text needs two colors, so the movie's `TipText` is an HTML field and
+  every tooltip writes it through `htmlText`.
+- **The Level row**: `sLevelProgress` over the red bar, then one centered
+  "Attribute xN" line per multiplier above 1 (`AttributeGain`). OpenMW's bar
+  counts major and minor skill increases toward `iLevelUpTotal`; here Skyrim
+  decides the level, so the bar is Skyrim's experience: PlayerSkills data
+  opens with `{levelPoints, levelPointsMax}` at +0x00 and +0x04 (skse64's
+  `PlayerSkills::Data`), before the per-skill entries at +0x08.
+
+### <a id="race-attributes"></a>Race starting attributes, retroactive (2026-10-02, unconfirmed in game)
+
+**Code:** `plugin/leveling.cpp` `ApplyRaceStart`; `attribute_buffs.cpp`
+`RescorePickBuffs`; `morrowind_sidecar_source.race_lines` → `RACE.txt`.
+
+The player starts from the race's own attributes (TES3 `RADT`, by sex), as in
+Morrowind. The player picks a race in Skyrim's RaceMenu, so `RACE.txt` is keyed
+by the SKYRIM race a player of each TES3 race wears, through the converter's
+own chain (`RACE_FORMIDS` → `TES4_RACE_FID_TO_EDID` → `RACE_MAP`), and again by
+that race's vampire race (Skyrim.esm `<Race>RaceVampire`), so turning vampire
+does not reset anything. A race no playable Skyrim race stands for has no row.
+The sex is `TESNPC::GetSex`'s own read (bit 0 of +0x38, both builds).
+
+Every sample compares the start the race and sex now give with the start the
+player's base was last built on (`start0..7` in the leveling state; before
+any, the `player` record's own). A difference moves the BASE by exactly that
+much, so every level-up gain is kept, and **re-scores every pick buff that
+attribute already earned** as if it had always stood there:
+`picks × perPick × delta / 100`, the same linear rule a Fortify uses. A chosen
+class's favored attributes move the same way ([chargen menus](#chargen-menus)).
+These are the only retroactive changes: a level-up or a script's
+`SetStrength` never re-scores.
+
+### <a id="menu-styles"></a>Menu styles: Morrowind's look or Skyrim's (2026-10-02, unconfirmed in game)
+
+**Code:** `asset_convert/ui/menu_art.py`, `morrowind_menu_art.MorrowindArt`,
+`skyrim_menu_art.SkyrimArt`; the three generators take the art object;
+`plugin/menu_widgets.cpp` `Colors`.
+
+Every menu movie (dialogue, stats, level-up) is built from ONE art object, and
+the two objects have the same members: `compose_frame`, `compose_box`,
+`compose_head`, `compose_cap`, `compose_button`, `compose_scrollbar`,
+`compose_thumb`, `compose_line`, `compose_stat_bar`, `compose_bar`, plus
+`colors`, `background`, `cover` and `icons`. Changing a menu's look is changing
+which object it is built with; the layout, the field names and the plugin's
+hit rects do not move.
+
+Two choices, made apart, both in `conversion_config.json` and in Settings ▸
+Menu style:
+
+- **The look** (`menuStyle`): `morrowind` uses Morrowind's frame art (never
+  committed); `skyrim` draws everything: thin light rules that fade at their
+  ends (the caption's rule parts round the title), translucent black panels,
+  shaded meters, white text that greys when disabled.
+- **The icons** (`menuIcons`): `morrowind` (`icons\k`, `textures\levelup`, the
+  gold coin) or `oblivion` (`textures\menus`: `level_up\attributes_icons`,
+  `class\attributes\load_image_*_small`, `level_up\class_creation`, whose tall
+  portraits on a transparent 512 px square are cropped to the painted part
+  and fitted whole into the 2:1 picture box). Each Skyrim skill shows its
+  nearest picture (Two-handed as Axe or Blunt, Pickpocket as Sneak,
+  Enchanting as Enchant or Mysticism).
+
+**Where the art comes from: the installs, by content.** Every registered game
+install (`source_registry.directories`, never an imported mod) is indexed once
+(`menu_art.GameFiles`: its loose files, its Morrowind-format archives and its
+Oblivion-format v103 ones; Fallout's and Skyrim's are skipped by version), and
+an install supplies a game's art when it holds that game's marker texture
+(`menu_thick_border_top.dds`, `attributes_icon_strength.dds`) -- whatever its
+plugins are called. So Arktwend's Data Files supply Morrowind's art and
+Nehrim's supply Oblivion's; the scan takes about a second here. The GUI greys
+out a choice no install can supply, and fills its cascade on first open so
+startup pays nothing. An unset choice (or one whose art is missing on this
+machine) builds from what is there: Morrowind's look and icons when found,
+else Skyrim's look and Oblivion's icons. `package_runtime_dll.py` reads both
+keys (`--menu-style`, `--menu-icons` override them).
+
+**The plugin's colors follow the movie.** The runtime colors names, topics and
+buttons itself (hover, disabled, headers), so both palettes are generated into
+`menu_layout.h` as `kMorrowindColors` / `kSkyrimColors`. A Skyrim-style movie
+carries an empty `SkyrimStyle` sprite; each menu checks for it when it opens
+(`_root.SkyrimStyle._x` reads only when the sprite exists) and colors with the
+matching palette. A movie and its palette therefore always agree, whichever
+style the user packaged.
+
+**The font stays MysticCards in both styles.** The plugin lays text out with
+that face's advance table (`menu_layout.h` `kAdvance`: dialogue page breaks,
+the level-up values beside their names), so a second face would need a second
+table chosen at runtime. Skyrim's own `$EverywhereMediumFont` (imported from
+`gfxfontlib.swf`, which the first probe proved draws) is the candidate if the
+look needs it.
+
+#### <a id="menu-previews"></a>Previews without the game
+
+`tools/generators/menu_preview.py --out DIR [--style skyrim] [--icons oblivion]`
+renders every menu to PNGs: the dialogue window, the stats window bare and with
+an attribute and a skill tooltip, and the level-up dialog mid-step. It draws
+the MOVIE ITSELF -- it reads back the tags the generators wrote (bitmaps, the
+bitmap- and solid-rect shapes, sprites, placements, text fields) -- so a
+preview cannot drift from what ships. What the plugin would set at runtime
+(texts, row positions, covers, which class image shows, where a tooltip sits)
+is a sample STATE per instance name; the tooltip's state follows
+`StatTip::Place`. Text is drawn in the same MysticCards face the movie embeds.
+
+### <a id="sheet-off"></a>The sheet off
+
+`Enabled=0`: the player's eight attributes read 100, so no TES3 gate shuts on
+one, and Personality reads Skyrim's Speech, which persuasion and barter weigh
+beside Speechcraft. The tick keeps running only to hand every held buff back,
+so a save made with the sheet on plays as vanilla Skyrim. NPCs keep their
+authored attributes either way.
+
+### <a id="attribute-effects"></a>Attribute effects (2026-10-02, unconfirmed in game)
+
+**Code:** `plugin/game_calls_attributes.cpp`; import
+`magic_morrowind.MW_ATTRIBUTE_EFFECTS`, `magic_variants.build_av_variants`,
+`morrowind_teleport.teleport_lines`.
+
+Drain (17), Damage (22), Restore (74), Fortify (79) and Absorb (85) Attribute
+convert as script-less Script effects, still one variant MGEF per attribute
+(`TES4MW079FortifyAttributeLuck`). `teleports_formid.txt` names each variant
+and its delivery and Ability clones as `index:attribute`. Before this they
+landed on stand-in actor values (Fortify Willpower on `MagickaRate`, Fortify
+Endurance on Health), which the buffs would have counted twice.
+
+Each tick every actor's active effects are summed per attribute, as OpenMW's
+`MagicEffects` does: Fortify adds and Drain takes away while they last; Damage
+lowers the attribute by its magnitude every second until Restore gives it back
+(`attrdamage|<id>`, so it survives a save). The stat reads add the result to
+the base, so scripts, dialogue, persuasion and the buffs see it; a `Set`/`Mod`
+writes the base. The player is summed every tick; an NPC from the moment the
+`OnMagicEffectApply` sink sees an attribute effect land on it until nothing is
+left, under its base NPC_'s TES3 id.
+
+**Absorb** takes from its target and gives to its caster while the target
+carries it. The apply event names the caster; the active effect has no caster
+field we read, so the pair is kept by (target, attribute), and two casters
+absorbing the same attribute of one target pay the later one.
+
+The same table change fixed a gap in the older runtime effects: an Ability
+clone (`ability_variant`) of Sanctuary or SwiftSwim was never listed, so a
+constant ability carrying one did nothing.
+
+### <a id="skill-cap"></a>The skill cap (2026-10-02, unconfirmed in game)
+
+Morrowind's trainers refuse a skill at its governing attribute
+(`sNotifyMessage17`, OpenMW `trainingwindow.cpp:186`, which reads the
+fortified attribute). With `SkillCap=1` the runtime extends that to skill use:
+
+- **Use:** PlayerCharacter vtable slot 247 (`AdvanceSkill`, id 40488) is
+  swapped. Every use experience reaches it virtually, and so does
+  `Game.AdvanceSkill`; no direct call to it exists on 1.6.1170. A capped skill
+  gains nothing.
+- **Trainers:** the training menu's train step (id 52667) is reached through
+  its one call in id 52662. A capped skill is refused with Morrowind's line
+  before any gold changes hands.
+- **Books** (id 17842) and `Game.IncrementSkill` (id 55616) increment through
+  other callers and still raise a capped skill, as in Morrowind.
+
+The governing attribute is the namesake skill's, as the level-up credits use
+([leveling](#leveling)).
+
+**Gated on the whole chain.** A cap with no way to raise the attribute
+blocks the skill forever, so it holds only when all of these are true:
+- the sheet is on and `SkillCap` is not 0;
+- the stats window and the level-up menu both installed, and the tick that
+  opens the step is running (`InstallCharacterSheet` sets the cap last);
+- the player's attributes have an authored start, either the sidecar's
+  `player` NPC_ row or a race start from `RACE.txt`
+  (`PlayerAttributesKnown`). Without one every attribute reads 0, which
+  would cap every skill;
+- the skill's namesake has a SKIL row naming its governing attribute.
+
+### <a id="tes4-tables"></a>Every converted game with attributes (2026-10-02, unconfirmed in game)
+
+**Code:** `tes5_import/actors/attribute_tables.py`,
+`plugin/script_tables.cpp` (`AttributeGlobals`, `SkillCount`),
+`plugin/game_calls_attributes.cpp` (`SyncAttributeGlobals`),
+`plugin/leveling.cpp` (`SettleAttributeGlobal`)
+
+The sheet installs whenever any loaded sidecar staged a SKIL table, not
+only when a Morrowind sidecar staged dialogue. Every game uses the same
+attributes, the same 18 Skyrim skills and the same formulas for now, so the
+menus are unchanged.
+
+**What a TES4 plugin stages.** The import writes these into
+`SKSE/Plugins/MorrowindRuntime/<plugin>/`, in the Morrowind tables' own
+formats, from the plugin's own records:
+
+| File | Rows | Key |
+|---|---|---|
+| `SKIL.txt` | governing attribute, specialization, the two use values | the namesake TES3 skill (Blade is Long Blade's 5) through `TES4_SKILL_TO_MW`, the inverse of `MW_SKILL_TO_TES4`. Oblivion has no Enchant, so with no Morrowind installed Enchanting has no governing attribute: no credit, no cap |
+| `RACE.txt` | male and female `ATTR` | the Skyrim race a playable race becomes, and its vampire race; a race Oblivion knows wins over a face-part stand-in |
+| `NPC_.txt` | identity, level, the 8 attributes, the 27 TES3 skill slots | EditorID. A slot reads the TES4 skill it folds into; a creature's reads its Combat, Magic or Stealth skill by that skill's specialization, as OpenMW's creature does. Oblivion's `Player` row is the start a race moves |
+| `attributes_formid.txt` | `strength=Plugin.esm\|FormID` | the player attribute globals this plugin itself holds |
+
+**No actor index.** A TES4 sidecar must never write `NPC__index.txt`.
+That table is what routes an NPC's activation to Morrowind dialogue.
+
+**No GMST table.** Oblivion's ESM authors no `iLevelUp##Mult`; the exe
+holds them. The runtime's fallback is Morrowind.esm's values
+(`kLevelUpMult`: 2, 2, 2, 2, 3, 3, 3, 4, 4, 5), so the step gains the same
+with or without Morrowind installed. It used to fall back to +1.
+
+**Layering.** A master's folder sits below its dependents, so in
+Morroblivion mode the compat patch's Morrowind rows win wherever both
+games have a row. Oblivion's rows only fill gaps.
+
+**The attribute globals.** Each sample tick (about every 330 ms in
+gameplay), `SyncAttributeGlobals` does this for every listed global:
+1. Reads the global.
+2. If a script changed it since the runtime last wrote it, moves the
+   player's BASE attribute by the difference.
+3. Writes the attribute back into the global.
+
+The last written value is kept in the co-save. After a load it matches the
+global the save restored, so only a real script write registers. With the
+sheet off, the attribute reads 100 and so does the global.
+[Scripts and conditions](script_convert.md#player-attributes) read the
+globals.
+
+### <a id="tes4-attribute-magic"></a>TES4 attribute magic runs as Morrowind's (2026-10-02, unconfirmed in game)
+
+**Code:** `magic_morrowind.TES4_ATTRIBUTE_EFFECTS`, `runtime_attribute_index`,
+`magic_variants.build_av_variants`, `morrowind_teleport.copy_rows`
+
+Oblivion's five attribute effects work by Morrowind's rules (UESP: Damage
+Attribute takes its magnitude every second for the duration and holds until
+restored). Each one becomes the same runtime effect:
+
+| TES4 | TES3 |
+|---|---|
+| DRAT Drain | 17 |
+| DGAT Damage | 22 |
+| REAT Restore | 74 |
+| FOAT Fortify | 79 |
+| ABAT Absorb | 85 |
+
+**Same records, same ids.** Each per-attribute variant (`TES4FOATStrength`)
+keeps its EditorID and its hash key `('MGEF_AV', (code, av))`, so its FormID
+does not move. Only its body changes: it becomes a script-less Script effect
+with no actor value, as Morrowind's variants are. The plugin's sidecar lists
+each variant and its delivery and Ability clones in `teleports_formid.txt`
+as `index:attribute`.
+
+**What changes in play.** Before, each attribute acted on a Skyrim stand-in:
+Strength on CarryWeight, Endurance on Health, and so on
+(`magic.ATTRIBUTE_TO_AV`).
+- **On the player,** an effect now moves the sheet's attribute, and the buffs
+  follow it.
+- **On an Oblivion NPC,** an effect moves its stat faction rank while it
+  lasts ([NPC attributes](#npc-attributes)). An actor in no stat faction
+  (a vanilla Skyrim NPC) has none to move, and the tick drops it from its
+  watch list.
+
+Skill effects (FOSK and the rest) keep their Skyrim skills.
+
+### <a id="pre-ae-builds"></a>SE 1.5.97 and VR 1.4.15 (2026-10-02, unconfirmed in game)
+
+On these two builds the runtime loads a generated table of addresses
+(`ids_pre_ae.h`, [pre-AE tables](../reference/address_library_formats.md#pre-ae-tables)).
+It holds only the ids in `pre_ae_ids.txt`, the ones whose struct offsets were
+checked on both builds. These features run:
+- the character sheet, its Statistics tab and the level-up step;
+- the perks menu's button (and on SE its input gate and red capped skills);
+- the class and birthsign menus;
+- the attribute globals that converted TES4 scripts and conditions read;
+- the skill cap, on skill use and at trainers;
+- attribute magic, Morrowind's and TES4's, on the player and (through
+  `Actor.Get/SetFactionRank`) on TES4 NPCs. The same two natives let the
+  Sanctuary tick hold its faction rank there too.
+
+Everything else stays unresolved and off on those builds: Morrowind
+dialogue and activation, object scripts' world commands, flight, crime and
+travel. Per-build differences the code handles:
+- `ActorField` puts Actor fields 8 bytes lower than on AE.
+- VR arms the custom menu the way its own MessageBoxMenu is armed.
+- The AdvanceSkill hook finds its vtable slot itself: 247, or 249 on VR.
+- VR's TrainingMenu skill is at `+0x50`.
+- The Scaleform load log is AE only.
+
+VR menus take controller pointer input, and nothing here has been seen
+working in VR yet.
+
+### <a id="npc-attributes"></a>NPC attributes are faction ranks (2026-10-02, unconfirmed in game)
+
+**Code:** `tes5_import/actors/stat_factions.py`; `TES4_Attributes.psc`;
+`conditions._stat_faction_rank`; `plugin/game_calls_attributes.cpp`.
+
+Skyrim has no attribute actor values, so each TES4 attribute, and each kept
+skill (Athletics, Hand-to-Hand, Acrobatics), is a hidden conversion-owned
+faction (`TES4AttributeStrength`, `TES4SkillAthletics`, ...). Every converted
+TES4 NPC_ joins all eleven at its authored value; a creature joins the eight
+attribute factions. The value is the data in the record, so it needs no DLL:
+- a subject (NPC) condition on an attribute or kept skill is
+  `GetFactionRank` on its faction; the player's run-on-target ones keep the
+  attribute globals (and the kept skills their Skyrim stand-ins);
+- a script reads and writes the rank (`TES4_Attributes.ReadActor`,
+  `WriteActor`, `ModifyActor`, and `...Skill` for the kept skills). These
+  decide at run time, since a reference variable can hold the player, who
+  keeps the attribute globals and whose kept skills still read Skyrim's
+  stand-ins (Stamina, UnarmedDamage). An actor in none of the factions (a
+  vanilla Skyrim NPC) reads the old stub, 100, and a write joins it.
+  `SetFactionRank` joins a non-member itself (ids.h).
+
+**Magic on an NPC.** The runtime's attribute tick (attribute effects above)
+sums a TES4 NPC's attribute effects as it does a Morrowind NPC's and holds
+them on its ranks: each rank moves by what its effect changed since the last
+tick, clamped to 0..127, and what is held is kept under `statfx|<FormID>`,
+so the authored base is always the rank less it and a save carries both.
+Damage is capped by that base. Speed writes still go through the walk
+formula (`SpeedMult`), as the player's do.
+
+**Membership makes nobody allies.** 200 of Skyrim.esm's 1,084 factions list
+themselves as Ally (BanditFaction among them), which they would not need to
+if sharing a faction did it.
+
+**A rank is a signed byte**, so a value above 127 is stored as 127. About 60
+Oblivion, Nehrim and Morroblivion creatures are authored above it (up to
+255); every authored gate tests 100 or less.
+
+### <a id="chargen-menus"></a>Class and birthsign menus (2026-10-02, unconfirmed in game)
+
+**Code:** `plugin/chargen_menu.cpp`, `plugin/chargen_tables.cpp`;
+`core/chargen_source.py`, `script_convert/context_setup.chargen_records`,
+`message_menus.build_chargen_menus`; `tes5_import/actors/attribute_tables.chargen_lines`;
+`tools/release/package_runtime_dll.chargen_table`; `core/gui/morrowind.add_chargen_menu`;
+`tools/generators/gen_morrowind_chargen_swf.py`.
+
+Two windows of our own, built like the level-up dialog: a class menu
+(OpenMW's `PickClassDialog` and `CreateClassDialog` in one window, without
+major and minor skills) and a birthsign menu (`BirthDialog`). The console
+opens them with `showmenu MorrowindClassMenu` / `showmenu MorrowindBirthMenu`.
+
+**One menu for every game.** A player can have several converted games
+installed, and there is ONE class menu and ONE birthsign menu. Their rows
+are the shared `SKSE/Plugins/MorrowindRuntime/chargen.txt`, which the
+packaged runtime carries: `package_runtime_dll` builds it from the exported
+game that `chargenSource` in conversion_config.json names (Settings ▸
+Classes and birthsigns in the GUI, listing every exported plugin whose own
+records hold a playable class or a birthsign, Fallout excluded). Unset, it is
+the first such game whose table is complete: birthsigns, and every class
+naming its favored attributes (an export from before the TES3 CLAS export
+carried them reads -1). A menu that game has none of (Nehrim has no playable
+classes) comes from the next game that has it. Each plugin's own `chargen.txt` names only its request and
+choice globals and its own entries in menu order (`class.<i>=name`), so the
+runtime can answer a script in that plugin's terms.
+
+**One plan, masters included.** The importer, the script converter and the
+shared table all read one plan, built from the plugin's own BSGN, CLAS and SPEL and
+its direct masters', one row per record (a dependent's copy overrides). It
+used to read the plugin alone, so Morroblivion, whose birthsigns and
+playable classes are all Oblivion.esm's, converted `ShowClassMenu` and
+`ShowBirthsignMenu` to nothing. A menu built only from the masters' records
+adopts the master's MESG pages and choice globals by EditorID and does not
+write them again, so no FormID moves; a TES3 source writes no birthsign
+pages, which would come first and move its class pages' fixed ids.
+
+**Who opens them.**
+- A TES3 script's `EnableClassMenu` / `EnableBirthMenu` asks for the menu
+  directly.
+- A converted TES4 script calls `TES4_Chargen.Ask(TES4ChargenRequest, kind,
+  choice)`. Each plugin owns its own `TES4ChargenRequest` global, so the
+  runtime knows who asked. The script writes the kind (1 class, 2
+  birthsign); the runtime answers by writing minus the kind, opens the menu,
+  writes the choice global and clears the request. The choice is the asking
+  plugin's own index of the pick's NAME + 1, so its `GetIsPlayerBirthsign`
+  conditions still match; a pick the plugin does not list is -1, which `Ask`
+  turns into 0 and returns -2. A request no runtime answers within a second
+  returns -1 and falls back to the message pages, so the game plays without
+  the DLL or with the sheet off; only then does the script grant the spells
+  and write the choice itself. A request still taken after a load (the menu
+  is gone, the script still waits) is opened again.
+- Either menu waits until no other menu pauses the game, closing Skyrim's
+  dialogue menu first, as `Message.Show()` did.
+- A script often asks only while nothing is chosen yet: Morroblivion's
+  `fbmwChargen` stage 2 runs `ShowClassMenu` under `if GetPCIsClass
+  CharactergenClass` (the class its player record, `0x7` `CNAM`, starts in)
+  and stage 3 `ShowBirthsignMenu` under `if GetPlayerBirthsign == 0`. The
+  Skyrim player never has a TES4 class and OBSE's function had no conversion,
+  so both menus were skipped. The player's class is the class choice global
+  (`commands._player_class_test`: a listed class is its row; the record's
+  starting class is "no choice yet", 0), and `GetPlayerBirthsign` is the
+  birthsign choice global, 0 until a pick.
+
+**Spells.** The runtime grants a chosen sign's spells for every game and
+takes the last sign's back, as OpenMW rebuilds them. A row names each spell by
+its TES3 id, or for a TES4 sign as `Owner.esm@FormID`, the owner read off the
+sign record's own master list (a converted TES4 spell keeps its local FormID).
+
+**The class menu.** The list holds the shared classes (by display name) and a
+last "custom class" row (`sCustomClassName`). It opens on the player's class,
+else the first row, as OpenMW's dialogs do. A class shows its
+specialization, its two favored attributes, its description and its
+picture: the level-up picture of its name, else its specialization's. A
+custom class shows, where the description was, its name in an edit box
+(OpenMW's `CreateClassDialog`: the `sName` label, the box, a caret) and the
+eight attributes, of which two are picked as the level-up dialog's coins are.
+Its specialization follows the picks: the one most of the skills they govern
+belong to (the SKIL table), a tie going to the first pick's. OK needs both
+picks and a name. The list scrolls by the wheel over its rows or its
+scrollbar, by the arrows and track, and by dragging the thumb. Each window
+keeps an 8 px margin on every side.
+
+**Typing a name.** Typed through key-down events alone (key code at `+4`,
+ASCII at `+8`, modifiers at `+0x10`, CommonLibSSE `GFxKeyEvent`), a name took
+capitals only by rule, at each word's start; the case typed did not come
+through. While the class menu is open, the runtime raises the game's text
+input (`ControlMap::AllowTextInput`, a counter byte at `+0x128` on 1.6.1170,
+`+0x120` on 1.5.97, `+0x140` on VR; see
+[address_library_formats.md](../reference/address_library_formats.md#hand-proven)),
+and the game then sends Scaleform character events (type 13, the character
+at `+4`) with its case. Backspace and Enter stay on key events. Until the
+first character event arrives, a key still types its own letter, so typing
+works if character events never come. A name is limited to what fits beside
+its label in the stats window. The co-save keeps the name as typed (`Q`
+row); the chargen variables hold it lowercased, which older saves answer.
+
+**The birthsign menu's spell list** is OpenMW's `BirthDialog::updateSpells`:
+Abilities, Powers and Spells (`sBirthsignmenu1`, `sPowers`,
+`sBirthsignmenu2`) each over its spells' names, each spell's effects under it
+beside the effect's icon, written by `MWSpellEffect::updateWidgets`: an
+ability's constant effects have no duration or range ("Fortify Personality 25
+pts"), a power's and a spell's do ("Restore Health 2 pts for 30 secs on
+Self"). `core/birthsign_text.py` writes the lines when the runtime is
+packaged, into the shared table (`kind~icon~text`). A Morrowind sign's
+spells come from the TES3 binaries with the game's own settings (the
+export averages an effect's magnitude range); the effect names, units and
+magnitude display types are OpenMW's (`getMagicEffectString`,
+`getMagnitudeDisplayType`, the hard-coded effect flags). A TES4 sign's come
+from its export: the MGEF's name, its last word replaced by the attribute or
+skill it uses. Each effect icon is read from whichever install holds it
+(Morrowind's `icons\`, Oblivion's `textures\menus\icons\`); the movie holds
+each once per line, off the stage until the runtime moves one in. The movie
+has 9 lines; the most any sign shows is 8 (Morrowind's Tower).
+
+**What a class does.** Each favored attribute starts 10 higher (OpenMW's
+`MechanicsManager::buildPlayer`), held apart from the race start so either
+can change alone, and re-scored retroactively like a race. Major and minor
+skills are not built. The specialization is kept for the sheet. The
+choice rides the co-save under `chargen|player`.
+
+**Pictures.** The class pictures are the level-up dialog's. Birthsign
+pictures are every texture in the icon set's birthsign folder (Morrowind's
+`textures\birthsigns`, or Oblivion's and Nehrim's `textures\menus\birthsign`),
+keyed by sign with one rule shared by the movie and the sidecar
+(`message_menus.birthsign_key`: `tx_birth_apprent` and
+`birthsign_the apprentice` are both `apprentice`). The movie parks them off
+the stage, and the runtime moves the chosen one in, since which pictures a
+movie holds depends on the art installed.
+
+### <a id="statistics-tab"></a>The Statistics tab (2026-10-02, unconfirmed in game)
+
+**Code:** `plugin/stats_sheet.cpp`, `plugin/stat_rows.cpp`;
+`tes5_import/actors/misc_stats.py`, `record_types/crime.bounty_rows`;
+`script_convert/misc_stats.py`, `commands.pc_misc_stat`, `converter._mirror_page_stat`.
+
+The stats window's right pane has two tabs above it: Skills (Skyrim's 18 and
+the player's factions, as before) and Statistics. The box on the left holds
+Level, Race and Class, as OpenMW's does (the race's name is TESRace's
+`TESFullName`, `+0x28`). The Statistics tab lists the birthsign, then under
+each converted game's name: its bounty per realm, its Fame and Infamy, its
+general statistics and the rows of its own statistics page. Morrowind_ob's
+heading is Morroblivion. Reputation is Morrowind's own stat, so it leads the
+Morrowind or Morroblivion group (a group of its own when neither game stages
+a `stats.txt`) and shows for no other game. No row is cut: a label is short
+enough to fit, and a custom class's name is kept short enough at entry.
+
+**Bounty per game.** Each plugin's `stats.txt` lists the crime realms it owns
+(`bounty.<i>=name|Plugin|FormID`, main realm first, see
+[tes_runtime_crime.md](tes_runtime_crime.md#bounty-realms)). The main realm's
+row is `sMiscBounty`, the second's `sMiscSEBounty`, the two bounties
+Oblivion's own page showed ("Shivering Isles Bounty"; the realm's own name,
+"Realm of Sheogorath Bounty", did not fit). A game with neither setting
+names its realm. The value is that faction's crime gold. Morroblivion, TR
+and the compat patch share Morrowind_ob's realm, so it shows once.
+
+**Which statistics.** Oblivion's own content writes only stats 14, 15, 16,
+19 and 27. Its engine keeps the rest. Four of those five map to Skyrim's
+stats. A conversion-owned global, `TES4MiscStat<NN>`, holds every other
+index a plugin's scripts read or write, and the tab lists each one something
+writes:
+- a script's `ModPCMiscStat`;
+- a command whose engine code counted it (`misc_stats.COMMAND_STATS`):
+  Oblivion.exe's `CloseCurrentOblivionGate` (`0x515d20`) adds 1 to Oblivion
+  Gates Shut (13, the player's `+0x68c`) whenever it closes a gate, which no
+  script does; the polyfill now does the same, for Oblivion's 16 calls.
+- Nothing writes Picks Broken (9) or Jokes Told (25): Oblivion's lockpicking
+  and persuasion minigames counted them, and Skyrim has neither, so they are
+  not listed.
+
+`ModPCMiscStat` writes the global with `GlobalVariable.Mod`. `GetPCMiscStat`
+reads it, plus Skyrim's own stat of that name where one exists. Before this,
+those writes were dropped. Nehrim writes 3, 13, 18, 22 and 24 (22 and 24 are
+its experience and learning points).
+
+**Labels** are the `sMisc*` settings Oblivion.exe reads (its strings, matched
+to xEdit's `wbMiscStatEnum` order; Fame and Infamy are `sMiscFame` and
+`sMiscInfamy`). A game's rows take the deepest of its own plugins' labels
+(its master and what is built on it, `LayersRelated`), so Translation.esp's
+English beats Nehrim's German and neither renames Oblivion's rows; xEdit's
+name otherwise. Nehrim's labels for stats 22 and 24 ("Overall amount of
+experience points", "Current amount of learning points", and the German) are
+too long for a row, so `misc_stats.SHORT_LABELS` shortens them to "Total XP"
+and "Learning Points" ("Gesamt-EP", "Lernpunkte"). Each TES4 plugin's
+`stats.txt` carries its standing globals, `misc.<index>=setting|default|
+Plugin|FormID` for each stat its scripts write, and `label.<setting>=text`
+for the settings it authors. Each global is listed once, under the
+earliest-loaded plugin that lists it: Translation.esp's scripts write
+Nehrim's stats 22 and 24 too, and they show under Nehrim.
+
+**A game's own page.** Nehrim's journal (`GlobaltagebuchScript`, step 50)
+showed the bank balance, `ErothinBankQuest.PlayerKontostand`, and the
+interest percent, which it set to 2 before MQ14 stage 20, 1 before MQ19
+stage 70, and 3 after. The runtime cannot read a Papyrus variable (the VM's
+variable lookup has no Address Library id), so the converter follows every
+write of a variable `misc_stats.PAGE_VARIABLES` names with a write of its
+mirror global, `TES4PageStat_<Quest>_<Variable>`; all 22 writes are the
+remote `Set ErothinBankQuest.PlayerKontostand to` form. The interest is a
+`PAGE_STAGE_RULES` row (`page.<i>=label|Quest@FormID,stage,value;...|otherwise`)
+that the runtime evaluates against each quest's current stage, the u16 at
+TESQuest `+0x228` that `Quest.GetCurrentStageID` returns on 1.6.1170, 1.5.97
+and VR alike. Both labels are English.

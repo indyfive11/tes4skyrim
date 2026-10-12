@@ -6,17 +6,16 @@ Measured over `export/Tamriel Rebuilt 25.08.12`: 508 registered command(s), 9055
 
 | Status | Commands | Call sites |
 |---|---:|---:|
-| ported | 358 | 87398 |
+| ported | 361 | 87592 |
 | no-op | 16 | 2688 |
-| STUB | 134 | 471 |
+| STUB | 131 | 277 |
 
-🛑 **102 of the 134 stubbed commands have ZERO call sites in either corpus** — OpenMW's console (`tgm`, `coc`, every `toggle*`), the chargen menu toggles, the Bloodmoon werewolf commands and OpenMW's own hooks (`reloadlua`, `setnavmeshnumber`). The real remaining work is the 32 command(s) below.
+🛑 **102 of the 131 stubbed commands have ZERO call sites in either corpus** — OpenMW's console (`tgm`, `coc`, every `toggle*`), the chargen menu toggles, the Bloodmoon werewolf commands and OpenMW's own hooks (`reloadlua`, `setnavmeshnumber`). The real remaining work is the 29 command(s) below.
 
 ## Stubbed, and something calls it
 
 | Command | Domain | Signature | Calls |
 |---|---|---|---:|
-| `playgroup` | Animation | `c/l` | 178 |
 | `getattacked` | Misc | — → `l` | 45 |
 | `modwaterlevel` | Cell | `f` | 22 |
 | `getarmortype` | Container | `l` → `l` | 21 |
@@ -25,7 +24,6 @@ Measured over `export/Tamriel Rebuilt 25.08.12`: 508 registered command(s), 9055
 | `changeweather` | Sky | `Sl` | 15 |
 | `getwaterlevel` | Cell | — → `f` | 15 |
 | `getstandingactor` | Misc | — → `l` | 14 |
-| `loopgroup` | Animation | `cl/l` | 13 |
 | `removefromlevcreature` | Misc | `ccl` | 13 |
 | `setwaterlevel` | Cell | `f` | 12 |
 | `getpcjumping` | Misc | — → `l` | 11 |
@@ -40,7 +38,6 @@ Measured over `export/Tamriel Rebuilt 25.08.12`: 508 registered command(s), 9055
 | `menutest` | Gui | `/l` | 3 |
 | `onknockout` | Stats | — → `l` | 3 |
 | `onmurder` | Stats | — → `l` | 3 |
-| `skipanim` | Animation | — | 3 |
 | `disableplayerjumping` | Control | — | 1 |
 | `disableplayermagic` | Control | — | 1 |
 | `enableplayerjumping` | Control | — | 1 |
@@ -114,6 +111,7 @@ Not opcodes, so no call site names them: a script declares `short OnPCEquip` and
 | `removespell` | Stats | `cz` | 201 |
 | `say` | Sound | `SS` | 184 |
 | `placeitemcell` | Transformation | `ccffffX` | 179 |
+| `playgroup` | Animation | `c/l` | 178 |
 | `setangle` | Transformation | `cf` | 159 |
 | `setdisposition` | Stats | `l` | 159 |
 | `unlock` | Misc | — | 152 |
@@ -197,6 +195,7 @@ Not opcodes, so no call site names them: a script declares `short OnPCEquip` and
 | `setspeed` | Stats | `f` | 15 |
 | `modfatigue` | Stats | `f` | 14 |
 | `getluck` | Stats | — → `f` | 13 |
+| `loopgroup` | Animation | `cl/l` | 13 |
 | `disableteleporting` | Misc | — | 12 |
 | `getmagicka` | Stats | `x` → `f` | 12 |
 | `modalteration` | Stats | `f` | 12 |
@@ -256,6 +255,7 @@ Not opcodes, so no call site names them: a script declares `short OnPCEquip` and
 | `setbluntweapon` | Stats | `f` | 3 |
 | `setmediumarmor` | Stats | `f` | 3 |
 | `setpcfacrep` | Stats | `l/c` | 3 |
+| `skipanim` | Animation | — | 3 |
 | `getdestruction` | Stats | — → `f` | 2 |
 | `gethandtohand` | Stats | — → `f` | 2 |
 | `getlongblade` | Stats | — → `f` | 2 |

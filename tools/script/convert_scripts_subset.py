@@ -126,7 +126,7 @@ def main(argv=None) -> int:
     scpt, info, qust = _select(args, export_dir, scpt_work, info_work,
                                qust_work)
 
-    pipeline._script_worker_init(*ctx['initargs'])
+    pipeline.script_worker_init(*ctx['initargs'])
     stats = pipeline._new_stats()
     if scpt:
         pipeline._merge_stats(stats, pipeline._script_worker_run(('scpt', scpt)))

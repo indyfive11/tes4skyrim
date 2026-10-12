@@ -43,21 +43,19 @@ FALLOUT_HANDLED_COMMANDS = frozenset({
 #: S.P.E.C.I.A.L. stats TES4_ATTRIBUTES lacks; read and written as TES4's attributes are.
 FALLOUT_ATTRIBUTES = frozenset({'perception', 'charisma'})
 
-#: FO3/FNV actor-value name -> Skyrim's, where the value exists under another name.
+#: FO3/FNV actor-value name -> Skyrim's, as conditions_falloutnv.FALLOUT_AV_TO_TES5 maps the index.
 FALLOUT_ACTOR_VALUE_MAP = {
-    'barter': 'Speechcraft',
-    'lockpick': 'Lockpicking',
-    'repair': 'Smithing',
-    'speech': 'Speechcraft',
+    'barter': 'Speechcraft', 'speech': 'Speechcraft', 'lockpick': 'Lockpicking',
+    'repair': 'Smithing', 'medicine': 'Restoration', 'unarmed': 'OneHanded',
+    'meleeweapons': 'OneHanded', 'guns': 'Marksman', 'smallguns': 'Marksman',
+    'bigguns': 'Marksman', 'energyweapons': 'Marksman',
 }
 
-#: FO3/FNV actor-value names Skyrim's table lacks: a read is inert, a write dropped.
+#: FO3/FNV actor-value names with no Skyrim value: a read is inert, a write dropped.
 FALLOUT_UNMAPPED_ACTOR_VALUES = frozenset({
-    'actionpoints', 'bigguns', 'bloodymess', 'damagethreshold',
-    'dehydration', 'empresist', 'energyresist', 'energyweapons', 'explosives',
-    'guns', 'hunger', 'karma', 'medicine', 'meleeweapons', 'radiationrads',
-    'radresist', 'science', 'sleepdeprevation', 'smallguns', 'survival',
-    'turbo', 'unarmed', 'xp',
+    'actionpoints', 'bloodymess', 'damagethreshold', 'dehydration', 'empresist',
+    'energyresist', 'explosives', 'hunger', 'karma', 'radiationrads', 'radresist',
+    'science', 'sleepdeprevation', 'survival', 'turbo', 'xp',
 })
 
 #: FO3/FNV spellings of shared handlers: alias -> the handler's TES4 name.

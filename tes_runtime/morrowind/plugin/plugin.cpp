@@ -8,6 +8,7 @@
 #include <windows.h>
 
 #include <cstdio>
+#include <iterator>
 #include <type_traits>
 
 #include "activation.h"
@@ -15,12 +16,15 @@
 #include "conversation.h"
 #include "cosave.h"
 #include "game_calls.h"
+#include "ids_pre_ae.h"
 #include "log.h"
 #include "main_thread.h"
 #include "menu.h"
 #include "object_tick.h"
 #include "paths.h"
+#include "script_tables.h"
 #include "skse_abi.h"
+#include "stats_sheet.h"
 #include "store.h"
 
 namespace tesruntime::mw {
@@ -60,6 +64,10 @@ void OnSKSEMessage(SKSEMessagingInterface::Message* msg) {
     InstallConversation();
     InstallGameCalls();
     InstallActivation();
+    // Only a converted game with attributes -- one whose sidecar staged its
+    // skills, Morrowind or TES4 -- has attributes to show or raise.
+    Log("sheet: %zu skill row(s) staged", SkillCount());
+    if (SkillCount()) InstallCharacterSheet();
     StartObjectTick();
 }
 
@@ -137,7 +145,9 @@ __declspec(dllexport) bool SKSEPlugin_Load(const SKSEInterface* skse) {
     tesruntime::Log("MorrowindRuntime %u loading (runtime %08X, SKSE %08X)",
                     tesruntime::mw::kPluginVersion, skse->runtimeVersion,
                     skse->skseVersion);
-    if (!tesruntime::g_versionDb.Load(skse->runtimeVersion)) {
+    if (!tesruntime::g_versionDb.Load(skse->runtimeVersion) &&
+        !tesruntime::g_versionDb.LoadPreAe(skse->runtimeVersion, tesruntime::pre_ae::kTables,
+                                           std::size(tesruntime::pre_ae::kTables))) {
         tesruntime::Log("addresses: no Address Library database for this "
                         "runtime; falling back to signature scans only");
     } else {

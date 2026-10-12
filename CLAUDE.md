@@ -21,36 +21,6 @@ caching, skipped record types, the export text format, and the directory layout.
 
 ---
 
-## <a id="no-stopping"></a>Questions vs. tasks
-
-- **A question gets an answer, not code.** A plan, an analysis, a doc edit, or
-  the user thinking out loud about an approach is not permission to build. Build
-  only on "do it" / "implement" / "fix". Bugs you notice along the way get
-  reported, not fixed.
-- **A task gets finished: fixed, built, verified — without ending the turn.**
-  Don't end the turn to give a status update, offer options ("which do you
-  want?" — pick one), ask "want me to X?" (do X), or hand back a diagnosis
-  without the fix. If something asked for is still unsolved, you are not done.
-- **Keep the user informed while you work.** Post a one-line update before
-  each step (what you found, what you're editing, testing or building) —
-  these don't end the turn. Silence until the end is wrong; so is a wall of
-  text. Close with a short report.
-- **Low confidence is not a reason to stop.** The user would rather you finish
-  and be wrong than stop and ask. Being wrong repeatedly means go back to
-  [Verifying](#verifying-your-work) and find a different mechanism. Confessing
-  a bad track record as the reason to stop is still a stop.
-- **Report uncertainty at the end.** State the assumption you worked under,
-  finish every unblocked part, and say what was blocked.
-- **You may stop to ask only when:**
-  - proceeding is unsafe or destructive (deleting data, force-pushing,
-    [FormID drift](#formid-drift));
-  - you want to use the `Agent` tool (always ask first, including `Explore`);
-  - a fix would make a feature need a runtime DLL (`tes_runtime/`) when it
-    didn't before. A DLL is the last resort: first find the engine's own
-    mechanism (records, Papyrus, what vanilla does);
-  - you need the user to do something only they can do (leave the game running,
-    play a build). Anything you could do yourself, do.
-
 ## Safety rules
 
 These protect things that are hard or impossible to get back.

@@ -494,7 +494,7 @@ def build_player_alias_plan(by_type: dict, xref, fid_to_edid: dict,
 # events above); matched against the raw SCTX source.
 _TES4_REFERENCE_EVENTS = frozenset({
     'onpackagedone', 'onpackagestart', 'onpackagechange',
-    'onactivate', 'ondeath', 'onhit', 'onalarm', 'onstartcombat',
+    'onactivate', 'ondeath', 'onknockout', 'onhit', 'onalarm', 'onstartcombat',
     'onload', 'onequip', 'onunequip', 'onadd', 'ondrop', 'onsell',
 })
 

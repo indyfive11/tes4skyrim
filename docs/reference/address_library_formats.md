@@ -100,6 +100,81 @@ in the AE database — so a lookup looks valid while resolving nothing we need.
 VR therefore resolves by **signature only**, as `CreatureRuntime`'s `ids.h` does with
 `|`-separated prologue alternates.
 
+## <a id="pre-ae-tables"></a>Pre-AE builds get a generated table
+
+SE 1.5.97 and VR 1.4.15 are both frozen: neither will ship another exe. So
+rather than translating ids at runtime, `tools/disasm/pre_ae_map.py` finds,
+once, each AE id's function or global in each build and writes
+`ids_pre_ae.h` beside the plugin's `ids.h`. On exactly one of those runtimes,
+`VersionDb::LoadPreAe` loads that build's rows keyed by **AE id**, so no call
+site changes. An id the tool could not prove is simply absent, which leaves
+its feature unresolved and off, never pointed at a wrong function.
+
+How a row is proven (1.6.1170 → 1.5.97, then 1.5.97 → VR):
+- **papyrus:** the native's position among the callbacks its registration
+  loads.
+- **string:** a string literal only that function references, found in both
+  builds.
+- **vtable:** the RTTI class the vtable's object locator names, at the same
+  locator offset.
+- **bytes:** the function's first 16–28 bytes, with every 4-byte displacement
+  and immediate masked, occur exactly once in each build.
+- **slot:** the same slot of the vtable matched by its class.
+- **vtref:** for a constructor or destructor, the other build's function
+  referencing the matched vtable, picked by best similarity with a clear
+  margin.
+- **strsite:** the call or jump that follows the same string load, agreed by
+  at least three sites (this finds `MenuManager::Register`).
+- **caller:** the same call position in an already-matched caller that makes
+  the same number of calls.
+- **data:** a global at the same reference position in matched functions,
+  agreed by up to three.
+
+Every function match must also pass a shape check: size within 1.6×, and a
+similar call count. Anchors that disagree drop the id. The report adds a
+mnemonic similarity score as a second check.
+
+**Only checked ids ship.** A matched id is only safe if every struct offset
+used beside it is also right on that build, and offsets are not ids. So the
+header holds just the ids the plugin's `pre_ae_ids.txt` lists, the ones whose
+paths were checked per build. MorrowindRuntime's list covers the character
+sheet, the perks menu's button and skill colors, the attribute globals, the
+skill cap and attribute magic, with
+`Actor.Get/SetFactionRank` (54686, 54750) for a TES4 NPC's attributes. The
+two natives were matched by masked body bytes at similarity 1.00 (and
+GetFactionRank by its registration string too); SetFactionRank's
+registration was then read in both exes, and its callback is the address
+matched (SE `0x94c9c0`, VR `0x986c30`). What those checks found:
+
+| What | AE 1.6.1170 | SE 1.5.97 | VR 1.4.15 |
+|---|---|---|---|
+| Actor fields past `TESObjectREFR` (MagicTarget, actor state) | `0xa0`, `0xc0` | `-8` | `-8` (`ActorField`) |
+| MagicTarget active-effect list slot, list at `+0x58` | slot 7 | same | same |
+| ActiveEffect item `+0x48`, magnitude `+0x78`, flags `+0x7c`; item's base `+0x10` | — | same | same |
+| TESGlobal value | `+0x34` | same | same |
+| TESNPC sex flag | `+0x38` | same | same |
+| MenuManager pause count | `+0x160` | same | same |
+| IMenu base size; view, context, flags, depth at `+0x10/18/1c/20` | `0x30` | same | `0x40`: also sets `+0x30 = -1`, `+0x34 = 1`; MessageBox context 0xb, flags 0x40013 |
+| IMenu virtuals | 9 | 9 | 11 (slots 9 and 10 added; ours are no-ops) |
+| IMenu `ProcessMessage` / `NextFrame` / `Render` offsets (UIMessage, movie view slots) | — | same | same |
+| `PlayerCharacter::AdvanceSkill` slot, and PlayerSkills | 247, `+0x9b8` | 247, `+0x9b0` | **249**, `+0x10b0` (the hook finds the slot and reads the load) |
+| TrainingMenu skill | `+0x40` | `+0x40` | `+0x50` |
+| Scaleform state-bag log | used | not checked; skipped | not checked; skipped |
+
+### <a id="hand-proven"></a>Rows proven by hand
+
+`pre_ae_map.HAND_PROVEN` holds the few rows that no anchor reaches. Each
+row was read out of the disassembly:
+
+| Id | SE 1.5.97 | VR 1.4.15 | Proof |
+|---|---|---|---|
+| `kTrainingMenuTrain` (52667) | `0x8ce8e0` | `0x8fb9c0` | It is the 4th call of its caller (52662, proven by vtable slot) in all three builds. On SE and VR it runs the same steps as AE's `0x96e710`: the session limit (player `+0x930` SE, `+0x1030` VR), the trainer's maximum, the gold check, taking the gold, then incrementing the menu's skill. The skill is at `+0x40` on SE and at `+0x50` on VR, where IMenu is 0x10 longer. AE compiles it differently, so the shape check alone rejects it |
+| `kMenuManagerRegister` (82086) | `0xebf9c0` | `0xf1be20` | The jump that follows a menu-name string load (`MessageBoxMenu`, `Console`, `TweenMenu`, …) lands on one function in each build, at 14 of 14 such sites. On AE that function is `0xfa5480`, which `ids.h` records |
+| `kControlMapAllowTextInput` (68552) | `0xc11f30` | `0xc4e8d0` | The one match in each build for AE's body (`0xcd5910`: raise or lower the byte at `rcx+0x128`) with the offset left free: SE `+0x120` (its SE id 67252 agrees), VR `+0x140`. Too small for the shape match |
+| `kControlMapSingleton` (400863) | `0x2ec5bd0` | `0x2f8aaa0` | The global loaded into `rcx` before the calls to that function: 18 of its call sites on SE (SE id 514705 agrees), 20 on VR |
+| `kMenuManagerIsMenuOpen` (82074) | `0xebe150` | `0xf1a3b0` | The sleep/wait toggle (AE `0x95e0d0`) calls it with the menu manager singleton in `rcx` and an interned menu name in `rdx`; the same instructions before it, `mov dword [rdi], 0x46` onward, occur twice in each build. SE and VR inline the menu-table lookup that AE calls (`0xfa7020`), with the same layout (entries `+0x150`, capacity `+0x134`), then test `byte [menu+0x1c], 0x40` as AE does |
+| `kGfxReleaseManaged` (82270) | `0xecb0e0` | — | The perks menu's skill fill (AE `0x962450`, SE `0x8c20c0`) releases each value it overwrites: AE calls `0xfac750` 19 times and SE `0xecb0e0` 18, both as `rcx=[v]`, `rdx=v`, `r8=[v+0x10]`, and the two bodies are the same 155 bytes but for displacements. Its add-ref partner is called 7 times in each. VR is not needed: its perks menu has no skill labels |
+
 ## <a id="two-id-generations"></a>There are TWO id generations
 
 A stable id is stable **within a generation**, not across the AE boundary. AE
@@ -135,16 +210,7 @@ pointer, which is worse than no address at all.
 
 ### <a id="deriving-the-se-ids"></a>Deriving the SE ids
 
-`tools/disasm/se_id_map.py` derives the whole map and emits `ids_se.h`, so an
-id added to `ids.h` costs a rerun rather than a research session. Each AE id is
-anchored to something both builds name identically:
-
-| Anchor | Covers | How |
-|---|---|---|
-| `papyrus` | Papyrus natives | the script's own registration site names the native; the AE id picks which candidate it is, and the same position on the SE build is that build's native |
-| `vtable` | RTTI classes | the class's type descriptor names its primary vtable on any build |
-| `slot` | virtuals (`Activate`) | read out of the anchored vtable |
-
-Every anchor is checked against the AE build before it is trusted on SE: the
-primary vtable must *be* the AE id, and the AE id must appear at its own
-registration. An anchor that fails that check is reported, never guessed at.
+The runtime never translates an AE id into an SE id. Each frozen pre-AE build
+gets its own table of addresses keyed by AE id instead
+([pre-AE tables](#pre-ae-tables)). That replaced `se_id_map.py`, which derived
+SE ids, was never wired up, and was deleted.

@@ -179,6 +179,22 @@ def topological_order(files: list, resolve) -> list:
     return order
 
 
+def binary_master_chain(names: list, resolve) -> list:
+    """Every master the plugins `names` inherit, transitively, read from their binaries.
+
+    `resolve` maps a plugin name to its binary path, as for `topological_order`.
+    """
+    seen, todo = set(), list(names)
+    while todo:
+        source = resolve(todo.pop())
+        for master in (get_masters_from_binary(source)
+                       if source and os.path.isfile(source) else []):
+            if master.lower() not in seen:
+                seen.add(master.lower())
+                todo.append(master)
+    return sorted(seen)
+
+
 def _visit(name: str, deps: dict, visited: set, order: list) -> None:
     """Depth-first walk placing `name` after every master it declares."""
     if name in visited:

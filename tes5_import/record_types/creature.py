@@ -11,6 +11,7 @@ from ..base.constants import TES5_SKILL_ORDER
 from ..actors.creature_races import creature_capped_level, creature_health_offset
 from ..actors.combat_style import actor_combat_style
 from ..actors.confidence import flee_memberships, flee_spells
+from ..actors.stat_factions import stat_memberships
 from ..actors.creature_unarmed import creature_unarmed_ability
 from ..actors.outfits import split_inventory
 from ..packages.actor_wiring import (CLAS_CREATURE_CASTER, CLAS_CREATURE_PREDATOR,
@@ -312,13 +313,14 @@ def _crea_vmad(rec: dict, packed: bytes) -> bytes:
         value_props={'DeathAnimSeconds': ('float', death_secs or 1.2)})
     return pack_subrecord('VMAD', raw)
 def _crea_snams(rec: dict, vendor_fids: list) -> bytes:
-    """Every faction this creature joins: its own, vendor, plugin-origin, flee threshold."""
+    """Every faction this creature joins: its own, vendor, plugin-origin, flee threshold, stats."""
     ranked = [(get_formid(rec, f'Faction[{i}].FormID'),
                get_int(rec, f'Faction[{i}].Rank'))
               for i in range(get_int(rec, 'FactionCount'))]
     ranked += [(vfid, 0) for vfid in vendor_fids]
     ranked += [(origin_fid, 0) for origin_fid in origin_memberships()]
     ranked += flee_memberships(rec)
+    ranked += stat_memberships(rec, creature=True)
     return b''.join(pack_subrecord('SNAM', struct.pack('<IbBBB', fid, rank, 0, 0, 0))
                     for fid, rank in ranked)
 

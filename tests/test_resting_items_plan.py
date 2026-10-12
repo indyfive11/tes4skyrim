@@ -4,10 +4,13 @@ See: docs/commentary/asset_convert_collision.md#morrowind-stand-in-boxes
 """
 
 import math
+import struct
 
-from asset_convert.collision import resting_items_plan
+from asset_convert.collision import resting_items_morrowind, resting_items_plan
 from asset_convert.nif import fixture_plan
 from tes4_export.morrowind_patch import PATCH_NAME
+from tes4_export.tes3_reader import Tes3Record
+from tes4_export.tes4_reader import Subrecord
 
 #: The shelf's box in its own frame: 100 x 40 x 200, centered on the origin.
 _HALF = (50.0, 20.0, 100.0)
@@ -60,10 +63,10 @@ def _export(tmp_path, item_pos):
             REFR=_refs('00000A01', '00000B01', item_pos))
 
 
-def _stocked(tmp_path, item_pos, export=_export) -> bool:
-    """Whether the shelf's box holds the book placed at `item_pos`."""
+def _stocked(tmp_path, item_pos, export=_export, plugin='P.esm') -> bool:
+    """Whether `plugin`'s shelf box holds the book placed at `item_pos`."""
     export(tmp_path, item_pos)
-    path, _ = resting_items_plan.write_index(tmp_path, 'P.esm')
+    path, _ = resting_items_plan.write_index(tmp_path, plugin)
     resting_items_plan._LOADED.pop(path, None)
     plan = {fixture_plan.FIXTURE_KEY: {'f/shelf.nif'},
             resting_items_plan.RESTING_KEY: path}
@@ -115,22 +118,45 @@ def test_a_dependents_item_outside_is_not(tmp_path):
     assert not _stocked(tmp_path, (1000.0, 500.0, 205.0), _patch_export)
 
 
-def _morroblivion_patch(tmp_path, placer):
-    """The generated patch defines the shelf; `placer` stocks it."""
-    _plugin(tmp_path, PATCH_NAME,
-            STAT=[{'FormID': '00000A01', 'Model.MODL': 'f\\\\shelf.nif'}],
-            BOOK=[{'FormID': '00000B01', 'Model.MODL': 'm\\\\book.nif'}])
-    _plugin(tmp_path, placer, [PATCH_NAME],
-            REFR=_refs('00000A01', '00000B01', (1030.0, 420.0, 150.0)))
-    path, _ = resting_items_plan.write_index(tmp_path, PATCH_NAME)
-    return path is not None
+def _sub(sig, *values, fmt=None):
+    """One TES3 subrecord: a NUL-terminated string, or `values` packed by `fmt`."""
+    data = struct.pack(fmt, *values) if fmt else values[0].encode() + b'\0'
+    return Subrecord(sig, data)
 
 
-def test_the_patch_reads_the_esms_it_patches(tmp_path):
-    """Tribunal is one of the patch's sources."""
-    assert _morroblivion_patch(tmp_path, 'Tribunal.esm')
+def _ref(ref_num, record_id, pos, rot=(0.0, 0.0, 0.0), scale=None):
+    """The FRMR run of one TES3 cell reference."""
+    subs = [_sub('FRMR', ref_num, fmt='<I'), _sub('NAME', record_id)]
+    if scale is not None:
+        subs.append(_sub('XSCL', scale, fmt='<f'))
+    return subs + [_sub('DATA', *pos, *rot, fmt='<6f')]
 
 
-def test_the_patch_ignores_other_mods_mastering_it(tmp_path):
-    """A third-party plugin on top of the patch does not open its boxes."""
-    assert not _morroblivion_patch(tmp_path, 'TR_Mainland.esm')
+def _source_esms(item_pos):
+    """Vanilla source records: the book, and one interior holding the shelf and it."""
+    cell = [_sub('NAME', 'Shop'), _sub('DATA', 1, 0, 0, fmt='<iii'),
+            *_ref(1, 'Furn_Shelf', (1000.0, 500.0, 0.0), (0.0, 0.0, math.pi / 2), 2.0),
+            *_ref(2, 'Book_A', item_pos)]
+    return [Tes3Record('BOOK', 0, [], record_id='Book_A'),
+            Tes3Record('CELL', 0, cell, record_id='Shop')]
+
+
+def _patch_stocked(tmp_path, monkeypatch, item_pos) -> bool:
+    """Whether the patch's shelf holds a book its source ESMs place at `item_pos`."""
+    def export(root, _pos):
+        _plugin(root, PATCH_NAME, ['Oblivion.esm', 'Morrowind_ob.esm'],
+                STAT=[{'FormID': '029EE724', 'EditorID': 'Furn_Shelf',
+                       'Model.MODL': 'f\\\\shelf.nif'}])
+    monkeypatch.setattr(resting_items_morrowind, '_source_records',
+                        lambda _root: _source_esms(item_pos))
+    return _stocked(tmp_path, item_pos, export, PATCH_NAME)
+
+
+def test_the_patch_reads_its_source_esms(tmp_path, monkeypatch):
+    """No export of Morrowind exists; the ESM's own placement stocks the shelf."""
+    assert _patch_stocked(tmp_path, monkeypatch, (1030.0, 420.0, 150.0))
+
+
+def test_the_patch_source_item_outside_is_not(tmp_path, monkeypatch):
+    """The ESM's book on top of the shelf leaves the box closed."""
+    assert not _patch_stocked(tmp_path, monkeypatch, (1000.0, 500.0, 205.0))

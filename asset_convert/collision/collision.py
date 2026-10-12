@@ -1710,89 +1710,66 @@ def bake_node_transform_into_body(coll_obj, node, extra_z=0.0):
     return True
 
 
-def hoist_collision(root):
-    """Find a collision object on any descendant NiNode and move it to root.
+def collision_owner(root):
+    """The descendant whose collision hoist_collision takes: first found depth-first, or None.
 
-    Skyrim requires bhkCollisionObject to be on the root BSFadeNode.
-    Oblivion meshes sometimes put it on a child NiNode (e.g. 'CollisionXxx').
-    We take the first one found, assign it to root, and null it on the child.
-
-    The child's FULL local transform (R, T, s) must follow the collision to the
-    root, which sits at the origin with an identity rotation.  Two mechanisms:
-
-      * bhkRigidBody(T) → bake_node_transform_into_body composes L into the
-        body transform (promoting to bhkRigidBodyT).  Shape-agnostic, so it
-        works for convex hulls, list shapes and primitives, none of which have
-        a vertex array _offset_collision_shape_verts could rewrite.  Mesh
-        collision later folds that bodyT back into the triangles in
-        _bake_body_transform_into_tris and demotes the body to plain identity,
-        matching all 6341 vanilla CMS meshes (a bhkRigidBodyT paired with
-        MOPP/CMS makes the engine emit HK_INVALID_SHAPE_KEY and CTD).
-
-      * bhkSimpleShapePhantom (trigger volumes / trap damage zones) has no
-        body transform field at all and cannot be promoted, so its transform
-        is composed into the inner shape via a bhkTransformShape wrapper.
-
-    Previously only the child's TRANSLATION was applied, and only for the two
-    strips shape types — so a rotated collision node silently lost its
-    rotation.  citadelballconystandardendleft02 is the case in point: a
-    180-degree flip about X put its collision at Y +508..+1035 while the
-    balcony it belongs to sits at Y -957..-494, i.e. no collision at all where
-    the player walks.  Its sibling citadelballconystandardendleft has the same
-    geometry with an identity collision node and always converted correctly —
-    the pair is the A/B that isolates the node rotation as the discriminator.
-
-    Returns True if a collision was hoisted.
+    The one search both the hoist and its animation gate use.
+    See: docs/commentary/asset_convert_collision.md#every-collision-owner
     """
-    def _find_and_clear(node):
-        """Return (collision_object, child_node) or None."""
-        if not isinstance(node, NifFormat.NiNode):
-            return None
-        for child in node.children:
-            if child is None:
-                continue
-            if (hasattr(child, 'collision_object') and
-                    child.collision_object is not None):
-                co = child.collision_object
-                child.collision_object = None
-                return co, child
-            result = _find_and_clear(child)
-            if result is not None:
-                return result
-        return None
+    for child in getattr(root, 'children', None) or []:
+        if child is None:
+            continue
+        if getattr(child, 'collision_object', None) is not None:
+            return child
+        found = collision_owner(child)
+        if found is not None:
+            return found
+    return None
 
-    found = _find_and_clear(root)
-    if found is None:
+
+def _frame_in_root(root, node):
+    """`node` itself when a direct child of `root`, else a stand-in carrying its transform relative to `root`.
+
+    See: docs/commentary/asset_convert_collision.md#nested-owner-transform
+    """
+    if any(c is node for c in root.children):
+        return node
+    frame = NifFormat.NiNode()
+    frame.set_transform(node.get_transform(root))
+    return frame
+
+
+def hoist_collision(root):
+    """Move collision_owner's collision object onto the root; True if one moved.
+
+    The owner's whole transform relative to the root (R, T, s) follows it:
+    baked into the rigid body (promoted to bhkRigidBodyT, which mesh collision
+    later folds into its triangles); for a bhkSimpleShapePhantom, which has no
+    body transform, wrapped around its shape in a bhkTransformShape; for an
+    unknown body, its translation alone baked into the shape's vertices.
+    See: docs/commentary/asset_convert_collision.md#hoisted-collision-dropped-child-nodes
+    """
+    child = collision_owner(root)
+    if child is None:
         return False
 
-    co, child = found
+    co = child.collision_object
+    child.collision_object = None
     root.collision_object = co
     co.target = root
 
-    t = child.translation
-    ox, oy, oz = t.x, t.y, t.z
-    has_translation = (ox != 0.0 or oy != 0.0 or oz != 0.0)
-    has_rotation = not _is_identity(child.rotation)
-    has_scale = abs(float(child.scale) - 1.0) > 1e-4
-
-    if not (has_translation or has_rotation or has_scale):
+    frame = _frame_in_root(root, child)
+    t = frame.translation
+    has_translation = (t.x != 0.0 or t.y != 0.0 or t.z != 0.0)
+    if not (has_translation or not _is_identity(frame.rotation)
+            or abs(float(frame.scale) - 1.0) > 1e-4):
         return True
 
     body = getattr(co, 'body', None)
-
     if isinstance(body, NifFormat.bhkSimpleShapePhantom):
-        # No body transform field — compose L into the shape instead.
-        _wrap_shape_in_node_transform(body, child)
-        return True
-
-    if bake_node_transform_into_body(co, child):
-        return True
-
-    # No rigid body to carry the transform (unknown body type): fall back to
-    # the translation-only vertex bake, which is still better than dropping
-    # the offset entirely.  Rotation/scale cannot be represented here.
-    if has_translation:
-        _offset_collision_shape_verts(co, ox, oy, oz)
+        _wrap_shape_in_node_transform(body, frame)
+    elif not bake_node_transform_into_body(co, frame) and has_translation:
+        _offset_collision_shape_verts(co, t.x, t.y, t.z)
     return True
 
 

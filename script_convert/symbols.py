@@ -35,22 +35,21 @@ from script_convert.constants import (
     _BASE_OBJECT_PAPYRUS, is_generated_script_type,
     _FORM_RETURNING,
 )
+from script_convert.static_scripts import static_script_files
 from script_convert.command_rows import (
     ACTOR, ACTOR_ARG_FUNCTIONS, ACTOR_ONLY_FUNCTIONS, AV, COMMAND_ROWS, MAP,
     OBJREF_SHARED_FUNCTIONS,
 )
 
-# Names a generated script may use without declaring them: Papyrus globals,
-# script-scope keywords, and the event parameters fragments are handed.
-# `pipeline._comment_dangling` imports this one; it does not keep a copy.
+#: Names a script uses undeclared: Papyrus globals, event parameters, every static script (whatever the prefix).
 IMPLICIT_NAMES = frozenset({
     'game', 'debug', 'utility', 'self', 'parent', 'math', 'input',
     # `weather` is the CLASS in `Weather.ReleaseOverride()`, not a variable.
     'weather',
     'akspeakerref', 'akactionref', 'aktarget', 'akcaster', 'akaggressor',
     'akkiller', 'akactor', 'akitem', 'aksource', 'akrefself',
-    'tes4polyfill', 'form', 'true', 'false', 'none',
-})
+    'form', 'true', 'false', 'none',
+}) | frozenset(name[:-4].lower() for name in static_script_files())
 
 
 #: Numeric types, widest first.  Arithmetic over a mixed expression takes the

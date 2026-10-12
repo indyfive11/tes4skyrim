@@ -93,6 +93,15 @@ struct SkillDef {
     float use[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 };
 
+// One RACE record's starting attributes in TES3 order, by sex: RACE.txt, keyed
+// by each Skyrim race a player of it wears (its own and its vampire race).
+// See: docs/commentary/morrowind_runtime.md#race-attributes
+struct RaceDef {
+    std::string id;
+    int male[8] = {};
+    int female[8] = {};
+};
+
 // One place an NPC's travel service goes: NPC_travel.txt.
 // See: docs/commentary/morrowind_runtime.md#travel
 struct TravelDest {
@@ -143,6 +152,8 @@ struct RankReq {
 // the faction judges by, a threshold row per rank, and the authored rank
 // names `%PCRank` prints. FACT.txt.
 struct FactionDef {
+    // The id as the plugin authors it ("Thieves Guild"), for display.
+    std::string id;
     // TES3 attribute indices, 0..7.
     int attribute[2] = {0, 0};
     // TES3 skill indices, 0..26; -1 for an unused slot.
@@ -152,6 +163,16 @@ struct FactionDef {
 };
 
 void ClearScriptTables();
+
+// The plugin a sidecar folder (trailing slash) belongs to: its folder name.
+std::string PluginOf(const std::string& pluginDir);
+
+// The sidecar table reading every table shares: each `key=value` line of a
+// file, a `sep`-separated field list, and a `Plugin.esm|FormID` value.
+void ForEachTableRow(const std::string& path,
+                     const std::function<void(const std::string&, const std::string&)>& row);
+std::vector<std::string> SplitFields(const std::string& text, char sep);
+FormRef ParseFormRefField(const std::string& value);
 
 // Reads one plugin's sidecar folder (trailing slash) into its own layer. Every
 // lookup below answers through the current layer's view (scope.h).
@@ -345,9 +366,18 @@ std::size_t CellCount();
 // staged it: a dependent re-stages its masters' rows, which repeat harmlessly.
 void ForEachTeleportMarker(const std::function<void(const TeleportMarker&)>& fn);
 void ForEachCellAnchor(const std::function<void(const CellAnchor&)>& fn);
-// Every MGEF a teleport lands as, with its TES3 effect index (60..63):
-// teleports_formid.txt, each delivery clone included.
-void ForEachTeleportEffect(const std::function<void(const FormRef&, int)>& fn);
+// A runtime-carried effect: its TES3 effect index, and for an attribute
+// effect the TES3 attribute its variant targets (-1 for any other).
+struct RuntimeEffect {
+    int index = -1;
+    int attribute = -1;
+};
+
+// Every MGEF a runtime-carried effect lands as: teleports_formid.txt, each
+// delivery clone included. A row's value is `index`, or `index:attribute`
+// for an attribute effect's per-attribute variant.
+void ForEachTeleportEffect(
+    const std::function<void(const FormRef&, const RuntimeEffect&)>& fn);
 // Each child worldspace and its parent: worlds_formid.txt. A walled city
 // shares its parent's coordinates, so an Intervention searches both as one.
 void ForEachWorldParent(
@@ -402,6 +432,27 @@ std::size_t GmstCount();
 
 // A SKIL by TES3 skill index, 0..26, or null.
 const SkillDef* FindSkill(int index);
+// How many SKIL rows the sidecars staged: none means no game with attributes.
+std::size_t SkillCount();
+
+// One global a TES4 plugin's converted scripts read for the player's
+// attribute (TES3 order, 0..7): attributes_formid.txt. Every plugin's rows
+// are kept: each game's scripts hold their own.
+// See: docs/commentary/morrowind_runtime.md#tes4-tables
+struct AttributeGlobal {
+    int attribute = -1;
+    FormRef form;
+};
+const std::vector<AttributeGlobal>& AttributeGlobals();
+
+// The hidden faction a TES4 actor's attribute (0..7) is its rank in --
+// `faction.<av>` rows of attributes_formid.txt -- or null.
+// See: docs/commentary/morrowind_runtime.md#npc-attributes
+const FormRef* StatFaction(int attribute);
+
+// The TES3 race a player wearing Skyrim race `skyrimRace` (runtime FormID)
+// starts from, or null.
+const RaceDef* FindRaceStart(std::uint32_t skyrimRace);
 
 // Registers one faction's requirements directly, so the filter's rank rules
 // are testable without staging a sidecar.

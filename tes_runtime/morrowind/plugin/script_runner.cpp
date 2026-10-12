@@ -721,6 +721,7 @@ void Machine::InstallReal() {
     InstallStatOps(*this);
     InstallSpellOps(*this);
     InstallControlOps(*this);
+    InstallAnimOps(*this);
 }
 
 void Machine::InstallFactions() {

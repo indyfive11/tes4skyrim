@@ -47,6 +47,7 @@ from .converter import (DIAL_TYPE_CONVERSATION, SERVICE_MENU_SCRIPTS,
     service_menu_kind,
     should_skip_dial, voice_file_prefix,
     GREET_TOPIC_BY_QUEST, EMPTY_DIAL_FIDS, lip_texts, startable_quests)
+from .conversation_routes import reachable_topics
 from .say_topics import (FORCE_GREET_SLOTS, SAY_TOPIC_DISPOSITIONS,
                          build_say_topic_dispositions)
 from .speak_as import SCENE_QUEST_EDID, scene_quest_fid, speaker_subrecords
@@ -220,7 +221,8 @@ def _bark_dial_fids(dials) -> set:
 def _fill_say_dispositions(by_type: dict) -> None:
     """Fill SAY_TOPIC_DISPOSITIONS; must run before the first should_skip_dial.
 
-    is_npc_to_npc_conversation reads it to spare script-spoken Type-1 topics.
+    is_npc_to_npc_conversation reads it to spare script-spoken Type-1 topics,
+    including those a StartConversation walk reaches through Choice links.
     Engine bark topics keep their non-identity RunOn=Target conditions.
     See: docs/commentary/tes5_import_dialogue.md#engine-fired-say-topics
     """
@@ -229,6 +231,8 @@ def _fill_say_dispositions(by_type: dict) -> None:
         if classify_topic(get_str(d, 'EditorID', ''), get_int(d, 'DATA.Type'))[3])
     SAY_TOPIC_DISPOSITIONS.clear()
     SAY_TOPIC_DISPOSITIONS.update(build_say_topic_dispositions(by_type, engine_fired))
+    for fid in reachable_topics(by_type):
+        SAY_TOPIC_DISPOSITIONS.setdefault(fid & 0xFFFFFF, ('drop', None))
     kinds = Counter(v[0] for v in SAY_TOPIC_DISPOSITIONS.values())
     print(f"    say-driven topics: {len(SAY_TOPIC_DISPOSITIONS)} "
           f"({kinds['ref']} retargeted to a unique ref, {kinds['drop']} drop "

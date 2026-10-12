@@ -161,15 +161,23 @@ def _line(k32) -> list:
 
 
 def needs(work: dict, other: dict) -> bool:
-    """Whether `work` may need what job `other` produces: true unless every step
-    of `other` runs after every step of `work` in the pipeline, or either names
-    a step outside it.
+    """Whether `work` may need what job `other` produces: true when `other`
+    runs a step no later than one of `work`'s on a plugin `work` converts or
+    inherits from, or when either names a step outside the pipeline.
     """
     mine = [_RANK.get(s) for s in work.get("steps", ())]
     theirs = [_RANK.get(s) for s in other.get("steps", ())]
     if not mine or not theirs or None in mine or None in theirs:
         return True
-    return min(theirs) <= max(mine)
+    return min(theirs) <= max(mine) and _related(work, other)
+
+
+def _related(work: dict, other: dict) -> bool:
+    """Whether `other` touches a plugin `work` converts or inherits; true when `work` lists no masters."""
+    if "masters" not in work:
+        return True
+    lineage = {p.lower() for p in [*work.get("plugins", ()), *work["masters"]]}
+    return not lineage.isdisjoint(p.lower() for p in other.get("plugins", ()))
 
 
 def _covered_jobs(k32, work: dict) -> list:

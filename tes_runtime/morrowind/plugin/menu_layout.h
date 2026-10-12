@@ -64,18 +64,10 @@ constexpr int kSeparatorHeight = 18;
 constexpr int kFontPx = 16;
 constexpr int kTextGutter = 2;
 
-constexpr unsigned kColorNormal = 0xCAA560;
-constexpr unsigned kColorNormalOver = 0xDFC99F;
-constexpr unsigned kColorNormalPressed = 0xF3EDDD;
-constexpr unsigned kColorLink = 0x707ECF;
-constexpr unsigned kColorLinkOver = 0x8F9BDA;
-constexpr unsigned kColorLinkPressed = 0xAFB8E4;
-constexpr unsigned kColorAnswer = 0x96321E;
-constexpr unsigned kColorAnswerOver = 0xDFC99F;
-constexpr unsigned kColorAnswerPressed = 0xF3EDDD;
-constexpr unsigned kColorHeader = 0xDFC99F;
-constexpr unsigned kColorNotify = 0xDFC99F;
-constexpr unsigned kColorDisabled = 0xB3A887;
+struct Palette { unsigned normal; unsigned normalOver; unsigned normalPressed; unsigned link; unsigned linkOver; unsigned linkPressed; unsigned answer; unsigned answerOver; unsigned answerPressed; unsigned header; unsigned notify; unsigned disabled; };
+constexpr Palette kMorrowindColors{0xCAA560, 0xDFC99F, 0xF3EDDD, 0x707ECF, 0x8F9BDA, 0xAFB8E4, 0x96321E, 0xDFC99F, 0xF3EDDD, 0xDFC99F, 0xDFC99F, 0xB3A887};
+constexpr Palette kSkyrimColors{0xC8C8C8, 0xFFFFFF, 0xFFFFFF, 0x96AFD2, 0xC8D7EB, 0xE6ECF5, 0xCD785F, 0xFFFFFF, 0xFFFFFF, 0xFFFFFF, 0xFFFFFF, 0x737373};
+constexpr const char* kStyleMarker = "_root.SkyrimStyle._x";
 
 constexpr const char* kFieldName = "_root.Name";
 constexpr const char* kFieldHistory = "_root.History";

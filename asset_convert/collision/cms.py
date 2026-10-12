@@ -109,6 +109,19 @@ def decode_cms(cms_data):
     return out
 
 
+def decode_cms_materials(cms_data):
+    """(triangle, material CRC) per triangle, in `decode_cms` order."""
+    palette = [m.material for m in cms_data.chunk_materials]
+    bpw = cms_data.bits_per_w_index
+    out = []
+    for key, tri in decode_cms(cms_data):
+        chunk = key >> bpw
+        idx = (cms_data.big_tris[key].unknown_int_1 if chunk == 0
+               else cms_data.chunks[chunk - 1].material_index)
+        out.append((tri, palette[idx]))
+    return out
+
+
 def predict_keys(cms_data):
     """Set of engine shape keys for a bhkCompressedMeshShapeData block."""
     return {key for key, _tri in decode_cms(cms_data)}

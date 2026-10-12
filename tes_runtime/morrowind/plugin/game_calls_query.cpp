@@ -251,7 +251,7 @@ void ApplyMovementFlag(const std::string& actor, int which, bool on) {
     }
     PostToMainThread([ref, on]() {
         auto* flags = reinterpret_cast<std::uint32_t*>(
-            static_cast<std::uint8_t*>(ref) + ids::kOffActorMoveFlags);
+            static_cast<std::uint8_t*>(ref) + ActorField(ids::kOffActorMoveFlags));
         *flags = on ? (*flags | ids::kActorFlagForceSneak)
                     : (*flags & ~ids::kActorFlagForceSneak);
         Log("sneak: %s -> %08X", on ? "on" : "off", *flags);

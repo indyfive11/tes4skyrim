@@ -45,8 +45,11 @@ from .overrides.ref_state import (full_lod_bases, full_lod_flags,
                                   is_full_lod_ref, record_flags,
                                   report_full_lod, set_flags)
 from .dialogue.quest import compute_quest_priorities, convert_QUST
-from .dialogue.morrowind_sidecar import write_morrowind_sidecar
+from .dialogue.morrowind_sidecar import is_tes3_export, write_morrowind_sidecar
+from .actors.attribute_tables import (write_attribute_tables, write_chargen_table,
+                                      write_stats_table)
 from .record_types.bodypart_falloutnv import write_falloutnv_sidecars
+from .record_types.world_falloutnv import is_fallout_source
 from .record_types.sound import convert_SOUN
 from .base.owned_records import (
     WELL_KNOWN_PROPERTIES,
@@ -104,6 +107,43 @@ def _emit_override(st, ov, rec: dict) -> None:
         st.writer.adoption.queue_copy(copy)
 
 
+#: Record types a later phase converts on its own.
+_SEPARATE_TYPES = frozenset({'CELL', 'WRLD', 'DIAL', 'INFO', 'REFR', 'ACHR', 'ACRE', 'LAND',
+                             'LTEX', 'SOUN', 'PGRD', 'QUST'})
+
+#: Record types whose converter takes the plugin writer.
+_WRITER_TYPES = frozenset({'ARMO', 'CLOT', 'WEAP', 'AMMO', 'NPC_', 'CREA', 'BOOK',
+                           'ENCH', 'SPEL', 'SGST', 'ALCH', 'INGR', 'HAIR', 'PROJ', 'IPCT',
+                           'IPDS', 'EXPL', 'ADDN', 'MUSC'})
+
+
+def _record_climates(st) -> None:
+    """Note every sunless climate, the masters' first, before any record converts."""
+    from .record_types.weather import record_sunless_climate, reset_sunless_climates
+    reset_sunless_climates()
+    for mrec in values_of(getattr(st.ctx, 'master_export', None), 'CLMT'):
+        record_sunless_climate(mrec)
+    for rec in st.by_type.get('CLMT', []):
+        record_sunless_climate(rec)
+
+
+def _stage_runtime_sidecars(st, export_dir: str) -> None:
+    """The runtime DLLs' sidecars: FO3/FNV limbs and guns, Morrowind's tables,
+    a TES4 source's character-sheet tables, and the chargen menus' table."""
+    write_falloutnv_sidecars(st.by_type, st.writer, st.output_path)
+    staged = write_morrowind_sidecar(
+        export_dir, st.output_path, os.path.basename(st.output_path),
+        writer=st.writer,
+        master_index=getattr(st.ctx, 'master_index', None) if st.ctx else None)
+    if not is_tes3_export(export_dir) and not is_fallout_source():
+        staged += write_attribute_tables(st.by_type, st.writer, st.output_path)
+    if not is_fallout_source():
+        staged += write_chargen_table(st.chargen_plan, st.writer, st.output_path)
+        staged += write_stats_table(st.by_type, st.writer, st.output_path, export_dir)
+    if staged:
+        print(f'  Staged {staged} runtime sidecar file(s)')
+
+
 def _phase1_simple_records(st, export_dir: str, phase_done, skip_types) -> None:
     """Phase 1: convert every flat top-level record type.
 
@@ -111,35 +151,15 @@ def _phase1_simple_records(st, export_dir: str, phase_done, skip_types) -> None:
     See: docs/commentary/tes5_import_pipeline.md#phase-1-is-serial-on-purpose"""
     print("\nConverting records...")
     st.t2 = time.time()
-
-    simple_types = set()
-    for sig in sorted(st.by_type.keys()):
-        if sig in st.all_skip:
-            continue
-        if sig in ('CELL', 'WRLD', 'DIAL', 'INFO', 'REFR', 'ACHR', 'ACRE', 'LAND',
-                    'LTEX', 'SOUN', 'PGRD', 'QUST'):
-            continue  # Handled separately
-        if sig not in IMPORT_DISPATCH:
-            continue
-        simple_types.add(sig)
-
-    _WRITER_TYPES = {'ARMO', 'CLOT', 'WEAP', 'AMMO', 'NPC_', 'CREA', 'BOOK',
-                     'ENCH', 'SPEL', 'SGST', 'ALCH', 'INGR', 'HAIR', 'PROJ', 'IPCT', 'IPDS',
-                     'EXPL', 'ADDN', 'MUSC'}
-
+    simple_types = {sig for sig in st.by_type if sig not in st.all_skip
+                    and sig not in _SEPARATE_TYPES and sig in IMPORT_DISPATCH}
     st.converted = 0
     st.errors = 0
 
     work_items = [(sig, TYPE_MAP.get(sig, sig), rec)
                   for sig in sorted(simple_types)
                   for rec in st.by_type[sig]]
-
-    from .record_types.weather import record_sunless_climate, reset_sunless_climates
-    reset_sunless_climates()
-    for mrec in values_of(getattr(st.ctx, 'master_export', None), 'CLMT'):
-        record_sunless_climate(mrec)
-    for rec in st.by_type.get('CLMT', []):
-        record_sunless_climate(rec)
+    _record_climates(st)
 
     for sig, target_sig, rec in work_items:
         converter = IMPORT_DISPATCH[sig]
@@ -165,13 +185,7 @@ def _phase1_simple_records(st, export_dir: str, phase_done, skip_types) -> None:
             edid = get_str(rec, 'EditorID', '?')
             print(f"  ERROR converting {sig} '{edid}': {e}")
             st.errors += 1
-    write_falloutnv_sidecars(st.by_type, st.writer, st.output_path)
-    staged = write_morrowind_sidecar(
-        export_dir, st.output_path, os.path.basename(st.output_path),
-        writer=st.writer,
-        master_index=getattr(st.ctx, 'master_index', None) if st.ctx else None)
-    if staged:
-        print(f'  Staged {staged} runtime sidecar file(s)')
+    _stage_runtime_sidecars(st, export_dir)
     phase_done(f'simple records ({len(work_items)})')
 
 

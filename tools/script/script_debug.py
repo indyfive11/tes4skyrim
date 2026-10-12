@@ -25,6 +25,8 @@ What it captures per script kind:
                 unloaded actor is silently dropped by the engine)
   FRAG          every INFO End fragment, i.e. the line actually PLAYED —
                 the ground truth for "did this dialogue reach the player"
+  FRAGMENT      (--fragment) entry to every Fragment_N of a fragment script,
+                static ones included, with its argument
   OBJECT        (--object) every event an object script receives, with `Self`
                 and its state variables — which events reach an item at all
   PLACE         (--place-calls) every PlaceAtMe(): the form, the spawner's and
@@ -89,8 +91,7 @@ def _add_state(src, marker=MARKER):
                      src, count=1)
     if n:
         return new
-    # No doc comment (fragments, static scripts): insert after ScriptName.
-    return re.sub(r'(ScriptName[^\n]*\n)', r'\1' + decl, src, count=1)
+    return re.sub(r'(ScriptName[^\n]*\n(?:\{[^}]*\}\n)?)', r'\1' + decl, src, count=1)
 
 
 # --- Quest scripts ---------------------------------------------------------
@@ -391,6 +392,24 @@ def instrument_fragment(path, log, fid):
     return True
 
 
+def instrument_all_fragments(path, log, tag):
+    """Log entry to EVERY Fragment_N of a fragment script (INFO, package or static), with its argument."""
+    src = open(path, encoding='utf-8').read()
+    if MARKER in src:
+        return False
+    src = _add_state(src)
+    src, n = re.subn(
+        r'(Function (Fragment_\d+)\((\w+) (\w+)\)\n)',
+        lambda m: (m.group(1) + _open_block(log)
+                   + f'  Debug.TraceUser("{log}", "FRAG {tag} {m.group(2)} '
+                   + f'{m.group(4)}=" + {m.group(4)})\n'),
+        src)
+    if not n:
+        return False
+    open(path, 'w', encoding='utf-8').write(src)
+    return True
+
+
 # --- Discovery -------------------------------------------------------------
 
 def quest_scripts(plugin, quest_edid):
@@ -577,6 +596,9 @@ def _parse_args():
                     help='any script stem: quest-style tick logging')
     ap.add_argument('--object', action='append', default=[],
                     help='object script stem: trace every event it receives')
+    ap.add_argument('--fragment', action='append', default=[],
+                    help='fragment script stem (INFO/package, static too): '
+                         'trace every Fragment_N it runs')
     ap.add_argument('--say-calls', action='store_true',
                     help='log every Actor.Say() in the touched scripts')
     ap.add_argument('--place-calls', action='store_true',
@@ -617,7 +639,8 @@ def _instrument_stems(args, d, log, touched, say_targets):
     """Instrument the --actor, --script and --object stems, each with its probe."""
     kinds = ((args.actor, lambda p, s: instrument_actor(p, log, _tag(s)), True),
              (args.script, lambda p, s: instrument_quest(p, log), True),
-             (args.object, lambda p, s: instrument_object(p, log, _tag(s)), False))
+             (args.object, lambda p, s: instrument_object(p, log, _tag(s)), False),
+             (args.fragment, lambda p, s: instrument_all_fragments(p, log, _tag(s)), False))
     for stems, probe, speaks in kinds:
         for stem in stems:
             path = os.path.join(d, stem + '.psc')
@@ -675,8 +698,8 @@ def main():
     if not os.path.isdir(d):
         print(f'ERROR: no converted scripts at {d}')
         return 1
-    if not (args.quest or args.actor or args.script or args.object):
-        print('ERROR: nothing selected — pass --quest/--actor/--script/--object')
+    if not (args.quest or args.actor or args.script or args.object or args.fragment):
+        print('ERROR: nothing selected — pass --quest/--actor/--script/--object/--fragment')
         return 1
     headers = find_headers()
     if not headers and not args.no_compile:

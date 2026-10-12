@@ -24,12 +24,15 @@ from asset_convert.sources import source_registry
 from core.plugin_masters import get_masters_from_binary
 from tes4_export.export_morrowind import format_record
 from tes4_export.morrowind_patch import PATCH_NAME
+from tes4_export.record_types.morrowind_actors import RACE_FORMIDS
 from tes4_export.record_types.morrowind_dialog import (DIAL_SIG, INFO_SIG,
                                                        export_DIAL,
                                                        export_INFO, info_id)
 from tes4_export.tes3_reader import (get_all_subrecords, get_string,
                                        get_subrecord, read_file)
 
+from ..base.equivalents import (RACE_MAP, SKYRIM_VAMPIRE_RACES,
+                                TES4_RACE_FID_TO_EDID)
 from .morrowind_travel import take_place
 from .morrowind_autocalc import (autocalc_attributes, autocalc_skills,
                                  parse_class, parse_race, parse_skill)
@@ -263,6 +266,29 @@ def _skill_line(index: int, skill: dict) -> str:
     return f"{index}={skill['attribute']}|{skill['specialization']}|{uses}"
 
 
+def skyrim_races(race_id: str) -> tuple:
+    """The Skyrim race a TES3 race becomes and its vampire race; () if none."""
+    edid = TES4_RACE_FID_TO_EDID.get(RACE_FORMIDS.get(race_id.lower(), 0))
+    race = RACE_MAP.get(edid) if edid else None
+    return (race, SKYRIM_VAMPIRE_RACES[race]) if race in SKYRIM_VAMPIRE_RACES else ()
+
+
+def race_lines(races: dict) -> dict:
+    """`{Skyrim race: 'FORMID=race|8 male|8 female'}`: each TES3 race's starting
+    attributes under every Skyrim race a player of it wears.
+
+    See: docs/commentary/morrowind_runtime.md#race-attributes
+    """
+    out = {}
+    for race_id, race in races.items():
+        if not race:
+            continue
+        male, female = (','.join(str(v) for v in race[sex]) for sex in ('male', 'female'))
+        for form in skyrim_races(race_id):
+            out[form] = f'{form:08X}={race_id}|{male}|{female}'
+    return out
+
+
 #: Records staged as one table line each, by the function that writes it.
 _LINE_TABLES = {'GMST': ('gmsts', _gmst_line), 'FACT': ('factions', _faction_line)}
 
@@ -289,6 +315,8 @@ def _take_tables(out: dict, rec) -> None:
     elif rec.type in _STAT_TABLES:
         table, parse = _STAT_TABLES[rec.type]
         out[table][key] = parse(rec)
+        if table in out['own']:
+            out['own'][table].add(key)
     elif rec.type in _LINE_TABLES:
         table, line_of = _LINE_TABLES[rec.type]
         line = line_of(rec)
@@ -329,7 +357,7 @@ def _take(out: dict, rec, topic: str) -> str:
 
 
 #: The tables `gather` stages as the plugin's own records alone; a master stages its own.
-_OWN_TABLES = ('npcs', 'factions', 'gmsts', 'skills')
+_OWN_TABLES = ('npcs', 'factions', 'gmsts', 'skills', 'races')
 
 
 def _reset_own(out: dict) -> None:
@@ -403,6 +431,7 @@ def _gather(chain: tuple, whole: bool) -> dict:
                      for index, skill in sorted(_own_rows(out, 'skills').items())}
     out['own_factions'] = _own_rows(out, 'factions')
     out['own_gmsts'] = _own_rows(out, 'gmsts')
+    out['own_races'] = race_lines(_own_rows(out, 'races'))
     return out
 
 

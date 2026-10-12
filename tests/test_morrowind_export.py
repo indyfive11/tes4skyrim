@@ -17,7 +17,8 @@ from tes4_export.export_morrowind import (MorrowindContext, convert_plugin,
                                           register_magic_effects)
 from tes4_export.record_types.morrowind_dialog import DIAL_SIG, INFO_SIG
 from tes4_export.morrowind_cell import parse_cell
-from tes4_export.morrowind_ids import IdIndex, encode_editor_id, marker_formid
+from tes4_export.morrowind_ids import (IdIndex, encode_editor_id, load_index,
+                                       marker_formid)
 from tes4_export.morrowind_markers import classify, place_name
 from tes4_export.morrowind_world import cell_grid, quadrant_suffix
 
@@ -51,6 +52,18 @@ def test_id_index_is_case_insensitive():
     assert index.lookup('Tel Mora') == '01234567'
     assert index.lookup('TEL MORA') == '01234567'
     assert index.lookup('tel mora') == '01234567'
+
+
+@pytest.mark.parametrize('grid', [[], ['XCLC.X=0', 'XCLC.Y=0']])
+def test_master_persistent_cell_is_indexed_with_or_without_a_grid(tmp_path, grid):
+    """Our own TES3 export writes no XCLC; Morroblivion's writes (0, 0). Both are found."""
+    lines = ['---RECORD_BEGIN---', 'Signature=CELL', 'FormID=00E681C5',
+             'EditorID=WrldMorrowindPersistent', 'RecordFlags=1024',
+             'DATA.Flags=2', 'ParentWRLD=008D2E7E', *grid, '---RECORD_END---']
+    (tmp_path / 'CELL.txt').write_text('\n'.join(lines) + '\n', encoding='utf-8')
+    index = load_index(str(tmp_path), types=('CELL',))
+    assert index.lookup_persistent('008D2E7E') == '00E681C5'
+    assert index.lookup_exterior((0, 0)) is None
 
 
 def test_engine_markers_are_named_not_converted():
@@ -704,6 +717,18 @@ def test_place_name_collapses_the_comma_convention():
     assert place_name('Balmora, Eight Plates') == 'Balmora'
     assert place_name('Vivec, St. Olms Canton') == 'Vivec'
     assert place_name('Nchuleft') == 'Nchuleft'
+
+
+def test_place_name_collapses_the_colon_convention():
+    """Tamriel Rebuilt separates a ship's rooms with a colon, not a comma.
+
+    See: docs/commentary/tes4_export_morrowind.md#map-markers
+    """
+    assert place_name('TEM Princess Morgiah: Hold') == 'TEM Princess Morgiah'
+    assert place_name('TEM Princess Morgiah: Cabin') == 'TEM Princess Morgiah'
+    assert place_name('Andresian Dreugh: Lower Deck') == 'Andresian Dreugh'
+    assert place_name('Dreugh: ') == 'Dreugh'
+    assert place_name(': Hold') == ': Hold'
 
 
 def test_size_outranks_kind_when_classifying():

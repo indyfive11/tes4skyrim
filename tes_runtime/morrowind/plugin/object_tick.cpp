@@ -220,6 +220,7 @@ void RunOneTick() {
     AdvanceGameSeconds(kTickDelta);
     if (Hooks().syncClock) Hooks().syncClock();
     if (Hooks().effectTick) Hooks().effectTick();
+    if (Hooks().animTick) Hooks().animTick();
     const bool cellChanged = PlayerCellChanged();
     DiscoverLoaded(cellChanged);
     const std::vector<ObjectScript*> live = BoundInstances();

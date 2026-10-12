@@ -116,6 +116,18 @@ def _drop_prefix(segs, anchor, absolute):
     return segs, data
 
 
+def texture_rel_path(raw) -> str:
+    """An authored texture path below `textures\\`, as `authored_rel` repairs it.
+
+    Every segment below the folder is kept, 'lowres\\' included
+    (`full_res_twin` decides its fallback).
+    See: docs/commentary/asset_convert_texture.md#per-game-asset-namespace
+    """
+    path = raw.decode('utf-8', errors='replace') \
+        if isinstance(raw, bytes) else str(raw)
+    return authored_rel(path)[0]
+
+
 def rewrite_tex_path(raw_bytes):
     """The namespaced `authored_rel` of an AUTHORED texture path, as DDS.
 

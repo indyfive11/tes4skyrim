@@ -15,7 +15,7 @@ from asset_convert.audio.voice_races import load_race_voices, vtyp_edid
 from ..packages.escort_when_near import (ESCORT_WHEN_NEAR_EDID,
                                          set_escort_template_fid)
 from .equivalents import CUSTOM_VTYP_EDIDS, set_voice_type
-from .owned_records import WELL_KNOWN_PROPERTIES
+from .owned_records import PLAYER_ATTRIBUTE_GLOBALS, WELL_KNOWN_PROPERTIES
 
 #: Synthesized stand-in records -> signature; a mastered plugin adopts the master's.
 _TES4_SPECIAL_RECORD_SIGS = {
@@ -23,6 +23,7 @@ _TES4_SPECIAL_RECORD_SIGS = {
     'TES4Infamy': b'GLOB',
     'TES4GoldFenced': b'GLOB',
     'TES4ControlsDisabled': b'GLOB',
+    **dict.fromkeys(PLAYER_ATTRIBUTE_GLOBALS, b'GLOB'),
 }
 
 

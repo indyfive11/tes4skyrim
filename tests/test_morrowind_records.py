@@ -19,13 +19,14 @@ from tes4_export.record_types.morrowind import (export_ARMO, export_DOOR,
                                                 export_LIGH,
                                                 export_SOUN, export_WEAP,
                                                 tes4_signature)
-from tes4_export.record_types.morrowind_actors import export_LEVI, export_NPC_
+from tes4_export.record_types.morrowind_actors import (export_BSGN, export_CLAS, export_LEVI,
+                                                       export_NPC_)
 from tes4_export.record_types.morrowind_scripts import export_SCPT
 from tes4_export.morroblivion import MorroblivionModels
 from tes4_export.morrowind_cell import parse_cell as _parse
 from tes4_export.morrowind_pathgrid import pathgrid_records
-from tes4_export.morrowind_patch import (PATCH_NAME, export_patch, patch_formid,
-                                         register_source)
+from tes4_export.morrowind_patch import (PATCH_NAME, collect_gap_records, export_patch,
+                                         patch_formid, register_source)
 
 #: Struct layouts of the fixed subrecords the tests author.
 _WPDT = '<fihHffH6Bi'
@@ -70,6 +71,23 @@ def _cell(name: str, *refs) -> reader.Tes3Record:
 def _value(lines: list, key: str) -> str:
     """The value of the one line carrying `key`."""
     return next(line for line in lines if line.startswith(key + '=')).split('=', 1)[1]
+
+
+def test_class_and_birthsign_carry_what_the_chargen_menus_show():
+    """A class keeps its two favored attributes; a sign its picture and spells, by TES3 id too.
+
+    See: docs/commentary/morrowind_runtime.md#chargen-menus
+    """
+    ctx = MorrowindContext()
+    cldt = struct.pack('<2ii10iii', 3, 5, 2, *range(10), 1, 0)
+    lines = export_CLAS(_rec('CLAS', 'Acrobat', _text('FNAM', 'Acrobat'), _sub('CLDT', cldt)), ctx)
+    assert 'DATA.PrimaryAttribute1=3' in lines and 'DATA.PrimaryAttribute2=5' in lines
+    ctx.register_own('lady\'s favor', 'SPEL')
+    sign = _rec('BSGN', 'Lady', _text('FNAM', 'The Lady'), _text('TNAM', 'birthsigns\\tx_birth_lady.tga'),
+                _sub('NPCS', b'lady\'s favor'.ljust(32, b'\0')))
+    lines = export_BSGN(sign, ctx)
+    assert _value(lines, 'Spell[0]') == ctx.resolve('lady\'s favor', 'SPEL')
+    assert _value(lines, 'SpellId[0]') == 'lady\'s favor' and _value(lines, 'FULL') == 'The Lady'
 
 
 def test_item_exporters_speak_the_tes4_vocabulary():
@@ -637,6 +655,26 @@ def test_gap_patch_holds_what_morroblivion_lacks(tmp_path):
         'ids are case-insensitive')
     assert patch_formid(('SOUN', 'ex_scrapwood01'), 1) != fid, (
         'one id under two types is two records')
+
+
+def test_gap_patch_always_carries_the_birthsigns(tmp_path):
+    """A birthsign is read by the one birthsign menu, never placed, and
+    Morroblivion's signs are Oblivion's: the patch carries Morrowind's even
+    where Morroblivion's index knows the id, as it does every GLOB.
+    See: docs/commentary/tes4_export_morrowind.md#globals-are-always-filled
+    """
+    source = _tes3_records(tmp_path / 'Morrowind.esm',
+                           [_rec('STAT', 'covered_rock'), _rec('BSGN', 'lady')])
+
+    class Supplied:
+        """An index that supplies every id."""
+
+        def lookup(self, _record_id):
+            """Every id resolves."""
+            return '01000800'
+
+    found = collect_gap_records([source], Supplied())
+    assert sorted(found) == [('BSGN', 'lady')]
 
 
 def _mgef(index: int, school: int, base_cost: float) -> reader.Tes3Record:

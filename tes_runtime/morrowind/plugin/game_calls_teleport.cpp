@@ -46,9 +46,10 @@ using RefFormFn = void* (*)(void* vm, std::uint32_t stack, void* ref);
 ProcessEventFn g_originalApply = nullptr;
 RefFormFn g_worldSpace = nullptr;
 
-// Each teleport MGEF's runtime FormID -> its TES3 index. Written once at
-// install, then only read, from whichever thread applies an effect.
-std::unordered_map<std::uint32_t, int> g_effectIds;
+// Each runtime-carried MGEF's runtime FormID -> its TES3 index and attribute.
+// Written once at install, then only read, from whichever thread applies an
+// effect.
+std::unordered_map<std::uint32_t, RuntimeEffect> g_effectIds;
 
 // Where the nearest-marker search starts: a worldspace and a point in it.
 struct Spot {
@@ -229,8 +230,9 @@ void OnTeleportEffect(int index, bool castByPlayer) {
 bool IsTeleport(int index) { return index >= kMark && index <= kAlmsivi; }
 
 // The VM's own sink, which sees every effect applied to anything. Ours notes
-// a teleport landing on the player, and moves it on the next frame, and any
-// actor a Sanctuary lands on, for the tick to rank.
+// a teleport landing on the player, and moves it on the next frame, any
+// actor a Sanctuary lands on, for the tick to rank, and any actor an
+// attribute effect lands on, with its caster, for the tick to sum.
 int ApplyHook(void* sink, const void* event, void* source) {
     const char* e = static_cast<const char*>(event);
     const auto found = e ? g_effectIds.find(*reinterpret_cast<const std::uint32_t*>(
@@ -238,14 +240,20 @@ int ApplyHook(void* sink, const void* event, void* source) {
                          : g_effectIds.end();
     void* target = e ? *reinterpret_cast<void* const*>(e + ids::kOffApplyTarget)
                      : nullptr;
-    const int index = found != g_effectIds.end() ? found->second : -1;
+    void* caster = e ? *reinterpret_cast<void* const*>(e + ids::kOffApplyCaster) : nullptr;
+    const RuntimeEffect row = found != g_effectIds.end() ? found->second : RuntimeEffect{};
+    const int index = row.index;
     if (target && index == kSanctuaryEffect) {
         const std::uint32_t actor = FormIdOf(target);
         PostToMainThread([actor]() { WatchSanctuary(actor); });
     }
+    if (target && row.attribute >= 0) {
+        const std::uint32_t actor = FormIdOf(target);
+        const std::uint32_t by = caster ? FormIdOf(caster) : 0;
+        PostToMainThread([actor, by, row]() { WatchAttributes(actor, by, row); });
+    }
     if (target && IsTeleport(index) && target == PlayerRef()) {
-        const bool byPlayer =
-            *reinterpret_cast<void* const*>(e + ids::kOffApplyCaster) == target;
+        const bool byPlayer = caster == target;
         PostToMainThread([index, byPlayer]() { OnTeleportEffect(index, byPlayer); });
     }
     return g_originalApply(sink, event, source);
@@ -253,17 +261,17 @@ int ApplyHook(void* sink, const void* event, void* source) {
 
 }  // namespace
 
-int RuntimeEffectIndex(std::uint32_t effectId) {
+RuntimeEffect RuntimeEffectOf(std::uint32_t effectId) {
     const auto found = g_effectIds.find(effectId);
-    return found != g_effectIds.end() ? found->second : -1;
+    return found != g_effectIds.end() ? found->second : RuntimeEffect{};
 }
 
 void InstallTeleportCalls() {
     g_worldSpace = Native<RefFormFn>("ObjectReference.GetWorldSpace",
                                      ids::kRefGetWorldSpace);
-    ForEachTeleportEffect([](const FormRef& effect, int index) {
+    ForEachTeleportEffect([](const FormRef& effect, const RuntimeEffect& row) {
         const std::uint32_t id = FormIdOf(Form(&effect));
-        if (id) g_effectIds[id] = index;
+        if (id) g_effectIds[id] = row;
     });
     if (g_effectIds.empty() || g_originalApply) {
         Log("teleport: %zu effect(s) staged -- sink %s", g_effectIds.size(),

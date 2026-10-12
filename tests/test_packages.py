@@ -10,6 +10,7 @@ import pytest
 
 from tes5_import.base.conditions import (
     GET_VM_SCRIPT_VARIABLE,
+    UNRESOLVED_VAR_SENTINEL,
     convert_ctda_list_with_strings,
     papyrus_var_name,
 )
@@ -451,7 +452,6 @@ def test_unresolvable_script_variable_reads_zero_like_tes4():
     authored outcome. Dropping the condition failed OPEN: SE08's five
     Xedilian victims (base SE08XeddefenNPC01 has no SCRI) force-greeted and
     fled unconditionally."""
-    from tes5_import.base.conditions import _UNRESOLVED_VAR_SENTINEL
     rec = {
         'ConditionCount': '1',
         'Condition[0].Raw':
@@ -460,7 +460,7 @@ def test_unresolvable_script_variable_reads_zero_like_tes4():
     out = convert_ctda_list_with_strings(rec, {})
     assert len(out) == 1
     ctda, cis2 = out[0]
-    assert cis2 == _UNRESOLVED_VAR_SENTINEL
+    assert cis2 == UNRESOLVED_VAR_SENTINEL
     assert struct.unpack_from('<H', ctda, 8)[0] == 630   # GetVMScriptVariable
     assert struct.unpack_from('<I', ctda, 12)[0] & 0xFFFFFF == 0xBC72
     assert struct.unpack_from('<f', ctda, 4)[0] == 1.0    # authored compare
@@ -693,11 +693,11 @@ def test_commented_out_addscriptpackage_is_not_resurrected():
 def test_cross_cell_follow_stays_follow_not_escort():
     """A TES4 Follow whose PLDT is in ANOTHER cell must stay Follow.
 
-    A Follow carrying a destination is rerouted to Skyrim's Escort so the
+    A Follow carrying a destination becomes Skyrim's FollowTo so the
     package can ARRIVE and fire OnPackageEnd (CGEmperorToMarkerB ends
-    CharacterGen stage 16). But Escort makes the DESTINATION the goal, and
-    there is no navmesh route between two interiors — so a cross-cell
-    destination leaves the actor with no path and he never moves at all.
+    CharacterGen stage 16) while still trailing its target. But the
+    destination is a goal, and there is no navmesh route between two
+    interiors — so a cross-cell one leaves the actor unable to move.
 
     Verified live on Nehrim MQ00 (2026-08-17): Celebro stands in StartCelle,
     MQ00CelebroPosition01 is in SchattenrufMinePart01, and he moved 5 units in
@@ -709,7 +709,7 @@ def test_cross_cell_follow_stays_follow_not_escort():
     (MQ16MartinFollowPCToPalace, MG01ErthorFollowPlayer, FGD07AjumFollow).
     """
     from tes5_import.packages.converter import _choose, PackContext, T4_FOLLOW
-    from tes5_import.packages.templates import ESCORT, FOLLOW
+    from tes5_import.packages.templates import ESCORT, FOLLOW, FOLLOW_TO
 
     rec = {'Signature': 'PACK', 'FormID': '00000E9D',
            'EditorID': 'MQ00CalebroPackage02', 'PKDT.Type': str(T4_FOLLOW),
@@ -725,10 +725,12 @@ def test_cross_cell_follow_stays_follow_not_escort():
     # Same cell keeps the arrival behaviour the reroute exists for.
     same = PackContext(ref_cell={0x0010D1: 0x000B9B},
                        pack_runner_cells={0x000E9D: {0x000B9B}})
-    assert _choose(rec, same, 0x00000E9D).t is ESCORT
-
-    # An unknown cell must NOT silently downgrade a package that was fine.
-    assert _choose(rec, PackContext(), 0x00000E9D).t is ESCORT
+    assert _choose(rec, same, 0x00000E9D).t is FOLLOW_TO
+    assert _choose(rec, PackContext(), 0x00000E9D).t is FOLLOW_TO, \
+        'an unknown cell must not downgrade a package that was fine'
+    horse = dict(rec, **{'PKDT.Flags': str(8192 | 0x800000)})
+    assert _choose(horse, same, 0x00000E9D).t is ESCORT, \
+        'FollowTo cannot ride; a Use Horse follow keeps the riding Escort'
 
 
 def test_hunt_at_actor_base_becomes_a_follow_chain_nearest_first():

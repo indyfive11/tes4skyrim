@@ -239,10 +239,11 @@ def read_nif_data(nif_path: str):
 def collision_from_data(data) -> Optional[dict]:
     """Collision soup from an ALREADY-PARSED NIF (see extract_nif_collision).
 
-    A body is placed at its OWNING NODE's world transform: collision usually
-    sits on the root, but where it hangs off a moved child the engine still
-    honours that chain.  Non-pathing layers (clutter, biped ragdolls,
-    triggers) are dropped wholesale.
+    A body is placed by its own transform (a bhkRigidBodyT's), then at its
+    OWNING NODE's world transform: collision usually sits on the root, but
+    where it hangs off a moved child the engine still honours that chain.
+    Non-pathing layers (clutter, biped ragdolls, triggers) are dropped
+    wholesale.
     See: docs/commentary/asset_convert_collision.md#body-placement
     """
     walk: List[float] = []
@@ -253,9 +254,9 @@ def collision_from_data(data) -> Optional[dict]:
         if type(body).__name__ not in ('bhkRigidBody', 'bhkRigidBodyT'):
             continue
         tris = _body_tris(body)
-        place = placement.get(id(body))
-        if place is not None:
-            tris = [tuple(place(pt) for pt in tri) for tri in tris]
+        for place in (_body_transform(body), placement.get(id(body))):
+            if place is not None:
+                tris = [tuple(place(pt) for pt in tri) for tri in tris]
 
         for (a, b, c) in tris:
             cls = _classify(a, b, c)
@@ -547,6 +548,19 @@ def _body_placements(data):
     return out
 
 
+def _body_transform(body):
+    """f(point) placing a bhkRigidBodyT's shape by its own rotation and translation; None when identity.
+
+    See: docs/commentary/asset_convert_collision.md#nested-owner-transform
+    """
+    if type(body).__name__ != 'bhkRigidBodyT':
+        return None
+    q, t = body.rotation, body.translation
+    R = _quat_mat(q.w, q.x, q.y, q.z)
+    T = [t.x * CMS_TO_GAME, t.y * CMS_TO_GAME, t.z * CMS_TO_GAME]
+    return None if _is_identity(R, T, 1.0) else _placer(R, T, 1.0)
+
+
 def _is_identity(R, T, s):
     """True when this chain would move nothing (the root-mounted case)."""
     if abs(s - 1.0) > 1e-6 or any(abs(v) > 1e-4 for v in T):
@@ -802,10 +816,10 @@ def _worker_both(args: tuple):
 # ---------------------------------------------------------------------------
 
 #: Bumped when extraction or mesh conversion changes walkable/blocking output.
-COLLISION_SCHEMA_VERSION = 6
+COLLISION_SCHEMA_VERSION = 7
 
 #: Cache format id; its trailing digits carry COLLISION_SCHEMA_VERSION.
-_MAGIC = b'TESCOL09'
+_MAGIC = b'TESCOL10'
 _COLLISION: Dict[str, dict] = {}
 # path_key -> short collision digest, memoised by collision_digest().  Cleared
 # with _COLLISION so a reload cannot serve digests for the previous cache.

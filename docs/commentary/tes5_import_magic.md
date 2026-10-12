@@ -1094,6 +1094,14 @@ Weapon/Armor 37/38, Detect Enchantment/Key 65/66, ExtraSpell 126) still
 convert as an inert Value Modifier: present, addressable by a script, doing
 nothing.
 
+The five attribute effects (Drain, Damage, Restore, Fortify, Absorb Attribute;
+`MW_ATTRIBUTE_EFFECTS`) are Script effects too, but keep one variant per
+attribute, because MorrowindRuntime sums them onto the attributes it keeps
+([attribute effects](morrowind_runtime.md#attribute-effects)). They no longer
+land on stand-in actor values. `mw_needs_runtime` counts them, so Morroblivion's
+gap patch restores each Morroblivion record whose vanilla effects carry one,
+as it does for the teleports.
+
 <a id="runtime-effects-read-the-active-effect-list"></a>
 ### SwiftSwim, Levitate, SlowFall and Sanctuary
 

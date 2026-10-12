@@ -46,8 +46,8 @@ bool RowEnabled(int row) {
 }
 
 unsigned RowColor(int row) {
-    if (!RowEnabled(row)) return layout::kColorDisabled;
-    return row == g_hoverRow ? layout::kColorNormalOver : layout::kColorNormal;
+    if (!RowEnabled(row)) return Colors().disabled;
+    return row == g_hoverRow ? Colors().normalOver : Colors().normal;
 }
 
 int RowAt(double x, double y) {
@@ -72,8 +72,8 @@ void PushCancel() {
     SetMenuText(Path(layout::kFieldModalCancel, ".text").c_str(),
                 GmstText("sCancel", "Cancel").c_str());
     SetMenuNumber(Path(layout::kFieldModalCancel, ".textColor").c_str(),
-                  g_hoverCancel ? layout::kColorNormalOver
-                                : layout::kColorNormal);
+                  g_hoverCancel ? Colors().normalOver
+                                : Colors().normal);
 }
 
 }  // namespace

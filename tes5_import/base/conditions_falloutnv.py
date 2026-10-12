@@ -2,8 +2,8 @@
 
 A Fallout CTDA is 28 bytes: TES4's 20 shared bytes, then an explicit Run On
 u32 and a Reference u32 in place of TES4's unused tail.  Its function indices
-and its actor-value parameters follow Fallout's own tables, so both are
-rewritten to Skyrim's before any index-keyed lookup.
+follow Fallout's own table, so they are rewritten to Skyrim's before any
+index-keyed lookup.
 
 See: docs/commentary/tes5_import_conditions.md#fallout-ctda
 """
@@ -62,13 +62,8 @@ _RUN_ON_REFERENCE = 2
 
 
 def fallout_ctda(raw: bytes) -> bytes:
-    """`raw`, padded to the full 28 bytes when it is a Fallout CTDA.
+    """`raw`, zero-padded to 28 bytes when the source is FO3/FNV.
 
-    Length alone cannot tell: FO3/FNV masters also store the older 20- and
-    24-byte forms, which omit Reference (24) or Run On and Reference (20), so
-    a short CTDA is Fallout's whenever the source plugin is. Zero padding
-    reads as Run On = Subject, the omitted fields' meaning. A TES4 CTDA is
-    returned unchanged.
     See: docs/commentary/tes5_import_conditions.md#fallout-short-ctda
     """
     if len(raw) < FALLOUT_CTDA_SIZE and is_fallout_source():

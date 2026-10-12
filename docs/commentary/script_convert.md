@@ -1601,7 +1601,9 @@ The rule now, on **both** sides:
 
 | TES4 AV | Conversion |
 |---|---|
-| The 8 attributes | **DROPPED** (CTDA) / stubbed to `100.0` (script read), writes discarded |
+| The player's 8 attributes (Speed aside) | its `TES4Player<Attribute>` global ([below](#player-attributes)) |
+| An NPC's 8 attributes, and its Athletics, Hand-to-Hand and Acrobatics | its rank in a stat faction ([NPC attributes](morrowind_runtime.md#npc-attributes)) |
+| Speed | the walk formula ([SpeedMult](#speed-write-becomes-speedmult)), for the player too |
 | Skills | Translated to the TES5 skill index / name |
 | Shared derived + AI + magic values | Translated to the matching TES5 index |
 | Everything else (Magicka Multiplier, Attack Bonus, Silence, Telekinesis, …) | Dropped — no TES5 equivalent |
@@ -1610,6 +1612,44 @@ Dropping an attribute gate **fails OPEN**, which is the faithful outcome: the
 gate exists to keep an under-developed character out, and a Skyrim character has
 no way to raise an attribute, so enforcing it would lock the content away
 *permanently* rather than merely early.
+
+<a id="player-attributes"></a>
+**The player's attributes are real now (2026-10-02, unconfirmed in game).**
+MorrowindRuntime's character sheet gives the player Morrowind's eight
+attributes in every converted game. Each lives in a conversion-owned global,
+`TES4PlayerStrength` … `TES4PlayerLuck`, made beside `TES4Fame`. A dependent
+plugin adopts its master's, and creates any its master lacks.
+
+- **Scripts:** `Player.GetAV Strength` becomes
+  `TES4_Attributes.Read(TES4PlayerStrength)`. `SetAV` becomes `Write` and
+  `ModAV` becomes `Modify`. `TES4_Attributes` is a static script, and it reads
+  100 for an unbound property, so a plugin built against an old master keeps
+  the old open gate.
+- **Conditions:** a run-on-target (player) `GetActorValue Strength` becomes
+  `GetGlobalValue TES4PlayerStrength`, as Fame and Infamy already do
+  (`conditions._player_global`). The census counted 171 attribute conditions,
+  every one on an INFO:
+
+  | Plugin | On the player (converted) | On the NPC (its stat faction) |
+  |---|---|---|
+  | Oblivion | 6 | 0 |
+  | Nehrim | 0 | 0 |
+  | Morroblivion | 163 | 2 |
+- **The globals start at 100**, so without the DLL every gate stays open. The
+  runtime keeps them current and turns a script's write into a change of the
+  attribute ([tes4-tables](morrowind_runtime.md#tes4-tables)).
+- **Speed stays on the walk formula**, the player's included. Oblivion's
+  Oghma Infinium writes `player.GetBaseAV Speed + 10`, and the read and the
+  write must share one baseline ([SpeedMult](#speed-write-becomes-speedmult)).
+  `ModAV Speed` now goes through the formula too; before, it was dropped.
+- **An NPC's attribute** is its rank in a hidden stat faction, joined at its
+  authored value: `TES4_Attributes.ReadActor(ref, TES4AttributeStrength,
+  TES4PlayerStrength)` and `WriteActor` / `ModifyActor`, which use the
+  global when the reference turns out to be the player
+  ([NPC attributes](morrowind_runtime.md#npc-attributes)). The census found
+  about 90 NPC attribute calls in Oblivion, Nehrim and Morroblivion. The
+  two NPC-subject conditions in Morroblivion (Intelligence, Strength) are
+  `GetFactionRank` on the faction.
 
 Three places must agree, and a change to one needs the same change in the others:
 `tes5_import/base/conditions.py` (`_TES4_AV_ATTRIBUTES` / `_TES4_AV_TO_TES5`,
@@ -2414,8 +2454,10 @@ Papyrus log) and reads as 0. `TES4_MISC_STAT_NAMES` maps each index to the
 Skyrim stat with the same meaning (Places Discovered → Locations Discovered,
 Potions Made → Potions Mixed, People Fed On → Necks Bitten, Days In Prison →
 Days Jailed, Hours Waited → Hours Waiting). Picks Broken, Oblivion Gates Shut,
-Artifacts Found, Last Day As Vampire and Jokes Told have no Skyrim stat and
-read as 0 with a note.
+Artifacts Found, Last Day As Vampire and Jokes Told have no Skyrim stat; they
+are globals of ours (below). `CloseCurrentOblivionGate` adds 1 to Gates Shut's,
+as Oblivion.exe's own command added 1 to the stat
+([statistics tab](morrowind_runtime.md#statistics-tab)).
 
 **A write converts only for the stats Oblivion's own content writes**
 (`TES4_SCRIPT_OWNED_MISC_STATS`: Horses Owned 14, Houses Owned 15, Stores
@@ -2425,12 +2467,20 @@ itself, so a plugin writing one has repurposed it. Nehrim does exactly that: its
 `GlobalplayerScript` runs `ModPCMiscStat 22 EPdiff` and `ModPCMiscStat 24
 LPdiff`, relabeled "Overall amount of experience points" and "Current amount of
 learning points" through its `sMisc*` game settings, so converted Nehrim added
-every experience point to Skyrim's "Days as a Vampire". Such a write now becomes
-a note. The labels are the precise indicator but cannot be compared across
-languages (German Nehrim.esm relabels every stat), so the rule is the census.
-Its cost: Nehrim's dialogue trainers (`ModPCMiscStat 3`, 40 lines) and skill
-books (`ModPCMiscStat 18`) no longer add to Skyrim's Training Sessions and Skill
-Books Read. See [the character sheet plan](../plans/character_sheet.md#bug-nehrim-misc-stats).
+every experience point to Skyrim's "Days as a Vampire". The labels are the
+precise indicator but cannot be compared across languages (German Nehrim.esm
+relabels every stat), so the rule is the census.
+
+**Such a stat is a global of ours** (2026-10-02, unconfirmed in game): every
+index Skyrim has no stat for, and every index the engine kept, is
+`TES4MiscStat<NN>` (`script_convert/misc_stats.py`). `ModPCMiscStat` becomes
+`TES4MiscStat22.Mod(EPdiff)`, and `GetPCMiscStat` reads the global, plus
+Skyrim's own stat of that meaning where one exists (Nehrim's trainers count
+`ModPCMiscStat 3` on top of Skyrim's Training Sessions). The importer creates
+a global for every index the plugin's scripts name, a master's adopted, and
+the character sheet's Statistics tab lists the written ones
+([statistics tab](morrowind_runtime.md#statistics-tab)). See
+[the character sheet plan](../plans/character_sheet.md#bug-nehrim-misc-stats).
 - `eval <expr>` is a pure pass-through wrapper (Nehrim uses it only around
   `Call`) — drop it. Beware over-broad stripping: an earlier pass ate a variable
   named `Eval`.
@@ -2460,6 +2510,14 @@ Books Read. See [the character sheet plan](../plans/character_sheet.md#bug-nehri
 Reference events (`OnPackageEnd`, `OnActivate`) never fire on a base NPC_ VMAD —
 they must be relocated to the placed ACHR. This was the CharacterGen stage-10
 stall.
+
+🛑 **Correction (2026-10-02): vanilla contradicts the general rule.** Skyrim.esm
+binds scripts with reference events to base `NPC_` records 856 times, 553 of
+them on no placed reference at all (`defaultGhostScript` on summoned dragon
+priests: `OnDying`, `OnHit`, `OnLoad`). Base-attached actor scripts do receive
+those events. The relocation is harmless and stays, but whatever made the
+CharacterGen stall go away was not this mechanism.
+See: [wiring audit](../audits/wiring.md#disproven-rules).
 
 ### Bare self-reference calls also force relocation (2026-08-01)
 
@@ -4428,59 +4486,49 @@ float)`.
 
 **Code:** `constants_falloutnv.py` `FALLOUT_ATTRIBUTES`, `FALLOUT_ACTOR_VALUE_MAP`,
 `FALLOUT_UNMAPPED_ACTOR_VALUES`; merged in `constants.py` (`PRIMARY_STATS`,
-`AV_ARGUMENT_NAMES`); applied in `commands.py` `actor_value`.
+`AV_ARGUMENT_NAMES`, `SPLIT_SKILLS`); applied in `commands.py` `actor_value`.
 
-Scripts name actor values by string, so the AV argument went through
-Oblivion's `ACTOR_VALUE_MAP` and any name missing from it was emitted
-unchanged. Most of Fallout's are missing, and Skyrim's name table
-(`CreationKit.exe`, the strings from `Aggression` to `ReflectDamage`) lacks
-them, so each read returned 0 and each write was rejected
-([above](#skyrim-has-no-attributes)). Fallout's script names come from each
-GECK's own table (`Geck.exe`, from `Aggression` to `DamageThreshold`); FO3 has
-`SmallGuns` where New Vegas has `Guns` and `Survival`. Counted over the
-exports' `SCPT` text and the result scripts in `INFO`, `QUST`, `PACK`, `TERM`,
-`PERK` and `NOTE`, 144 of Fallout 3's 1,008 actor-value calls and 227 of New
-Vegas's 1,062 named a value Skyrim lacks.
+Scripts name actor values by string, and the AV argument went through
+Oblivion's `ACTOR_VALUE_MAP` only, so a Fallout name missing from it reached
+Skyrim unchanged: an unknown name reads 0 and its write is rejected
+([above](#skyrim-has-no-attributes)). The script side now follows the
+condition side's table ([conditions](tes5_import_conditions.md#fallout-actor-values)),
+so a value reads the same in a script and in a dialogue condition:
 
-| Fallout name | Before | Now |
-|---|---|---|
-| Repair, Speech, Barter, Lockpick | unknown name, read 0 | `Smithing`, `Speechcraft`, `Speechcraft`, `Lockpicking`, as the condition side maps them ([conditions](tes5_import_conditions.md#fallout-actor-values)) |
-| Perception, Charisma | unknown name, read 0 | `100.0`, write dropped, like the five S.P.E.C.I.A.L. stats that share a name with an Oblivion attribute |
-| Karma, XP, Medicine, Science, Explosives, the weapon skills, Survival, Unarmed, RadiationRads, ActionPoints, BloodyMess, RadResist, EnergyResist, EmpResist, Turbo, DamageThreshold, the hardcore needs | unknown name, read 0 | inert read (`note`), write dropped |
+| Fallout name | Now |
+|---|---|
+| Barter, Speech | `Speechcraft` |
+| Lockpick, Repair, Medicine | `Lockpicking`, `Smithing`, `Restoration` |
+| Guns, Small Guns, Big Guns, Energy Weapons | `Marksman` |
+| Melee Weapons | `OneHanded`; a current read takes the higher of One- and Two-Handed, as Blade and Blunt do |
+| Unarmed | `OneHanded` |
+| Perception, Charisma | `100.0`, write dropped, like the five S.P.E.C.I.A.L. stats that share a name with a TES4 attribute |
+| Karma, XP, Action Points, Explosives, Science, Survival, the rads, Rad/Energy/EMP resist, Turbo, Bloody Mess, Damage Threshold, the hardcore needs | inert read (`note`), write dropped |
 
 An inert read folds a comparison to `false`, or drops out of its `&&`/`||`
-chain ([comparing an inert operand](#comparing-an-inert-operand)), so neither
-direction of a skill or karma check is decided by a 0 nobody authored. The
-conditions drop the same values, which passes them; a script cannot pass a
-check it no longer evaluates, so it drops the term instead.
+chain ([comparing an inert operand](#comparing-an-inert-operand)), so no karma
+or skill check is decided by a 0 nobody authored.
 
-The renames apply to the actor-value argument only, never to a bare name:
-`lockpick` is also Fallout's bobby-pin item, and `GetItemCount lockpick` must
-keep it.
+The renames apply to the actor-value argument only, never to a bare name
+(`resolve_name` still uses `ACTOR_VALUE_MAP`): `lockpick` is also Fallout's
+bobby-pin item, and `GetItemCount lockpick` must keep it. Names Skyrim already
+has pass through: the limb conditions, `Variable01`-`10`, `DamageResist`.
 
-Names Skyrim has pass through unchanged, including some the conditions drop:
-the limb conditions (`PerceptionCondition` … `BrainCondition`), whose writes
-(`RestoreAV` after healing) a script reads back itself; `HealRate` and
-`DamageResist`, whose scale differs ([conditions](tes5_import_conditions.md#fallout-actor-values));
-and `Variable01`-`Variable10`, which scripts use as their own flags.
-
-Converted with `convert_standalone` over every `SCPT` in the exports, before
-and after: Oblivion 0 of 2,393 scripts changed, Fallout 3 65 of 1,257, New
-Vegas 84 of 2,576, every changed line an actor-value call or a property left
-unused by a dropped write.
+Census of the names FalloutNV.esm's records pass to AV commands, among those
+that used to reach Skyrim unchanged: Repair 49, Medicine 43, Science 29,
+Explosives 26, Perception 23, Guns 9, RadiationRads 9, Melee Weapons 8,
+Charisma 6, Energy Weapons 6, Lockpick 5, Speech 5, Karma 4, Unarmed 4,
+Barter 3.
 
 ### <a id="negative-comparand"></a>A negative comparand is still a number
 
 **Code:** `emit/expr.py` `_numeric_cmp`, `_is_number`.
 
 `-250` parses as unary minus over the literal `250`, so `_numeric_cmp` did not
-recognize it as a number and the comparison took the plain path: an inert
-read compared against it stayed as `0 >= -250`, a decided answer, where
-against `250` it folds or drops out. Karma checks are where it shows
-(`AchievementScript` tests `>= -250` and `< -250`). A negated literal now
-takes the same path as any other number. No Oblivion script changed, since
-`_bool_literal_cmp` emits a non-inert comparison exactly as the plain path
-does.
+treat it as a number and the comparison took the plain path. An inert read
+compared against it stayed a decided `0 >= -250`, where against `250` it folds
+to `false` (measured: `GetPCMiscStat 99 >= -250`). A negated literal now takes
+the same path as any other number; this applies to every source game.
 
 ### A digit-leading member name swallowed its dot
 <a id="digit-leading-member-names"></a>
@@ -6512,3 +6560,47 @@ let a later SetStage overwrite the specific type.
 The FNV objective rows first carried `types={0: 'Quest'}`, which registers the
 type unconditionally: 345 FalloutNV scripts then failed with "field or
 property X not found" on quest-variable reads (`VMS16.nGangerDeathCount`).
+
+## <a id="pr54-obse-commands"></a>Knockout, actor AI, IsActor and IsPlayable
+
+**Code:** `blocks.BLOCK_MAP`, `command_rows` (`isactor`, `setactorsai`,
+`toggleactorsai`, `isactorsaioff`), `commands.is_playable`,
+`TES4Polyfill.IsPlayable`, `emit/expr._plain_binop`,
+`converter._record_property_type`, `tes5_import/base/object_scripts._TES4_REFERENCE_EVENTS`.
+Ported from Murray2k6's PR #54 and re-derived against master.
+
+- **OnKnockout → `OnEnterBleedout()`.** Before, the block had no BLOCK_MAP
+  entry and was dropped whole: 28 Nehrim blocks, 2 in Morrowind_ob. The
+  Erothin beggar's (`STAFFErothinBettlerTorBettlerScript`) is the only thing
+  that sets `Next to 1`, so his scene could never continue. OnEnterBleedout
+  is an Actor event, so `onknockout` is a reference-only event: that script
+  had only GameMode + OnKnockout and stayed on the base NPC_, which never
+  receives it. There is no TES4 `OnMurder` mapping: neither the vanilla nor the
+  SKSE `Actor.psc` declares an OnMurder event, so an `Event OnMurder` would
+  compile and never fire.
+- **SetActorsAI → `EnableAI`** (vanilla); ToggleActorsAI / IsActorsAIOff read
+  SKSE `IsAIEnabled`. SetActorsAI was a `;NE:` no-op: 62 Nehrim calls, 2
+  Oblivion (SE13 allies, SE14 Voice of Sheogorath).
+- **IsActor → `((ref as Actor) != None)`.** It read as 0, which made Oblivion's
+  Sanguine Rose, Hermaeus Mora soul spell and Skull of Corruption conditions
+  `0 == 1`: their effect never fired.
+- **IsPlayable / IsPlayable2 → `TES4Polyfill.IsPlayable`**, SKSE
+  `Form.IsPlayable` on the base form (TES4 also accepted a placed reference).
+  No header overlay is needed: the compiler searches the LAST `-h` first, so
+  SKSE's `Form.psc` shadows vanilla's (see [vanilla headers](#vanilla-headers)).
+- **Bool arithmetic.** Measured with the compiler: `Int + Bool`, `Bool - 1` and
+  `Bool * 2.5` compile; `Bool + Bool` ("infix operator `+` not support type
+  Bool") and `x += Bool` do not. Only two Bool operands are cast, so no
+  compiling output changed.
+- **Effect subjects.** In an ActiveMagicEffect, `Self` is the effect:
+  `SetDestroyed` (now `OBJREF`) and bare `PlayGroup` act on `GetTargetActor()`.
+  Both emitted `Self` and failed to compile.
+- **Leading-digit owners.** `FlightQuest.X` for record `1FlightQuest` resolved
+  the property's script class by the stripped name and missed, typing it
+  `Quest`; `_owning_scripts`, `_dangling_cross_script_target` and the property
+  type now resolve through `resolve_property_formid`/the canonical EditorID.
+
+Blast radius on the rebuild: Oblivion 6 scripts (the three artifact spells,
+SE13Ally, SE13KnightOfOrder, SE14VoiceofSheogorathSpell), no CharacterGen or
+MQ script; Nehrim's arena fighters, the beggar and the IsPlayable2 line in
+AAGeneralUpdateQuest; Morrowind_ob 2 OnKnockout scripts. Everything compiles.

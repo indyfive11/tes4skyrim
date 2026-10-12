@@ -6,10 +6,13 @@ See: docs/commentary/tes4_export_morrowind.md#restored-magic
 
 from tes4_export import morroblivion_magic as mm
 from tes4_export.record_types.morrowind_magic import effect_editor_id
-from tes5_import.dialogue.morrowind_teleport import teleport_lines
+from tes5_import.dialogue.morrowind_teleport import copy_rows, teleport_lines
 from tes5_import.record_types import magic_variants
-from tes5_import.record_types.magic_morrowind import (MW_RUNTIME_EFFECTS, mw_converts,
-                                                      mw_needs_runtime)
+from tes5_import.record_types.magic import A_SCRIPT, AV_NONE
+from tes5_import.record_types.magic_morrowind import (MW_RUNTIME_EFFECTS, mw_actor_value,
+                                                      mw_archetype, mw_attribute_variant,
+                                                      mw_converts, mw_needs_runtime,
+                                                      runtime_attribute_index)
 
 #: The TES4 actor value of Acrobatics, which lands on Skyrim's Stamina.
 _ACROBATICS = 26
@@ -115,3 +118,42 @@ def test_the_effect_table_lists_each_runtime_effect_and_its_own_clones():
     finally:
         magic_variants.reset()
     assert rows == ['Patch.esp|02A345ED=60', 'TR.esm|05000123=60']
+
+
+def test_the_effect_table_names_each_attribute_variant_and_its_clones():
+    """Fortify Luck's variant is 79:7, and so are its delivery and Ability clones; Sanctuary's Ability clone is 42."""
+    magic_variants.reset()
+    try:
+        variant = f'TES4{effect_editor_id(79)}Luck'
+        for fid, edid in ((0x05000001, variant), (0x05000002, f'{variant}ConstantSelf'),
+                          (0x05000003, f'{variant}ConstantSelfAbility'),
+                          (0x05000004, f'TES4{effect_editor_id(42)}Ability')):
+            magic_variants._parts[fid] = (edid, b'', b'', b'')
+        rows = teleport_lines([], 'Morrowind.esm', 5)
+    finally:
+        magic_variants.reset()
+    assert rows == ['Morrowind.esm|05000001=79:7', 'Morrowind.esm|05000002=79:7',
+                    'Morrowind.esm|05000003=79:7', 'Morrowind.esm|05000004=42']
+
+
+def test_tes4_attribute_variants_are_the_same_runtime_effects():
+    """Oblivion's Fortify Luck (TES4FOATLuck) and its clones are 79:7, as Morrowind's are."""
+    magic_variants.reset()
+    try:
+        for fid, edid in ((0x00000001, 'TES4FOATLuck'), (0x00000002, 'TES4FOATLuckConstantSelf'),
+                          (0x00000003, 'TES4DGATStrength'), (0x00000004, 'TES4FOSKBlade')):
+            magic_variants._parts[fid] = (edid, b'', b'', b'')
+        rows = copy_rows('Oblivion.esm', 0)
+    finally:
+        magic_variants.reset()
+    assert rows == ['Oblivion.esm|00000001=79:7', 'Oblivion.esm|00000002=79:7',
+                    'Oblivion.esm|00000003=22:0']
+    assert runtime_attribute_index(-1, 'ABAT', 3) == 85 and runtime_attribute_index(-1, 'FOSK', 14) == -1
+
+
+def test_attribute_effects_are_runtime_script_effects_per_attribute():
+    """Fortify/Drain/Damage/Restore/Absorb Attribute: a Script effect, no actor value, one per attribute."""
+    assert mw_archetype(79) == A_SCRIPT and mw_actor_value(79, 0) == AV_NONE
+    assert mw_converts(17, 7) and not mw_converts(17, -1)
+    assert mw_attribute_variant(85, 3) and not mw_attribute_variant(83, 3)
+    assert mw_needs_runtime(79), 'the gap patch restores Morroblivion records carrying them'

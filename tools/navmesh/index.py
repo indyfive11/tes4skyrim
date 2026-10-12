@@ -61,7 +61,7 @@ def load_origin_shifts(export, quiet=True):
         path = os.path.join(export, sig + '.txt')
         by_type[sig] = parse_export_file(path) if os.path.isfile(path) else []
     return load_furniture_models(os.path.join(export, 'meshes'), by_type,
-                                 quiet=quiet)
+                                 quiet=quiet, record_dir=export)
 
 
 def wrld_records(export):

@@ -25,6 +25,7 @@ from script_convert import resolve_name as _resolve_name
 from script_convert import assemble as _assemble
 from script_convert import commands as _commands
 from script_convert.context import ScriptContext
+from script_convert.misc_stats import page_stat_global
 from script_convert.poll_interval import update_interval
 from script_convert.emit import dispatch as _dispatch
 from script_convert.cross_ref import CrossRefGraph
@@ -67,7 +68,7 @@ _EXTRA_COMMAND_NAMES = frozenset({
     'createfullactorcopy', 'forcecloseobliviongate', 'getactionref',
     'getangle', 'getbookread', 'getcontainer', 'getcrimeknown',
     'getincell', 'getinsamecell', 'getisid', 'getisrace', 'getisref',
-    'getissex', 'getpcisrace', 'getpcissex', 'getpos', 'getquestrunning',
+    'getissex', 'getpcisrace', 'getpcissex', 'getplayerbirthsign', 'getpos', 'getquestrunning',
     'getrandompercent', 'getself', 'getstage', 'getstagedone',
     'getstartingangle', 'isactionref', 'isexpelled', 'isinfaction',
     'isquestcompleted', 'message', 'messagebox', 'placeatme', 'pme', 'say',
@@ -101,8 +102,8 @@ class ScriptConverter:
     #: DIAL EditorID (lower) -> `TES4Unlock_<topic>` global, from build_unlock_plan.
     topic_unlock_globals: dict = {}
 
-    #: DIAL EditorID (lower) -> chain line count, from build_script_chain_map.
-    conversation_chains: dict = {}
+    #: Started topic EditorID (lower) -> its plugin's StartConversation routing script.
+    conversation_starts: dict = {}
 
     #: StartConversation topic (lower, '' = none) -> (first alias, count), from build_force_greet_slots.
     force_greet_slots: dict = {}
@@ -295,8 +296,7 @@ class ScriptConverter:
             out.append(ptype.lower())
         if not via_record:
             return out
-        fid = (self.xref.edid_to_formid.get(ref_name)
-               or self.xref.edid_to_formid.get(ref_name.lower(), ''))
+        fid = resolve_property_formid(self.xref, ref_name)
         scri = self.xref.record_scri.get(fid, '') if fid else ''
         if scri:
             edid = self.xref.script_formid_to_edid.get(scri, '').lower()
@@ -789,9 +789,21 @@ class ScriptConverter:
         # whether the rendering happens to contain a decimal point.
         self._value_type = _symbols.type_of_expr(stmt.value, self.type_of)
         try:
-            return self._assign(stmt, target, extends)
+            return self._mirror_page_stat(stmt, target, self._assign(stmt, target, extends))
         finally:
             self._value_type = ''
+
+    def _mirror_page_stat(self, stmt, target: str, line: str) -> str:
+        """`line`, followed by a write of the new value into the mirror global of
+        a variable a game's statistics page showed (misc_stats.PAGE_VARIABLES).
+
+        See: docs/commentary/morrowind_runtime.md#statistics-tab
+        """
+        mirror = page_stat_global(_expr.emit_source(stmt.target))
+        if not mirror or line.lstrip().startswith(';'):
+            return line
+        self.sc.property_refs[mirror] = 'GlobalVariable'
+        return f'{line}\n{mirror}.SetValue({target})'
 
     def _assign(self, stmt, target: str, extends: str) -> str:
 
@@ -1641,18 +1653,7 @@ class ScriptConverter:
         if fid:
             # Use canonical EditorID (original case) as key to match _add_scro_ref
             canon_edid = self.xref.formid_to_edid.get(fid, name)
-            rtype = self.xref.record_type.get(fid, '')
-            ptype = _resolve_name.papyrus_type_for(self.xref, fid, rtype)
-            # Prefer attached script type over generic Actor/ObjectReference
-            # so cross-script property access works (e.g., NPCRef.rent).
-            # Base-object types (Armor/Weapon/Potion/...) are excluded: the VM
-            # refuses to bind an ObjectReference-derived script class to a base
-            # record, and the property then reads None. A unique-placed
-            # ACTI/LIGH is the exception — the binder redirects to its ref.
-            script_type = self.xref.get_record_script_type(name)
-            if script_type and _resolve_name.script_type_binds(
-                    self.xref, ptype, fid):
-                ptype = script_type
+            ptype = self._record_property_type(fid, canon_edid)
             safe = safe_property_name(canon_edid)
             # Don't downgrade a more specific type (e.g., Actor from
             # _resolve_self_ref) back to a generic one (ObjectReference).
@@ -1663,6 +1664,21 @@ class ScriptConverter:
             return safe
 
         return safe_property_name(name)
+
+    def _record_property_type(self, fid: str, canon_edid: str) -> str:
+        """Property type for record `fid`: its attached script class when that binds, else its record type.
+
+        The script is found by the CANONICAL EditorID, so a leading-digit record
+        named by its stripped spelling still gets its class.  Base objects
+        (Armor/Weapon/...) keep the record type: the VM will not bind an
+        ObjectReference-derived class to one, except a unique-placed ACTI/LIGH.
+        """
+        ptype = _resolve_name.papyrus_type_for(
+            self.xref, fid, self.xref.record_type.get(fid, ''))
+        script_type = self.xref.get_record_script_type(canon_edid)
+        if script_type and _resolve_name.script_type_binds(self.xref, ptype, fid):
+            return script_type
+        return ptype
 
     def arg_srcs(self) -> list:
         """Every argument as AUTHORED source text."""
@@ -2242,8 +2258,7 @@ class ScriptConverter:
         owner_low, var_low = owner.strip().lower(), var.strip().lower()
         if not owner_low or not var_low or var_low in KNOWN_COMMANDS:
             return ''
-        # Resolve the owner EditorID to its attached script's variable table.
-        fid = self.xref.edid_to_formid.get(owner_low, '')
+        fid = resolve_property_formid(self.xref, owner_low)
         script_low = ''
         if fid:
             scri = self.xref.record_scri.get(fid, '')

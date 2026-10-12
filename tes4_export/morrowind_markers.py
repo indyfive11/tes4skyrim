@@ -44,10 +44,17 @@ MARKER_FLAGS = 0
 
 _LETTERS = re.compile(r'[^a-z]')
 
+#: Place/room separator: "Balmora, Council Club", "TEM Princess Morgiah: Hold".
+_ROOM_SEPARATOR = re.compile(r'[,:]')
+
 
 def place_name(cell_name: str) -> str:
-    """The marker name for an interior cell: its text before any comma."""
-    return cell_name.split(',', 1)[0].strip() if ',' in cell_name else cell_name
+    """The marker name for an interior cell: its text before the room separator.
+
+    See: docs/commentary/tes4_export_morrowind.md#map-markers
+    """
+    head = _ROOM_SEPARATOR.split(cell_name, 1)[0].strip()
+    return head or cell_name
 
 
 def _is_dwemer(name: str, _text: str, _doors: int) -> bool:

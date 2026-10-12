@@ -20,6 +20,7 @@
 - [PACK conversion: verified-correct behaviour](#pack-conversion-2)
 - [Verified correct — do NOT "fix" these](#section)
 - [Shop doors: Unlock Doors At Location becomes Unlock At Start](#shop-doors-unlock-at-location)
+- [Follow with a destination is FollowTo](#follow-with-a-destination-is-followto)
 
 ## PACK Conversion Plan (TES4 → TES5)
 <a id="pack-conversion-plan"></a>
@@ -355,7 +356,9 @@ set. Getting this wrong stalls scripted sequences with no error and no log
 line: `CGRatAmbushAPushBricks` (rat → `CGCrumbleWall01REF`) meant the
 CharacterGen wall never crumbled, `setstage MQ01 24` never ran, and the
 tutorial rats never turned hostile no matter how long the player waited.
-- **Follow (1)** → `Follow`, `PTDA` = target, `Accompany?=0`.
+- **Follow (1)** → `Follow`, `PTDA` = target, `Accompany?=0`. With a
+  same-cell `PLDT` destination → `FollowTo`
+  ([§ follow with a destination](#follow-with-a-destination-is-followto)).
 - **Accompany (7)** → `Follow`, `Accompany?=1` — Skyrim models Accompany as a
   Follow input, so this is exact, not an approximation.
 - **Escort (2)** → `TES4EscortWhenNear`, the converter's own root
@@ -524,6 +527,14 @@ script and the read ref gains its own copy. Scope: 94 actors relocated across
 ~142 gated refs. Scripts `extends Actor`, which attaches fine to a placed actor
 reference. Regression: `test_actor_script_relocated_to_placed_ref`,
 `test_shared_base_keeps_script_and_adds_ref`.
+
+🛑 **Correction (2026-10-02): the "100% of vanilla" census above is wrong.**
+Re-measured over Skyrim.esm: 27 of 62 `GetVMScriptVariable` targets carry the
+script only on their BASE, and for package conditions alone 8 of 28 do
+(`MG01FaraldaBridgeForcegreet` reads `MG05WinterholdTriggerRef::BridgeWarning`).
+A base-attached script does satisfy the condition. What kept these actors still
+was §8's PLDT type. The relocation is harmless and stays.
+See: [wiring audit](../audits/wiring.md#disproven-rules).
 
 ## 8. `PLDT` alias locations must be type 8, not type 9 (2026-07-20)
 <a id="player-target-is-the-reference"></a>
@@ -884,11 +895,49 @@ did (Jayred would reach the gardens and fire FindBones without the player).
 FNAM bit 0 is "success completes the package": the Escort keeps it (arriving
 ends the package) and the Wait must not. The 1500 radius is MQ102
 Hadvar/Ralof's (open-terrain player escorts; vanilla spans 300–5000). Every
-converted escort uses it — TES4 Escort, a TES4 Follow rerouted to Escort, and
-Morrowind `AIEscort` — and falls back to vanilla `Escort` only when no root is
-installed (a master built before this change). Adding the root moved no
-FormID (1,187,406 records before, the same plus one after). Test:
+converted escort uses it — TES4 Escort, a Use Horse TES4 Follow with a
+destination, and Morrowind `AIEscort` — and falls back to vanilla `Escort` only
+when no root is installed (a master built before this change). Adding the root
+moved no FormID (1,187,406 records before, the same plus one after). Test:
 `tests/test_escort_when_near.py`.
+
+## Follow with a destination is FollowTo
+<a id="follow-with-a-destination-is-followto"></a>
+
+**Code:** `packages/converter.py::_pick_follow`, `packages/templates.py::FOLLOW_TO`.
+Confirmed in-game (CharacterGen).
+
+Symptom: in the CharacterGen prison cell, Uriel reached his marker, then turned
+and ran back toward the door for a few seconds before force-greeting the
+player.
+
+Cause: TES4 Follow with a `PLDT` destination means "trail the target, stop at
+the destination" (OpenMW `aifollow.cpp` ends Morrowind's AiFollow when the
+*follower* nears the destination). Skyrim's plain Follow never ends, so it was
+rerouted to Escort to keep `OnPackageDone` firing — but Escort makes the actor
+the *leader*. `CGEmperorToMarkerB` (stage 15, follow Renault to
+`CGMarkerBEmperor`, radius 70) became "Uriel leads Renault"; Uriel arrived
+first, his `OnPackageDone` set stage 16, and `CGEmperorFollowRenote` (stage 16,
+until his reaction line ends) sent him back after Renault, who was still behind
+him. Bethesda authors the two apart: Glenroy leading the Emperor is an Escort
+(`CGGlenroyEscortEmperorToF`).
+
+Vanilla's `FollowTo` (`00025E6D`, 6 instances incl. MQ101's
+`FriendFollowToKeepMarker*`) is the exact match: *Target to Follow*, min/max
+radius, *Destination (stop following at)*, *Accompany?*; procedures
+`FollowTo → Travel`. It ends at the destination, so stage 16 still fires.
+
+- Cross-cell destinations stay plain Follow (no route; Celebro, see
+  `test_cross_cell_follow_stays_follow_not_escort`).
+- `FollowTo` has no ride-horse input, so a Use Horse follow keeps the riding
+  Escort (`MS45DarMaFollowOutside`, Nehrim `MQ14BarateonReitenZumTor01Package`).
+
+Blast radius, Oblivion.esm: exactly 14 packages Escort → FollowTo (player
+targets: Amusei ×2, ArenaFan1, Dark19 bow, FGC09, Motierre; NPC targets: Uriel,
+MS26 Itius guard; area-style: OnStaya, Guilbert, Hackdirt, Cindanwe ×3). Only
+`CGEmperorToMarkerB` has an end hook there. By census of the source, also
+Morrowind_ob 14 (10 with `OnPackageEnd`/`OnPackageDone` quest hooks), FalloutNV
+11, Nehrim 3, Knights 1 — not yet rebuilt or tested in-game. No FormID moved.
 
 ## Every placed copy gets its quest package
 <a id="every-placed-copy-gets-its-quest-package"></a>

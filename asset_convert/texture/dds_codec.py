@@ -267,12 +267,9 @@ def encode_bc4_channel(chan: np.ndarray) -> np.ndarray:
 
 
 def write_normal_dds(normal_rgb: np.ndarray, path: Path):
-    """Write a terrain-LOD normal map as full-RGB DXT1, with mips.
+    """Write a terrain-LOD normal map: all three channels, DXT1 with mips.
 
-    The landscape LOD shader reads all three channels (up is G, see
-    terrain_lod._heightmap_normal_rgb); BC5 kept only R and G and threw the
-    third axis away.  Vanilla ships DXT5 with a constant opaque alpha, which
-    carries the same colour block as DXT1.
+    See: docs/commentary/asset_convert_terrain.md#terrain-lod-normal-layout
     """
     write_dds_dxt1(normal_rgb, path, size=normal_rgb.shape[0])
 

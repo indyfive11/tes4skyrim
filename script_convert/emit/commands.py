@@ -52,6 +52,7 @@ from script_convert.command_rows import (
     ACTOR, AV, COMMAND_ROWS, COMPARISON_BOOL_FUNCTIONS, OBJREF, RAW
 )
 
+from script_convert.misc_stats import COMMAND_STATS, misc_stat_global
 from script_convert.tes4 import lexer as L
 
 #: A placeholder is one atom: `{a0} == {a1}` compares, `Foo({a0})` does not.
@@ -217,7 +218,15 @@ _CONVERTER_VALUES = {
     'event_actor': lambda conv, extends: conv._current_event_actor_param(),
     'self_ref': lambda conv, extends: conv._self_reference(extends),
     'action_ref': lambda conv, extends: conv._get_action_ref_param(),
+    'gates_shut': lambda conv, extends: _counted_stat(conv, 'closecurrentobliviongate'),
 }
+
+
+def _counted_stat(conv, command: str) -> str:
+    """The global of the stat `command`'s engine code counted, now a property."""
+    held = misc_stat_global(COMMAND_STATS[command])
+    conv.sc.property_refs[held] = 'GlobalVariable'
+    return held
 
 
 #: Commands converting to a Bool call. A MAP row's `emit` is a bare name.

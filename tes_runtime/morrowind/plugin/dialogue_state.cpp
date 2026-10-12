@@ -205,6 +205,16 @@ float DialogueState::Var(const std::string& owner,
     return it == mVars.end() ? 0.0f : it->second;
 }
 
+std::vector<std::string> DialogueState::VarNames(const std::string& owner) const {
+    std::vector<std::string> names;
+    const std::string key = Key(owner);
+    for (auto it = mVars.lower_bound({key, std::string()});
+         it != mVars.end() && it->first.first == key; ++it) {
+        names.push_back(it->first.second);
+    }
+    return names;
+}
+
 // Logged only on a CHANGE, and only when verbose, for the reason SetGlobal
 // gives.
 void DialogueState::SetVar(const std::string& owner, const std::string& name,
@@ -479,6 +489,7 @@ std::string DialogueState::Serialize() const {
         out.precision(was);
     }
     out << "R\t" << reputation << '\n' << "C\t" << crimeLevel << '\n';
+    if (!className.empty()) out << "Q\t" << className << '\n';
     return out.str();
 }
 
@@ -540,6 +551,7 @@ std::size_t DialogueState::Deserialize(const std::string& text) {
         }
         else if (kind == "R" && n == 2) reputation = Int(f[1]);
         else if (kind == "C" && n == 2) crimeLevel = Float(f[1]);
+        else if (kind == "Q" && n == 2) className = f[1];
         else continue;
         ++taken;
     }

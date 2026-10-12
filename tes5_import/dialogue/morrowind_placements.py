@@ -9,7 +9,8 @@ import functools
 import math
 import os
 
-from core.plugin_masters import masters_from_export_header
+from asset_convert.sources import source_registry
+from core.plugin_masters import export_root, masters_from_export_header
 
 #: Every TES3 type that can carry a script.
 SCRIPTED_EXPORTS = ('NPC_.txt', 'CREA.txt', 'ACTI.txt', 'ALCH.txt', 'AMMO.txt',
@@ -25,6 +26,9 @@ MARKER_KINDS = {0x00000005: 'divine', 0x00000006: 'temple'}
 
 #: The EditorID prefix of the persistent markers the export mints for travel destinations.
 TRAVEL_PREFIX = 'TES3Travel'
+
+#: Morroblivion's plugins: their SCPTs are TES4's language, never MWScript.
+TES4_PLUGIN_PREFIX = 'morrowind_ob'
 
 _RECORD_MARK = '---RECORD_BEGIN---'
 _PLACEMENT_KEYS = ('PosX', 'PosY', 'PosZ', 'RotX', 'RotY', 'RotZ')
@@ -92,18 +96,77 @@ def _take_ref(out: dict, rec: dict, in_refr: bool, owner: str,
         out['markers'].append(rec)
 
 
+def rebased_formid(formid: str, folder: str, plugin: str, header: list):
+    """`formid` as `plugin`'s export at `folder` writes it, spelled the way an
+    export whose masters are `header` spells it; None when that one cannot.
+
+    The low 24 bits are the record; the index byte is the owner's position in
+    the WRITER's master list, or that list's length for its own records.
+    """
+    try:
+        index = int(formid[:2], 16)
+    except ValueError:
+        return None
+    masters = masters_from_export_header(folder)
+    owner = plugin if index == len(masters) else (
+        masters[index] if index < len(masters) else '')
+    names = [name.lower() for name in header]
+    if not owner or owner.lower() not in names:
+        return None
+    return f'{names.index(owner.lower()):02X}{formid[2:]}'
+
+
+def runtime_masters(folder: str) -> list:
+    """`(record_dir, plugin)` for each exported master whose scripts are MWScript.
+
+    A Morroblivion master's scripts run as Papyrus, so its records never
+    stage an instance here; that would run the object's script twice.
+    """
+    root = export_root(folder)
+    out = []
+    for name in masters_from_export_header(folder):
+        if name.lower().startswith(TES4_PLUGIN_PREFIX):
+            continue
+        master_dir = str(source_registry.record_dir(root, name))
+        if os.path.isdir(master_dir):
+            out.append((master_dir, name))
+    return out
+
+
+def master_scripted(folder: str) -> list:
+    """`(base FormID as `folder` spells it, record, master dir, master)` per
+    scripted record a `runtime_masters` master owns.
+
+    🛑 A plugin PLACES its masters' scripted objects -- Tamriel Rebuilt's cells
+    hold Tamriel Data's banners -- and each placement is this plugin's to stage.
+    See: CLAUDE.md#master-blindness
+    """
+    header = masters_from_export_header(folder)
+    out = []
+    for master_dir, name in runtime_masters(folder):
+        for _file, rec in folder_tables(master_dir)['scripted']:
+            if not rec.get('SCRI') or not rec.get('FormID'):
+                continue
+            here = rebased_formid(rec['FormID'], master_dir, name, header)
+            if here:
+                out.append((here.upper(), rec, master_dir, name))
+    return out
+
+
 @functools.lru_cache(maxsize=16)
 def folder_tables(folder: str) -> dict:
     """What the sidecar reads from the export at `folder`, each file once:
     `scripted` `[(file, record)]` of `SCRIPTED_EXPORTS`, `cells` CELL.txt's
     records, `first` `{base: first placement FormID the folder owns}`,
     `travel` `{lower TES3Travel EditorID: FormID}`, `markers` the REFRs of a
-    `MARKER_KINDS` base, and `instances` the placements of a scripted base.
+    `MARKER_KINDS` base, and `instances` the placements of a scripted base,
+    the folder's own or a `runtime_masters` master's.
     """
     scripted = [(name, rec) for name in SCRIPTED_EXPORTS
                 for rec in export_records(os.path.join(folder, name), _SCRIPTED_KEYS)]
     bases = {rec['FormID'].upper() for _name, rec in scripted
              if rec.get('FormID') and rec.get('SCRI')}
+    bases.update(base for base, _rec, _dir, _name in master_scripted(folder))
     owner = f'{len(masters_from_export_header(folder)):02X}'
     out = {'scripted': scripted, 'first': {}, 'travel': {}, 'markers': [],
            'instances': [],

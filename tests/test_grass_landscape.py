@@ -56,6 +56,19 @@ class TestGrassProfile:
     def test_load_missing_gras_txt(self, tmp_path):
         assert grass_profile.load_grass_model_paths(tmp_path) == set()
 
+    def test_grass_model_found_in_a_masters_meshes(self, tmp_path):
+        """A groundcover plugin's GRAS may name a mesh only its master converted.
+
+        See: docs/commentary/asset_convert_terrain.md#grass-placement-parity
+        """
+        own, master = tmp_path / 'own', tmp_path / 'master'
+        nif = master / 'tes4' / 'grass' / 'clump.nif'
+        nif.parent.mkdir(parents=True)
+        nif.write_bytes(b'')
+        found, owned = grass_profile._grass_source('grass\\clump.nif', own, [master])
+        assert found == nif and owned is False
+        assert grass_profile._grass_source('grass\\none.nif', own, [master]) == (None, False)
+
     def test_grass_model_dest(self):
         # Working GRAS records keep models under landscape\grass (45/45
         # surveyed across vanilla + grass mods); tree is flattened.

@@ -18,8 +18,9 @@ See: docs/commentary/tes5_import_magic.md#runtime-effects-read-the-active-effect
 
 import struct
 
-from ..base.conditions import build_ctda
-from ..base.owned_records import FALL_DAMAGE_ENTRY, hidden_perk, multiply_entry
+from ..base.conditions import FUNC_GET_FACTION_RANK, build_ctda
+from ..base.owned_records import (FACTION_HIDDEN, FALL_DAMAGE_ENTRY, adopt_or_write,
+                                  hidden_perk, multiply_entry, owner_row)
 from ..base.writer import pack_record, pack_string_subrecord, pack_subrecord
 from .magic import (A_ABSORB, A_BOUND_WEAPON, A_CALM, A_CLOAK,
                     A_COMMAND_SUMMONED, A_CURE_DISEASE, A_CURE_PARALYSIS,
@@ -186,6 +187,15 @@ MW_SWIFT_SWIM, MW_LEVITATE, MW_SLOW_FALL, MW_SANCTUARY = 1, 10, 11, 42
 #: Every NATIVE_NONE effect MorrowindRuntime carries: add one via morrowind_runtime.md#adding-a-runtime-effect.
 MW_RUNTIME_EFFECTS = frozenset(MW_TELEPORTS + (MW_SWIFT_SWIM, MW_LEVITATE, MW_SLOW_FALL, MW_SANCTUARY))
 
+#: Drain, Damage, Restore, Fortify, Absorb Attribute: script effects MorrowindRuntime sums per attribute.
+MW_ATTRIBUTE_EFFECTS = frozenset((17, 22, 74, 79, 85))
+
+#: TES3 attribute indices 0..7, Oblivion's eight.
+_MW_ATTRIBUTES = range(8)
+
+#: TES4's attribute effect codes -> the TES3 effect MorrowindRuntime runs them as (same per-second rules).
+TES4_ATTRIBUTE_EFFECTS = {'DRAT': 17, 'DGAT': 22, 'REAT': 74, 'FOAT': 79, 'ABAT': 85}
+
 MW_EFFECT_ARCHETYPES.update(
     {index: (A_SCRIPT, NATIVE_NONE) for index in MW_RUNTIME_EFFECTS})
 MW_EFFECT_ARCHETYPES.update(
@@ -194,8 +204,8 @@ MW_EFFECT_ARCHETYPES.update(
     {index: (A_BOUND_WEAPON, AV_NONE)
      for index in MW_BOUND_WEAPONS + MW_BOUND_ARMOR})
 
-#: CTDA functions: GetFactionRank, GetRandomPercent.
-FUNC_GET_FACTION_RANK, FUNC_GET_RANDOM_PERCENT = 73, 77
+#: CTDA function GetRandomPercent.
+FUNC_GET_RANDOM_PERCENT = 77
 
 #: CTDA comparison bits: less-than.
 _OP_LT = 0x80
@@ -208,10 +218,6 @@ SANCTUARY_CAP = 100
 
 #: The conversion-owned FACT whose rank MorrowindRuntime keeps at an actor's summed Sanctuary.
 SANCTUARY_FACTION = 'MWSanctuaryFaction'
-
-#: FACT DATA flag Hidden From PC.
-_FACTION_HIDDEN = 0x1
-
 
 def _dodge_entry(faction: int, chance: int) -> bytes:
     """Zeroes a weapon hit `chance`% of the time on an owner ranked `chance` in `faction`.
@@ -246,31 +252,21 @@ _effect_perks: dict = {}
 _sanctuary_faction: list = []
 
 
-def _adopt_or_write(writer, master_index, sig: str, edid: str, build) -> tuple:
-    """(FormID, written): a master's record of `edid`, else ``build(fid)`` written as this plugin's."""
-    fid = master_index.find_by_edid(sig.encode(), edid) if master_index else 0
-    if fid:
-        return fid, False
-    fid = writer.derive_formid(sig, edid)
-    writer.add_record(sig, build(fid))
-    return fid, True
-
-
 def _faction_record(fid: int) -> bytes:
     """The hidden, rankless FACT only MorrowindRuntime puts actors in."""
     subs = pack_string_subrecord('EDID', SANCTUARY_FACTION)
-    subs += pack_subrecord('DATA', struct.pack('<I', _FACTION_HIDDEN))
+    subs += pack_subrecord('DATA', struct.pack('<I', FACTION_HIDDEN))
     return pack_record('FACT', fid, 0, subs)
 
 
 def register_effect_perks(writer, master_index=None) -> int:
     """Adopt each effect perk and the Sanctuary faction a master has, else write them; returns how many were written."""
     _effect_perks.clear()
-    faction, written = _adopt_or_write(writer, master_index, 'FACT', SANCTUARY_FACTION,
+    faction, written = adopt_or_write(writer, master_index, 'FACT', SANCTUARY_FACTION,
                                        _faction_record)
     _sanctuary_faction[:] = [faction]
     for index, (edid, entries) in sorted(MW_EFFECT_PERKS.items()):
-        fid, wrote = _adopt_or_write(
+        fid, wrote = adopt_or_write(
             writer, master_index, 'PERK', edid,
             lambda new, edid=edid, entries=entries: hidden_perk(new, edid, entries(faction)))
         written += wrote
@@ -279,17 +275,10 @@ def register_effect_perks(writer, master_index=None) -> int:
 
 
 def effect_form_rows(plugin: str, masters: list) -> list:
-    """`sanctuary=plugin|FormID` naming the Sanctuary faction, for MorrowindRuntime.
-
-    `plugin` is the file being written and `masters` its master list, which
-    name the file a master's adopted faction lives in.
-    """
+    """`sanctuary=plugin|FormID` naming the Sanctuary faction, for MorrowindRuntime."""
     if not _sanctuary_faction:
         return []
-    fid = _sanctuary_faction[0]
-    slot = fid >> 24
-    owner = masters[slot] if slot < len(masters) else plugin
-    return [f'sanctuary={owner}|{fid:08X}']
+    return [owner_row('sanctuary', _sanctuary_faction[0], plugin, masters)]
 
 
 def mw_effect_perk(index: int) -> int:
@@ -304,8 +293,28 @@ def is_morrowind_effect(rec: dict) -> bool:
 
 def mw_archetype(index: int) -> int:
     """TES5 archetype for one TES3 effect index (Value Modifier if unknown)."""
+    if index in MW_ATTRIBUTE_EFFECTS:
+        return A_SCRIPT
     entry = MW_EFFECT_ARCHETYPES.get(index)
     return entry[0] if entry else A_VALUE_MODIFIER
+
+
+def mw_attribute_variant(index: int, effect_av: int) -> bool:
+    """Whether an effect is a runtime attribute effect: one MGEF per attribute.
+
+    See: docs/commentary/morrowind_runtime.md#attribute-effects
+    """
+    return index in MW_ATTRIBUTE_EFFECTS and effect_av in _MW_ATTRIBUTES
+
+
+def runtime_attribute_index(index: int, code: str, effect_av: int) -> int:
+    """The runtime's TES3 attribute effect for a MW `index` or TES4 `code`, else -1.
+
+    See: docs/commentary/morrowind_runtime.md#tes4-attribute-magic
+    """
+    if index >= 0:
+        return index if mw_attribute_variant(index, effect_av) else -1
+    return TES4_ATTRIBUTE_EFFECTS.get(code, -1) if effect_av in _MW_ATTRIBUTES else -1
 
 
 def mw_actor_value(index: int, effect_av: int) -> int:
@@ -318,7 +327,7 @@ def mw_actor_value(index: int, effect_av: int) -> int:
     from .magic import ATTRIBUTE_TO_AV, SKILL_TO_AV
 
     entry = MW_EFFECT_ARCHETYPES.get(index)
-    if entry is None:
+    if entry is None or index in MW_ATTRIBUTE_EFFECTS:
         return AV_NONE
     value = entry[1]
     if value == NATIVE_NONE:
@@ -340,13 +349,15 @@ def mw_converts(index: int, effect_av: int) -> bool:
         return False
     if entry[1] == NATIVE_NONE:
         return index in MW_RUNTIME_EFFECTS
+    if index in MW_ATTRIBUTE_EFFECTS:
+        return mw_attribute_variant(index, effect_av)
     return entry[1] != DERIVE_AV or mw_actor_value(index, effect_av) != AV_NONE
 
 
 def mw_needs_runtime(index: int) -> bool:
     """Whether this effect has no Skyrim mechanism and awaits the runtime."""
     entry = MW_EFFECT_ARCHETYPES.get(index)
-    return bool(entry) and entry[1] == NATIVE_NONE
+    return index in MW_ATTRIBUTE_EFFECTS or (bool(entry) and entry[1] == NATIVE_NONE)
 
 
 def mw_tes4_flags(mw_flags: int) -> int:

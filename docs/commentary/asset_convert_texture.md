@@ -15,6 +15,11 @@
 - [The blacklist prune](#the-blacklist-prune)
   - [A referenced texture in a pruned folder still ships](#pruned-dir-references)
 - [Texture repairs write in place, never by rename](#texture-repairs-write-in-place)
+- [Morroblivion texture substitution](#morroblivion-texture-substitution)
+  - [Pairing meshes through their records](#pairing-meshes-through-records)
+  - [Comparing shapes across the pair](#comparing-shapes-across-the-pair)
+  - [A texture is its path, not its name](#texture-identity)
+  - [Who swaps, and how workers know](#who-swaps)
 
 ## Oblivion parallax → Skyrim height maps (`asset_convert/texture/parallax.py`, opt-in, 2026-08-15)
 <a id="oblivion-parallax-skyrim-height-maps"></a>
@@ -1079,3 +1084,101 @@ bytes (`open(path, 'wb')`). It never renames a new file over it. Both passes
 read the whole file into memory first, so the in-place write is safe. A
 deployment cut off by the old behavior has to be re-linked once. Guarded by
 `test_hard_linked_copy_receives_the_fix`.
+
+## <a id="morroblivion-texture-substitution"></a>Morroblivion texture substitution
+
+**Code:** `tes4_export/morroblivion_texture_map.py` (proves the map, in the
+compatibility patch's Export step); `asset_convert/nif/morroblivion_textures.py`
+(reads it); `_fill_texture_slots` in `asset_convert/nif/geometry_shader.py`
+(swaps).
+
+Morroblivion renamed every Morrowind texture by replacing `_` with `u`
+(`tx_hlaalu_wall2_01` -> `txuhlaaluuwall2u01`) and repainted many at higher
+resolution. In Morroblivion mode a Tamriel Rebuilt wall therefore renders beside
+a Morroblivion wall built from the same authored art at a fraction of its texel
+density: `tx_hlaalu_wall2_01.dds` ships 256x256 / 43 KB,
+`txuhlaaluuwall2u01.dds` 1024x1024 / 699 KB.
+
+A twin is not interchangeable on its name alone. Morroblivion re-modelled part
+of the mesh tree, and its textures are hand-authored: comparing the images
+cannot say whether a mesh still addresses the twin the way it addressed the
+original. The vanilla/Morroblivion mesh pair can. Where Morroblivion kept a
+vanilla shape's geometry and UVs exactly and put the renamed twin on it, the
+twin is proven to fit the vanilla layout, and it then fits wherever any mesh
+names that texture -- including Tamriel Data and Tamriel Rebuilt, whose own
+`tr_` meshes have no Morroblivion counterpart to compare. A first version keyed
+the map on the mesh and so swapped on none of their meshes.
+
+The map is built by the patch, not committed: the patch's Export step already
+walks every entry of the vanilla BSAs once, so it keeps the bytes of each
+paired vanilla mesh in that same pass and needs no authored-mode
+`export/Morrowind.esm`, which a Morroblivion-mode user never has. It is written
+as `morroblivion_textures.txt` beside the patch's records, one
+`<vanilla texture>\t<Morroblivion texture>` per line (`write_manifest`'s
+format). Where several Morroblivion copies of a twin ship, the largest wins.
+A twin no Morroblivion file backs is dropped: some Morroblivion meshes name
+textures its archives never shipped.
+
+The patch still ships every vanilla texture (see
+[tes4_export_morrowind.md](tes4_export_morrowind.md#morroblivion-gap-patch)).
+The map rewrites only mesh diffuse slots; records (landscape textures,
+inventory icons) and the other slots still name the vanilla files.
+
+### <a id="pairing-meshes-through-records"></a>Pairing meshes through their records
+
+A vanilla mesh's Morroblivion counterpart is the model of the Morroblivion
+record that replaced the vanilla record naming it -- `MorroblivionModels.replacement`,
+the same chain that remaps a dependent plugin's models. Guessing the
+counterpart's file name (`morro\` + the `_`->`u` renaming) found 3,033 pairs;
+the records find 4,874 with a file behind them.
+
+### <a id="comparing-shapes-across-the-pair"></a>Comparing shapes across the pair
+
+Morroblivion reorders shapes within a NIF, permutes vertices within a shape,
+and drops vanilla's untextured collision geometry. Three consequences, each of
+which produced a wrong answer before it was handled:
+
+- **Compare by content, not file order.** Pairing shapes by index reported 97
+  of 120 meshes as mismatched; nearly all were the dropped collision shape
+  shifting every later index.
+- **Compare as a multiset, not a sorted array.** Sorting by position is
+  ambiguous -- a UV seam puts two UVs on one position -- and sorting by UV
+  assumes the answer. `pair_set` reduces a shape to a `Counter` of
+  `(x, y, z, u, v)` tuples, which ignores order without a tie-break.
+- **Round position and UV differently.** NIF stores float32, so identical
+  geometry disagrees in the 4th decimal (`-111.2258` against `-111.2257`).
+  Positions round to 2 decimals and serve only as identity; UVs round to 4,
+  since the UV is what is under test.
+
+A synthetic UV shift down to 5e-4 is detected; a permuted vertex order reads
+as identical. `act_banner_ald_velothi` is correctly refused: same vertex count
+and [0,1] UV range, but Morroblivion rotated it from the XY plane to XZ.
+
+### <a id="texture-identity"></a>A texture is its path, not its name
+
+`texture_key` identifies a texture by its path below `textures\`, lower case,
+without extension. The extension goes because Morrowind names `.tga` where its
+archives ship `.dds`. The directory stays, because it is part of which file is
+meant: 4,677 of the vanilla archives' 4,783 textures sit at the archive root
+(the rest are UI and water), so a plugin's own `tr\tx_hlaalu_wall2_01.dds` is a
+different file that merely shares a name, and keeps its art. The normalizing
+(separators, a leading `data\`, then `textures\`) is `texture_rel_path`, the
+same step `rewrite_tex_path` uses.
+
+Only the diffuse is swapped. The normal map then follows from the swapped
+diffuse through `_normal_slot`, which finds Morroblivion's `_n` through the
+masters' texture roots.
+
+### <a id="who-swaps"></a>Who swaps, and how workers know
+
+A plugin swaps when its own export or any master in its chain carries the map:
+the patch itself, and everything converted in Morroblivion mode, since all of it
+masters the patch. Authored-mode Morrowind never masters it and never swaps.
+
+The choice is made once per plugin, where the namespace is installed
+(`_activate_namespace` and `convert.py`'s `_use_plugin_namespace`), and carried
+the same way the namespace is: `activate` puts the map's folder in
+`TESCONV_MORROBLIVION_TEXTURES`, which every spawned mesh worker inherits. A
+first version kept an on/off flag in module state, which a spawned worker never
+sees, so a real build would have swapped nothing while every in-process test
+passed. `test_the_map_reaches_a_spawned_worker` spawns one.

@@ -6,6 +6,7 @@
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 #include "scope.h"
 #include "store.h"
@@ -50,7 +51,7 @@ LayeredTable<FormRef> g_bases;
 LayeredTable<FormRef> g_cells;
 LayeredTable<TeleportMarker> g_markers{false};
 LayeredTable<CellAnchor> g_anchors{false};
-LayeredTable<int> g_teleports{false};
+LayeredTable<RuntimeEffect> g_teleports{false};
 LayeredTable<FormRef> g_worldParents{false};
 
 // Each plugin's AI package quest, its aliases by name -> ALST index, and its
@@ -112,6 +113,23 @@ constexpr const char* kFileFactions = "FACT.txt";
 constexpr const char* kFileGmsts = "GMST.txt";
 constexpr const char* kFileSkills = "SKIL.txt";
 
+// Each race's starting attributes, by the Skyrim race a player of it wears.
+// See: docs/commentary/morrowind_runtime.md#race-attributes
+constexpr const char* kFileRaces = "RACE.txt";
+
+// The player attribute globals a TES4 plugin's converted scripts read and
+// write, `strength=Plugin.esm|FormID`.
+// See: docs/commentary/morrowind_runtime.md#tes4-tables
+constexpr const char* kFileAttributes = "attributes_formid.txt";
+constexpr const char* kAttributeNames[] = {"strength", "intelligence", "willpower", "agility",
+                                           "speed", "endurance", "personality", "luck"};
+std::vector<AttributeGlobal> g_attributeGlobals;
+
+// The same file's `faction.<TES4 actor value>` rows: each stat faction.
+// See: docs/commentary/morrowind_runtime.md#npc-attributes
+constexpr const char* kStatFactionPrefix = "faction.";
+LayeredTable<FormRef> g_statFactions{false};
+
 // The SNDR a TES3 sound id names, for PlaySound3D and its kin.
 // See: docs/commentary/tes5_import_sound.md#the-runtime-sound-table
 constexpr const char* kFileSounds = "SOUN.txt";
@@ -150,6 +168,7 @@ constexpr const char* kCrimeRow = "crime";
 LayeredTable<FactionDef> g_factions;
 LayeredTable<GmstDef> g_gmsts{false};
 LayeredTable<SkillDef> g_skills{false};
+LayeredTable<RaceDef> g_races{false};
 
 std::vector<std::string> Split(const std::string& text, char sep) {
     std::vector<std::string> out;
@@ -247,6 +266,21 @@ SkillDef ParseSkill(const std::string& value) {
     return out;
 }
 
+// `race|m0,..,m7|f0,..,f7`.
+RaceDef ParseRace(const std::string& value) {
+    const std::vector<std::string> f = Split(value, '|');
+    RaceDef out;
+    if (f.size() < 3) return out;
+    out.id = f[0];
+    const std::vector<std::string> male = Split(f[1], ',');
+    const std::vector<std::string> female = Split(f[2], ',');
+    for (std::size_t i = 0; i < 8 && i < male.size() && i < female.size(); ++i) {
+        out.male[i] = std::atoi(male[i].c_str());
+        out.female[i] = std::atoi(female[i].c_str());
+    }
+    return out;
+}
+
 // `attr1,attr2|skill,...|a1,a2,primary,favoured,rep;...` -- the two judged
 // attributes, the faction's skills, then one threshold row per rank.
 FactionDef ParseFaction(const std::string& value) {
@@ -312,6 +346,15 @@ std::vector<TravelDest> ParseTravel(const std::string& value) {
 
 float Number(const std::string& text) {
     return static_cast<float>(std::atof(text.c_str()));
+}
+
+// `index` or `index:attribute`.
+RuntimeEffect ParseRuntimeEffect(const std::string& value) {
+    RuntimeEffect out;
+    out.index = std::atoi(value.c_str());
+    const std::size_t colon = value.find(':');
+    if (colon != std::string::npos) out.attribute = std::atoi(value.c_str() + colon + 1);
+    return out;
 }
 
 // `kind|Plugin|place|x|y|z|zRot`; a short row keeps nothing, as a marker with
@@ -422,6 +465,15 @@ std::string InstanceKey(const std::string& plugin, std::uint32_t formId) {
 
 }  // namespace
 
+void ForEachTableRow(const std::string& path,
+                     const std::function<void(const std::string&, const std::string&)>& row) {
+    ForEachRow(path, row);
+}
+
+std::vector<std::string> SplitFields(const std::string& text, char sep) { return Split(text, sep); }
+
+FormRef ParseFormRefField(const std::string& value) { return ParseFormRef(value); }
+
 char ScriptLocals::TypeOf(const std::string& name) const {
     const std::string key = Lower(name);
     if (Holds(shorts, key)) return 's';
@@ -469,6 +521,9 @@ void ClearScriptTables() {
     g_effectForms.clear();
     g_gmsts.clear();
     g_skills.clear();
+    g_races.clear();
+    g_attributeGlobals.clear();
+    g_statFactions.clear();
 }
 
 // The sidecar folder's own name, which is the plugin stem the placements in
@@ -594,8 +649,8 @@ void LoadRecordRows(int layer, const std::string& pluginDir) {
                    g_anchors.Add(layer, Lower(cell), ParseAnchor(cell, value));
                });
     ForEachRow(pluginDir + kFileTeleports,
-               [layer](const std::string& effect, const std::string& index) {
-                   g_teleports.Add(layer, effect, std::atoi(index.c_str()));
+               [layer](const std::string& effect, const std::string& value) {
+                   g_teleports.Add(layer, effect, ParseRuntimeEffect(value));
                });
     ForEachRow(pluginDir + kFileWorlds,
                [layer](const std::string& child, const std::string& parent) {
@@ -655,7 +710,9 @@ void LoadWorldRows(int layer, const std::string& pluginDir) {
                });
     ForEachRow(pluginDir + kFileFactions,
                [layer](const std::string& faction, const std::string& value) {
-                   g_factions.Add(layer, Lower(faction), ParseFaction(value));
+                   FactionDef def = ParseFaction(value);
+                   def.id = faction;
+                   g_factions.Add(layer, Lower(faction), std::move(def));
                });
     ForEachRow(pluginDir + kFileFactionForms,
                [layer](const std::string& faction, const std::string& value) {
@@ -682,6 +739,23 @@ void LoadWorldRows(int layer, const std::string& pluginDir) {
                [layer](const std::string& index, const std::string& value) {
                    g_skills.Add(layer, std::to_string(std::atoi(index.c_str())),
                                 ParseSkill(value));
+               });
+    ForEachRow(pluginDir + kFileRaces,
+               [layer](const std::string& race, const std::string& value) {
+                   g_races.Add(layer, Lower(race), ParseRace(value));
+               });
+    ForEachRow(pluginDir + kFileAttributes,
+               [layer](const std::string& name, const std::string& value) {
+                   const std::string key = Lower(name);
+                   if (key.rfind(kStatFactionPrefix, 0) == 0) {
+                       g_statFactions.Add(layer, key.substr(std::strlen(kStatFactionPrefix)),
+                                          ParseFormRef(value));
+                       return;
+                   }
+                   for (int a = 0; a < 8; ++a) {
+                       if (key != kAttributeNames[a]) continue;
+                       g_attributeGlobals.push_back({a, ParseFormRef(value)});
+                   }
                });
 }
 
@@ -730,6 +804,20 @@ std::size_t GmstCount() { return g_gmsts.size(); }
 
 const SkillDef* FindSkill(int index) {
     return g_skills.Find(std::to_string(index));
+}
+
+std::size_t SkillCount() { return g_skills.size(); }
+
+const std::vector<AttributeGlobal>& AttributeGlobals() { return g_attributeGlobals; }
+
+const FormRef* StatFaction(int attribute) {
+    return g_statFactions.Find(std::to_string(attribute));
+}
+
+const RaceDef* FindRaceStart(std::uint32_t skyrimRace) {
+    char key[9];
+    std::snprintf(key, sizeof(key), "%08x", skyrimRace);
+    return g_races.Find(key);
 }
 
 std::size_t FactionCount() { return g_factions.size(); }
@@ -864,10 +952,12 @@ void ForEachCellAnchor(const std::function<void(const CellAnchor&)>& fn) {
         [&fn](const std::string&, const CellAnchor& row, int) { fn(row); });
 }
 
-void ForEachTeleportEffect(const std::function<void(const FormRef&, int)>& fn) {
-    g_teleports.ForEachRow([&fn](const std::string& effect, int index, int) {
-        fn(ParseFormRef(effect), index);
-    });
+void ForEachTeleportEffect(
+    const std::function<void(const FormRef&, const RuntimeEffect&)>& fn) {
+    g_teleports.ForEachRow(
+        [&fn](const std::string& effect, const RuntimeEffect& row, int) {
+            fn(ParseFormRef(effect), row);
+        });
 }
 
 void ForEachWorldParent(

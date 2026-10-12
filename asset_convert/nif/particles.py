@@ -444,12 +444,13 @@ def _is_emitter_marker(node):
 def _inherit_billboard_rotation(plain, bb):
     """Carry a demoted billboard's rotation across only if it is live data.
 
-    A NiBillboardNode discards its own rotation at runtime, so the demoted node
-    inherits identity -- EXCEPT on an emitter marker, whose orientation a
-    NiPSysEmitter reads as the emission DIRECTION.
+    Face-camera modes cancel a billboard's own rotation, so the demoted node
+    inherits identity -- EXCEPT in mode 1, where the rotation picks the spin
+    axis, and on an emitter marker, whose orientation a NiPSysEmitter reads as
+    the emission DIRECTION.
     See: docs/commentary/asset_convert_nif.md#billboard-demotion
     """
-    if not _is_emitter_marker(bb):
+    if bb.billboard_mode != 1 and not _is_emitter_marker(bb):
         plain.rotation.set_identity()
         return
     for row in (1, 2, 3):

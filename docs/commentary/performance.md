@@ -788,7 +788,12 @@ live.
   It never moves ahead of a job it `needs`: pipeline order (`STEP_FLAGS`)
   decides, so a new import may jump queued scripts, but new scripts replace
   only the scripts queued behind the last import, and an unknown step (the
-  Morroblivion patch build) is needed by and needs everything. A job that was
+  Morroblivion patch build) is needed by and needs everything. Only jobs on
+  the run's own plugins or their masters count (`convert.py` lists the
+  transitive masters from the binaries as `masters`): a plugin-blind check
+  let any other plugin's import, queued between a duplicate and its
+  replacement, block the replace. Work without `masters` (`create_lod.py`)
+  still counts every plugin as related. A job that was
   first in line when a replacement took an earlier place hands the lock back
   if it gets it.
   A replaced queued job stops waiting, follows its replacement, and exits with

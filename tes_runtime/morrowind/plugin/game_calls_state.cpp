@@ -24,36 +24,24 @@ namespace {
 
 constexpr std::uint32_t kLocalMask = 0x00FFFFFF;
 
-// Actor.SetFactionRank(Faction, int) and Faction.SetPlayerExpelled(bool).
+// Actor.Get/SetFactionRank(Faction[, int]) and Faction.SetPlayerExpelled(bool).
+using GetFactionRankFn = std::int32_t (*)(void* vm, std::uint32_t stack, void* actor,
+                                          void* faction);
 using SetFactionRankFn = void (*)(void* vm, std::uint32_t stack, void* actor,
                                   void* faction, std::int32_t rank);
 using SetExpelledFn = void (*)(void* vm, std::uint32_t stack, void* faction,
                                bool expelled);
 
+constexpr int kNoRank = -2;
+
+GetFactionRankFn g_getFactionRank = nullptr;
 SetFactionRankFn g_setFactionRank = nullptr;
 SetExpelledFn g_setExpelled = nullptr;
-
-// The value slot of the GLOB a row names, resolved once. A GLOB never
-// unloads, and one this load order lacks stays null instead of being asked
-// for again every tick.
-float* ValueSlot(const FormRef& ref) {
-    static std::unordered_map<std::string, float*> slots;
-    const std::uint32_t local = ref.formId & kLocalMask;
-    const std::string key = Lower(ref.plugin) + '|' + std::to_string(local);
-    const auto found = slots.find(key);
-    if (found != slots.end()) return found->second;
-    auto* form = static_cast<std::uint8_t*>(
-        FormFromFile(ref.plugin.c_str(), local));
-    float* slot = form ? reinterpret_cast<float*>(form + ids::kOffGlobalValue)
-                       : nullptr;
-    slots.emplace(key, slot);
-    return slot;
-}
 
 // Only a CHANGE is written, so a GLOB whose value holds is never touched.
 void Publish(const FormRef& ref, float value) {
     if (ref.plugin.empty()) return;
-    float* slot = ValueSlot(ref);
+    float* slot = GlobalSlot(ref.plugin, ref.formId);
     if (slot && *slot != value) *slot = value;
 }
 
@@ -97,12 +85,11 @@ void ApplyPlayerFaction(const std::string& faction, int rank, bool expelled) {
     PostToMainThread([plugin, local, faction, rank, expelled]() {
         void* form = FormFromFile(plugin.c_str(), local);
         void* player = PlayerRef();
-        if (!form || !player || !g_setFactionRank || !g_setExpelled) {
+        if (!form || !player || !g_setExpelled || !SetFactionRank(player, form, rank)) {
             Log("faction: %s not pushed -- %s", faction.c_str(),
                 form ? "no player or no native" : "its FACT did not resolve");
             return;
         }
-        g_setFactionRank(PapyrusVm(), 0, player, form, rank);
         g_setExpelled(PapyrusVm(), 0, form, expelled);
         Log("faction: player at rank %d%s in %s", rank,
             expelled ? ", expelled," : "", faction.c_str());
@@ -110,6 +97,31 @@ void ApplyPlayerFaction(const std::string& faction, int rank, bool expelled) {
 }
 
 }  // namespace
+
+// Resolved once: a GLOB never unloads, and one this load order lacks stays
+// null instead of being asked for again every tick.
+float* GlobalSlot(const std::string& plugin, std::uint32_t formId) {
+    static std::unordered_map<std::string, float*> slots;
+    const std::uint32_t local = formId & kLocalMask;
+    const std::string key = Lower(plugin) + '|' + std::to_string(local);
+    const auto found = slots.find(key);
+    if (found != slots.end()) return found->second;
+    auto* form = static_cast<std::uint8_t*>(FormFromFile(plugin.c_str(), local));
+    float* slot = form ? reinterpret_cast<float*>(form + ids::kOffGlobalValue) : nullptr;
+    slots.emplace(key, slot);
+    return slot;
+}
+
+int FactionRank(void* actor, void* faction) {
+    if (!actor || !faction || !g_getFactionRank) return kNoRank;
+    return g_getFactionRank(PapyrusVm(), 0, actor, faction);
+}
+
+bool SetFactionRank(void* actor, void* faction, int rank) {
+    if (!actor || !faction || !g_setFactionRank) return false;
+    g_setFactionRank(PapyrusVm(), 0, actor, faction, rank);
+    return true;
+}
 
 // 🛑 Every sidecar's own mirror GLOB, each read through its own plugin's
 // view: a sibling plugin's global of the same name is a different value.
@@ -129,11 +141,14 @@ void PublishState() {
 }
 
 void InstallStateCalls(GameHooks& hooks) {
+    g_getFactionRank = Native<GetFactionRankFn>("Actor.GetFactionRank",
+                                                ids::kActorGetFactionRank);
     g_setFactionRank = Native<SetFactionRankFn>("Actor.SetFactionRank",
                                                 ids::kActorSetFactionRank);
     g_setExpelled = Native<SetExpelledFn>("Faction.SetPlayerExpelled",
                                           ids::kFactionSetPlayerExpelled);
     hooks.applyPlayerFaction = ApplyPlayerFaction;
+    hooks.globalSlot = GlobalSlot;
     Log("game: %zu bark state GLOB(s) to publish", StateRows().size());
 }
 

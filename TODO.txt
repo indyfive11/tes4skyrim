@@ -3,8 +3,6 @@ Major Issues for V1:
 
 	2 - Havok feels off. Items don't move like they should. Specifically, there seems to be too much inertia on small items, like I'm dragging a heavy object when it is something as small as a cup, Animated signs will get stuck in a position after swinging a bit, defying gravicty
 	
-	4 - All-in-one installer that people can just click and expect to work
-
 	5 - Weather particle conversion (snow, rain) SPGD
 
 	6 - AutoUpdater
@@ -52,13 +50,9 @@ Minor Issues:
 
 	7 - Flame atronach animated section not properly converted
 	
-	16 - Log trap doesn't visibly roll
-
 	19 - Leaving a force-greet conversation can soft-lock
 
 	21 - FaceGen: Oblivion.exe statically links the FaceGen SDK (matrixVT.hpp, BSFaceGenModelMap, EGM/EGT basis load+apply). Use it like the SpeedTree engine harness to turn FGGS/FGGA coefficients into real vertex deltas
-
-	22 - OblivionBloodFountain01: geyser (SpecialIdle) never plays as the default state
 
 Guns (FalloutNV):
 	G1 - HUD magazine readout: the counter text field path is a guess and the hook is disabled (hud.cpp, InstallHud not called); find the field in the loaded HUD movie and re-enable
@@ -86,3 +80,11 @@ Morrowind:
 	2 - Magic effects with no Skyrim mechanism await the MorrowindRuntime
 	3 - Enchanting service: the NPC should enchant for a fee at the NPC's skill, not the player's (fee = enchantment cost x fEnchantmentValueMult, barter-adjusted; swap the player's Enchanting for the NPC's while the menu is open; no player skill gain)
 	4 - Spellmaking service row (sSpellmakingMenuTitle) has no Skyrim menu yet
+	5 - teradimir ref xxdbbadb spawns dead and doesn't have his clothes equiped. we were supposed to have fixed this already "teloseras, vault"
+	6 - NPC dialogue risk, older than my changes: vanilla NPCs that Morroblivion replaced run Papyrus, so about 220 TR and Tamriel_Data dialogue filters give the wrong answer when one of them is the speaker. That's lost slave and vampire lines, and lore topics on NPCs who shouldn't discuss lore.
+	7 - the blowing banners have no collision at all, and Skyrim only shows an activator's name when the crosshair ray hits its collision.
+	Tamriel_Data's banner (tr_act_banner_inn_01.nif) carries Morrowind's NCO marker. In Morrowind that means "actors walk through this", but the object can still be pointed at, because Morrowind picks with the visible mesh.
+	The converter's rule (fixture_plan.py:3-14) honors NCO on fixtures (statics, activators, lights, containers, doors) by shipping no collision body. Skyrim has no "walk-through but targetable" collision class, so the rule drops the body entirely. That's right for scenery, but an activator is meant to be pointed at, so a bodyless activator loses its name prompt and can't be activated. The same rule already makes an exception for carriable items for exactly this reason. Activators were left out.
+	Morroblivion's static banner has an ordinary bhkBoxShape, so the crosshair hits it, which is why it shows "Dwemer shop" while the animated ones show nothing.
+	This isn't from today's changes. The blowing banners were bodyless before too; you just noticed it now that they move.
+	Suggested fix: when NCO is on an activator (and on a door or container, which also need picking), keep a body the crosshair hits but actors don't block on. Before writing that, I'd count vanilla Skyrim's activator meshes to find which collision layer Bethesda uses for "targetable but walk-through", rather than guessing one. Want me to do that census and the fix? It would need a mesh rebuild of the affected Tamriel_Data and TR activators.

@@ -84,4 +84,30 @@ constexpr std::uint64_t kRefTranslateTo = 56237;
 // array at +0 (or the add buffer at +0x18 while dispatching) and appends.
 constexpr std::uint64_t kAddEventSink = 35182;
 
+// ---------------------------------------------------------------------------
+// The player
+// ---------------------------------------------------------------------------
+
+// PlayerCharacter's primary vtable (0x18ab9c0 on 1.6.1170, 0x19296c0 on
+// 1.7.104), which TESRuntime's jail and MorrowindRuntime's skill cap both swap
+// slots of.
+constexpr std::uint64_t kPlayerVtable = 208040;
+
+// ---------------------------------------------------------------------------
+// In-mesh sequences (gamebryo_sequence.cpp)
+// ---------------------------------------------------------------------------
+
+// The way ObjectReference.PlayGamebryoAnimation (1.6.1170 0xa2ead0) plays an
+// in-mesh sequence; addresses are 1.6.1170's. The NiControllerManager vtable
+// (0x19b6980) a node's first controller must carry, the BSFixedString hash
+// keying the manager's name map (+0x98 buckets, +0x7c capacity, +0x88
+// sentinel) and NiControllerSequence::Activate (0xd92eb0), which refuses a
+// sequence whose state (+0x68) is not inactive, so a running sequence is
+// first stopped by NiControllerSequence::Deactivate(seq, easeOut, transition)
+// (0xd93030) (docs/commentary/morrowind_runtime.md#object-animation).
+constexpr std::uint64_t kControllerManagerVtable = 237541;
+constexpr std::uint64_t kFixedStringHash = 68221;
+constexpr std::uint64_t kSequenceActivate = 72463;
+constexpr std::uint64_t kSequenceDeactivate = 72464;
+
 }  // namespace tesruntime::ids

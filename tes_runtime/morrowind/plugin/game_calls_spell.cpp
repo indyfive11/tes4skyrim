@@ -32,8 +32,16 @@ SpellQueryFn g_hasMagicEffect = nullptr;
 SpellQueryFn g_dispelSpell = nullptr;
 CastFn       g_cast = nullptr;
 
-// The SPEL a TES3 spell id names, reporting one that resolves to nothing.
+// The SPEL a TES3 spell id or a `Plugin.esm@FormID` names, reporting one that
+// resolves to nothing.
 void* SpellForm(const std::string& spell) {
+    const std::size_t at = spell.find('@');
+    if (at != std::string::npos) {
+        const FormRef ref = ParseFormRefField(spell.substr(0, at) + '|' + spell.substr(at + 1));
+        void* form = Form(&ref);
+        if (!form) ReportOnce("spell", spell);
+        return form;
+    }
     const SpellDef* def = FindSpell(spell);
     void* form = def ? Form(&def->form) : nullptr;
     if (!form) ReportOnce("spell", spell);

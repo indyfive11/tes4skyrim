@@ -5,7 +5,29 @@ See: docs/commentary/tes5_import_pipeline.md#phase-0-dependent-skips-support-rec
 
 import os
 
+from tes5_import.base.text_reader import set_formid_index_offset
 from tes5_import.overrides.nested import inherited_masters, reconcile_masters
+from tes5_import.record_types.actor_common import (origin_memberships,
+                                                   reset_origin_faction)
+
+
+class _OriginIndex:
+    """A master index holding an origin FACT in slots 1 (inherited), 2 and 3."""
+
+    def find_all_by_edid(self, _sig, _edid):
+        """One origin faction per master slot."""
+        return [0x01687124, 0x029A7124, 0x03BB7124]
+
+
+def test_inherited_master_origin_is_never_joined():
+    """Skyrim.esm, Oblivion.esm (inherited), then the header's two masters."""
+    set_formid_index_offset(2)
+    try:
+        reset_origin_faction(_OriginIndex())
+        assert origin_memberships() == [0x029A7124, 0x03BB7124]
+    finally:
+        set_formid_index_offset(0)
+        reset_origin_faction()
 
 
 def _export(root, name: str, masters: list) -> str:

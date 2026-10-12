@@ -143,12 +143,13 @@ def _load_evil_factions(by_type: dict, master_export: dict) -> None:
 
 
 def in_evil_faction(rec: dict) -> bool:
-    """Whether this actor belongs to an Evil faction: no victim of a crime.
+    """Whether every faction this actor belongs to is Evil: no victim of a crime.
 
     See: docs/commentary/tes5_import_actors.md#evil-factions
     """
-    return any(int(rec.get(f'Faction[{i}].FormID') or '0', 16) in _EVIL_FACTIONS
-               for i in range(get_int(rec, 'FactionCount')))
+    factions = [int(rec.get(f'Faction[{i}].FormID') or '0', 16)
+                for i in range(get_int(rec, 'FactionCount'))]
+    return bool(factions) and all(f in _EVIL_FACTIONS for f in factions)
 
 
 def load_faction_player_reactions(by_type: dict, master_export: dict = None) -> None:
@@ -388,16 +389,18 @@ def create_origin_faction(writer, support_root: bool) -> int:
 
 
 def reset_origin_faction(master_index=None) -> None:
-    """Clear origin-faction state, then adopt the converted masters' FACTs.
+    """Clear origin-faction state, then adopt the FACTs of the masters the header lists.
 
+    An inherited master sits below the header's first slot and is never joined.
     See: docs/commentary/tes5_import_actors.md#origin-faction
     """
     global _origin_faction_fid, _origin_tes4_index, _support_root
     _origin_faction_fid = _origin_tes4_index = 0
     _support_root = False
-    _master_origin_fids[:] = (
-        master_index.find_all_by_edid(b'FACT', _ORIGIN_EDID)
-        if master_index is not None else [])
+    found = (master_index.find_all_by_edid(b'FACT', _ORIGIN_EDID)
+             if master_index is not None else [])
+    _master_origin_fids[:] = [f for f in found
+                              if f >> 24 >= get_formid_index_offset()]
 
 
 def _keywords_for_services(services: int) -> list[int]:

@@ -912,6 +912,19 @@ Bool Function GetIsCreature(Actor akActor) Global
   Return !akActor.HasKeyword(npcKeyword)
 EndFunction
 
+; OBSE IsPlayable / IsPlayable2: the base form's playable flag (SKSE
+; Form.IsPlayable).  TES4 accepted a placed reference too; it answers for its base.
+Bool Function IsPlayable(Form akForm) Global
+  ObjectReference placed = akForm as ObjectReference
+  If placed != None
+    Return placed.GetBaseObject().IsPlayable()
+  EndIf
+  If akForm == None
+    Return False
+  EndIf
+  Return akForm.IsPlayable()
+EndFunction
+
 ; TES4 HasVampireFed: Skyrim's PlayerVampireQuest (Skyrim.esm 0x000EAFD5)
 ; tracks feeding — VampireStatus is 1 exactly while a vampire has recently fed
 ; (it climbs to 2..4 as the player goes hungry).
@@ -1545,8 +1558,56 @@ Float Function SayLine(ObjectReference akSpeaker, Topic akTopic, Float afFallbac
   Return len
 EndFunction
 
+; A poll calling a StartConversation walk stores this before the walk and 0.0
+; after; while WalkPending, the poll's 5s insurance passes skip, so the walk is
+; not restarted mid-conversation.  Game time, so it survives a reload; the
+; 15-minute bound frees the poll if the walking pass aborted.
+Float Function WalkDeadline() Global
+  Return Utility.GetCurrentGameTime() + _GameDays(900.0)
+EndFunction
+
+Bool Function WalkPending(Float afUntil) Global
+  Return afUntil > 0.0 && Utility.GetCurrentGameTime() < afUntil
+EndFunction
+
+; Marks the speaker's Variable05 while ConverseLine waits for LineBegan to name the line.
+Float Function CONVERSE_PENDING() Global
+  Return -77.0
+EndFunction
+
+; One line of a TES4 StartConversation walk (the generated ConvRoute scripts):
+; say akTopic, wait the line out, and return the played INFO's low 24 FormID
+; bits, or 0 when nothing under the topic played.  Variable05 is borrowed only
+; from the Say until the line begins, then restored: FNV scripts keep state there.
+Int Function ConverseLine(Actor akSpeaker, Topic akTopic) Global
+  If akSpeaker == None || akTopic == None || (akSpeaker as Form).GetFormID() == 0x14
+    Return 0
+  EndIf
+  Float saved = akSpeaker.GetActorValue("Variable05")
+  Float len = 0.5
+  Int tries = 0
+  Bool busy = True
+  While busy && tries < 40
+    akSpeaker.SetActorValue("Variable05", CONVERSE_PENDING())
+    len = SayLine(akSpeaker, akTopic, 4.0)
+    busy = len == 0.5 && akSpeaker.GetActorValue("Variable05") == CONVERSE_PENDING()
+    If busy
+      Utility.Wait(0.5)   ; another SayLine owns this speaker: retry, as SayLine's own callers do
+    EndIf
+    tries += 1
+  EndWhile
+  Int info = akSpeaker.GetActorValue("Variable05") as Int
+  akSpeaker.SetActorValue("Variable05", saved)
+  If len <= 0.0 || info <= 0
+    Return 0
+  EndIf
+  Utility.Wait(len + 0.6)
+  Return info
+EndFunction
+
 ; OnBegin fragment hook: the engine has selected this INFO and started it.
-Function LineBegan(ObjectReference akSpeakerRef, Float afLength) Global
+; aiInfo is the INFO's FormID; a waiting ConverseLine reads it back.
+Function LineBegan(ObjectReference akSpeakerRef, Float afLength, Int aiInfo = 0) Global
   Actor a = akSpeakerRef as Actor
   If a == None
     ; A talking activator (a speak-as speaker, see SpeakAs): no actor values of
@@ -1570,6 +1631,9 @@ Function LineBegan(ObjectReference akSpeakerRef, Float afLength) Global
   EndIf
   If (a as Form).GetFormID() == 0x14
     Return
+  EndIf
+  If aiInfo != 0 && a.GetActorValue("Variable05") == CONVERSE_PENDING()
+    a.SetActorValue("Variable05", Math.LogicalAnd(aiInfo, 0xFFFFFF) as Float)
   EndIf
   Float len = afLength
   If len <= 0.0
@@ -2107,7 +2171,10 @@ EndFunction
 ; some route that never ran a gate OnActivate (a coc, a scripted MoveTo).
 ; Nothing sensible can be done in that case, and teleporting to a stale
 ; reference would be worse than staying put.
-Bool Function CloseCurrentOblivionGate(FormList akDestroyed) Global
+;
+; A closed gate adds 1 to akGatesShut, Oblivion Gates Shut, as Oblivion.exe's
+; own CloseCurrentOblivionGate adds 1 to the player's misc stat 13.
+Bool Function CloseCurrentOblivionGate(FormList akDestroyed, GlobalVariable akGatesShut = None) Global
   ObjectReference gate = GetCurrentOblivionGate()
   If gate == None
     Return False
@@ -2131,6 +2198,9 @@ Bool Function CloseCurrentOblivionGate(FormList akDestroyed) Global
   ; the gate's own GameMode poll re-applies OblivionStormTamriel while the
   ; player stands next to it.
   Weather.ReleaseOverride()
+  If akGatesShut
+    akGatesShut.Mod(1)
+  EndIf
   Return True
 EndFunction
 

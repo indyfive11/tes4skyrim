@@ -52,6 +52,8 @@ from .record_types.world_falloutnv import is_fallout_export
 from .actors.combat_approach import create_combat_approach
 from .actors.combat_style import create_combat_styles
 from .actors.confidence import create_confidence_records
+from .actors.misc_stats import create_misc_stat_globals
+from .actors.stat_factions import create_stat_factions
 from script_convert.constants import FORCE_FLEE_QUEST, FORCE_GREET_QUEST
 from .packages.force_flee import write_force_flee_quest
 from script_convert.cross_ref import hosted_script_type, index_record_details
@@ -73,6 +75,7 @@ from .base.owned_records import (
     create_fall_damage_spell,
     create_force_combat_factions,
     create_message_menu_records,
+    create_missing_globals,
     create_tes4_special_records,
     create_vtyp_records,
 )
@@ -122,7 +125,7 @@ class ImportState:
     See: docs/reference/tes5_import_architecture.md#4-invariants
     """
 
-    __slots__ = ('all_skip', 'output_path', 'plugin_out_dir', 'num_tes4_masters', 'ctx', 'output_root', 'by_type', 'writer', 'npc_to_vtyp', 'unlock_plan', 'unlock_globals', 'fid_to_edid', 'xref', '_script_vars', 'pack_plan', 'pack_ctx', 'converted', 'errors', 't2', 'sge_quest_fids', 'navm_cache', 'navm_metas', 'base_model_by_fid', 'door_fids', '_scpt_by_fid')
+    __slots__ = ('all_skip', 'output_path', 'plugin_out_dir', 'num_tes4_masters', 'ctx', 'output_root', 'by_type', 'writer', 'npc_to_vtyp', 'unlock_plan', 'unlock_globals', 'fid_to_edid', 'xref', '_script_vars', 'pack_plan', 'pack_ctx', 'converted', 'errors', 't2', 'sge_quest_fids', 'navm_cache', 'navm_metas', 'base_model_by_fid', 'door_fids', '_scpt_by_fid', 'chargen_plan')
 
     def __init__(self, **kw):
         """Every field starts None; the caller supplies the run's inputs."""
@@ -298,12 +301,19 @@ def _prescan_special_records(by_type: dict, ctx, writer, export_dir: str, _step_
     if support_root:
         create_tes4_special_records(writer)
         create_ambient_gmst_overrides(writer, by_type)
+    else:
+        create_missing_globals(writer)
     WELL_KNOWN_PROPERTIES.update(create_fall_damage_spell(
         writer, getattr(ctx, 'master_index', None)))
     tes4_source = not is_tes3_export(export_dir) and not is_fallout_export(by_type)
     WELL_KNOWN_PROPERTIES.update(create_confidence_records(
         writer, by_type, getattr(ctx, 'master_export', None),
         getattr(ctx, 'master_index', None), wanted=tes4_source))
+    WELL_KNOWN_PROPERTIES.update(create_stat_factions(
+        writer, getattr(ctx, 'master_index', None), wanted=tes4_source))
+    if tes4_source:
+        WELL_KNOWN_PROPERTIES.update(create_misc_stat_globals(
+            writer, getattr(ctx, 'master_index', None), by_type))
     create_combat_styles(writer, by_type, getattr(ctx, 'master_export', None),
                          getattr(ctx, 'master_index', None), wanted=tes4_source)
     WELL_KNOWN_PROPERTIES.update(create_combat_approach(writer, getattr(ctx, 'master_index', None)))
@@ -430,10 +440,11 @@ def _prescan_forcegreet_reeval(by_type: dict, ctx, _SC, _step_done) -> None:
     _step_done('force-greet reeval plan')
 
 
-def _prescan_menu_records(by_type: dict, writer, _SC, _step_done,
-                          master_index=None):
+def _prescan_menu_records(by_type: dict, writer, _SC, _step_done, export_dir: str,
+                          master_index=None) -> dict:
     """Create the button-menu and chargen-menu MESG records, and the ForceCombat
-    factions and destroyed-refs list unless `master_index` supplies them.
+    factions and destroyed-refs list unless `master_index` supplies them;
+    returns the chargen plan.
 
     Chargen pages live at FIXED ids in the reserved FormID gap because
     the page/button block must be contiguous and ordered.  Chargen
@@ -451,14 +462,27 @@ def _prescan_menu_records(by_type: dict, writer, _SC, _step_done,
           f"{len(message_plan)} scripts")
     _step_done('button menu MESGs')
 
-    from script_convert.message_menus import build_chargen_menus
-    _spel_map = {int(r['FormID'], 16) & 0xFFFFFF: r['EditorID']
-                 for r in by_type.get('SPEL', [])
-                 if r.get('FormID') and r.get('EditorID')}
-    chargen_plan = build_chargen_menus(by_type.get('BSGN', []),
-                                       by_type.get('CLAS', []), _spel_map)
-    _SC.chargen_menus = chargen_plan
-    chargen_mesgs = create_chargen_menu_records(writer, chargen_plan)
+    chargen_plan = _chargen_menu_records(writer, _SC, export_dir)
+    WELL_KNOWN_PROPERTIES.update(create_force_combat_factions(writer, master_index))
+    WELL_KNOWN_PROPERTIES.update(create_destroyed_formlist(writer, master_index))
+    _step_done('chargen menu MESGs')
+    return chargen_plan
+
+
+def _chargen_menu_records(writer, _SC, export_dir: str) -> dict:
+    """The chargen plan (script_convert.context_setup), its MESG pages and
+    globals, and the conditions routed through its choice globals.
+
+    A TES3 source asks for no menu from Papyrus, so it writes no birthsign
+    pages: they would come first and move its class pages' fixed ids.
+    See: docs/commentary/morrowind_runtime.md#chargen-menus
+    """
+    from script_convert.context_setup import chargen_menu_plan
+    chargen_plan = chargen_menu_plan(export_dir)
+    mesg_plan = {key: menu for key, menu in chargen_plan.items()
+                 if not (key == 'birthsign' and is_tes3_export(export_dir))}
+    _SC.chargen_menus = mesg_plan
+    chargen_mesgs = create_chargen_menu_records(writer, mesg_plan)
     if chargen_mesgs:
         WELL_KNOWN_PROPERTIES.update(chargen_mesgs)
         print(f"  Chargen menus: {len(chargen_mesgs)} MESG pages+globals "
@@ -466,14 +490,12 @@ def _prescan_menu_records(by_type: dict, writer, _SC, _step_done,
     from .base.conditions import set_chargen_choice
     set_chargen_choice({})
     for func_idx, key in ((224, 'birthsign'), (129, 'class')):
-        menu = chargen_plan.get(key)
+        menu = mesg_plan.get(key)
         if menu and menu['choice_global'] in chargen_mesgs:
             set_chargen_choice(
                 {func_idx: (chargen_mesgs[menu['choice_global']],
                             menu['fid_to_index'])}, merge=True)
-    WELL_KNOWN_PROPERTIES.update(create_force_combat_factions(writer, master_index))
-    WELL_KNOWN_PROPERTIES.update(create_destroyed_formlist(writer, master_index))
-    _step_done('chargen menu MESGs')
+    return chargen_plan
 
 
 def _prescan_fid_to_edid(all_records: list, ctx, _step_done):
@@ -840,7 +862,8 @@ def _prescan_furniture_and_actors(by_type: dict, ctx, writer, export_dir: str, _
     See: docs/commentary/tes5_import_pipeline.md#phase-0-stale-bounds-cache
     """
     from .record_types.items import load_furniture_models
-    load_furniture_models(str(assets_for(export_dir) / 'meshes'), by_type, ctx)
+    load_furniture_models(str(assets_for(export_dir) / 'meshes'), by_type, ctx,
+                          record_dir=export_dir)
     _step_done('furniture seats')
 
     from .dialogue.objective_text import load_objective_text
@@ -1216,8 +1239,8 @@ def _run_prescans(st: ImportState, all_records: list, num_new_masters: int,
     st.unlock_plan, st.unlock_globals, _SC = _prescan_unlock_plan(
         by_type, writer, st.num_tes4_masters, _step_done)
     _prescan_force_greets(by_type, ctx, writer, _SC)
-    _prescan_menu_records(by_type, writer, _SC, _step_done,
-                          getattr(ctx, 'master_index', None))
+    st.chargen_plan = _prescan_menu_records(by_type, writer, _SC, _step_done, export_dir,
+                                            getattr(ctx, 'master_index', None))
     st.fid_to_edid = _prescan_fid_to_edid(all_records, ctx, _step_done)
     _prescan_forcegreet_reeval(by_type, ctx, _SC, _step_done)
     st.xref = _prescan_cross_ref_graph(all_records, ctx, export_dir,

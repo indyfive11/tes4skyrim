@@ -14,6 +14,7 @@ from ..base.master_export import values_of
 from ..actors import hair_variants
 from ..actors.combat_style import actor_combat_style
 from ..actors.confidence import flee_memberships, flee_spells
+from ..actors.stat_factions import stat_memberships
 from ..base.constants import TES5_SKILL_ORDER
 from ..actors.creature_races import TES5_HEALTH_LEVEL_BONUS
 from ..actors.npc_face_mapper import build_face_tail_subs, build_pnam_subs
@@ -160,7 +161,7 @@ def _npc_snams(rec: dict, vendor_fids: list, trainer_clas_fid: int) -> bytes:
     merchant, the dedicated one whose VENC stocks the menu -- then the trainer
     faction that gates the generated Training topic, then the plugin-origin
     marker, which keeps this file's unscoped dialogue off another converted
-    plugin's actors.
+    plugin's actors, then the flee, race and stat factions, then crime.
 
     See: docs/commentary/tes5_import_actors.md#vendor-factions
     """
@@ -179,6 +180,8 @@ def _npc_snams(rec: dict, vendor_fids: list, trainer_clas_fid: int) -> bytes:
     race_fact = race_faction(get_formid(rec, 'RNAM.Race'))
     if race_fact:
         subs += _pack_snam(race_fact)
+    for stat_fid, rank in stat_memberships(rec):
+        subs += _pack_snam(stat_fid, rank)
     return subs + _crime_snams(rec)
 
 

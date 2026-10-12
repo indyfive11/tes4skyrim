@@ -356,6 +356,13 @@ def master_mesh_dirs(ctx) -> list:
     return [str(assets_for(d) / 'meshes') for d in master_export_dirs(ctx)]
 
 
+def _mesh_trees(meshes_dir, record_dir, ctx) -> list:
+    """(meshes, record dir), then the masters' nearest first; lazy import: pipeline imports us."""
+    from ..pipeline import master_export_dirs
+    return [(meshes_dir, record_dir)] + [(str(assets_for(d) / 'meshes'), d)
+                                         for d in master_export_dirs(ctx)]
+
+
 def _index_origin_shifts(pairs, model_shift: dict) -> int:
     """Register every (base FormID, record) whose model is re-origined.
 
@@ -388,7 +395,7 @@ def _scan_marker_models(mesh_dirs, scan_marker_nifs) -> list:
     copy of the same path.
     """
     jobs, seen = [], set()
-    for mdir in mesh_dirs:
+    for mdir, travels in mesh_dirs:
         if not os.path.isdir(mdir):
             continue
         # Keys are lowercase but a mod's loose files keep their author's
@@ -399,23 +406,25 @@ def _scan_marker_models(mesh_dirs, scan_marker_nifs) -> list:
             if key in seen:
                 continue
             seen.add(key)
-            jobs.append((key, real.get(key, os.path.join(mdir, key.replace('/', os.sep)))))
+            jobs.append((key, real.get(key, os.path.join(mdir, key.replace('/', os.sep))), travels))
     return jobs
 
 
-def _load_marker_seats(mesh_dirs) -> tuple:
-    """(models resolved, {model key: floor re-origin}) over `mesh_dirs`.
+def _load_marker_seats(trees) -> tuple:
+    """(models resolved, {model key: floor re-origin}) over (meshes, record dir) `trees`.
 
-    PyFFI parsing is CPU-bound pure Python, so the per-NIF parses run across a
+    Each tree's seats use its own plugin's authored sit travels.  PyFFI
+    parsing is CPU-bound pure Python, so the per-NIF parses run across a
     process pool; threads would serialise on the GIL.
     """
     try:
         from asset_convert.nif.furniture_markers import (furniture_model_info_job,
                                                      scan_marker_nifs)
+        from asset_convert.nif.furniture_travel import sit_travels
     except ImportError as exc:
         print(f"  Furniture seats: asset_convert unavailable ({exc}), using fallback")
         return 0, {}
-    jobs = _scan_marker_models(mesh_dirs, scan_marker_nifs)
+    jobs = _scan_marker_models([(m, sit_travels(r)) for m, r in trees], scan_marker_nifs)
     if not jobs:
         return 0, {}
     model_shift: dict = {}
@@ -443,21 +452,21 @@ def _load_marker_seats(mesh_dirs) -> tuple:
     return resolved, model_shift
 
 
-def load_furniture_models(meshes_dir, by_type, ctx=None, quiet=False) -> int:
+def load_furniture_models(meshes_dir, by_type, ctx=None, quiet=False,
+                          record_dir=None) -> int:
     """Compute seat lists + origin shifts for every marker-bearing model.
 
-    meshes_dir is <export_dir>/meshes; by_type maps sig -> records.  `ctx`'s
-    masters are indexed too.  An unreadable NIF is skipped, leaving its REFRs
-    unshifted.  The base sweep runs even with no marker model, for an authored
-    `Model.OriginShift`.  `quiet` drops the summary for a threaded caller,
-    which cannot redirect `sys.stdout` here without racing.
+    meshes_dir is the plugin's asset meshes, record_dir its export record
+    folder; by_type maps sig -> records.  `ctx`'s masters are indexed too.
+    An unreadable NIF is skipped, leaving its REFRs unshifted.  The base
+    sweep runs even with no marker model, for an authored `Model.OriginShift`.
+    `quiet` drops the summary for a threaded caller.
 
     See: docs/commentary/asset_convert_nif.md#master-owned-furniture
     """
     _FURN_SEATS.clear()
     _BASE_ORIGIN_SHIFT.clear()
-    resolved, model_shift = _load_marker_seats(
-        [meshes_dir] + master_mesh_dirs(ctx))
+    resolved, model_shift = _load_marker_seats(_mesh_trees(meshes_dir, record_dir, ctx))
 
     master_export = getattr(ctx, 'master_export', None) or {}
     shifted_bases = _index_origin_shifts(master_export.items(), model_shift)
@@ -470,61 +479,62 @@ def load_furniture_models(meshes_dir, by_type, ctx=None, quiet=False) -> int:
     return resolved
 
 
+#: Skyrim.esm isBarStool: a behind entry plays the stool idles (IdleStoolEnter), as on vanilla WoodenBarStool.
+IS_BAR_STOOL_KYWD = 0x00074EC7
+
+#: FURN MNAM "Must Exit to Talk"; every vanilla bed sets it.
+MUST_EXIT_TO_TALK = 0x08000000
+
+#: WBDT of furniture that is no workbench: type None, skill -1, as vanilla writes it.
+_PLAIN_WBDT = struct.pack('<Bb', 0, -1)
+
+
+def furn_keywords(seats) -> list:
+    """[isBarStool] when a seat came from an authored enter animation, else [].
+
+    See: docs/commentary/asset_convert_falloutnv.md#stool-entries
+    """
+    return [IS_BAR_STOOL_KYWD] if any(s.get('authored_entry') for s in seats or ()) else []
+
+
+def _seat_entries(seat, tes4_flags: int) -> int:
+    """A seat's FNPR entry flags: those of its entries the record enables, or all when it enables none."""
+    enabled = 0
+    for entry_index, flag in seat['members']:
+        if tes4_flags & (1 << entry_index):
+            enabled |= flag
+    return enabled or seat['entry_flags']
+
+
+def _furn_markers(seats, tes4_flags: int) -> bytes:
+    """MNAM, WBDT and one FNPR (type, entry flags) per seat.
+
+    `seats` None: the NIF is unavailable, so one seat open on every side.
+    `[]`: the NIF has no markers, so none is enabled.  Otherwise every seat
+    is enabled and the record's approach restriction (Oblivion enables a
+    subset of entry markers: SEChair01F/R/L share a NIF) rides on FNPR.
+    """
+    keep = tes4_flags & 0xC0000000
+    if seats is None:
+        sleep = bool(tes4_flags & 0x80000000)
+        mnam = 1 | keep | (MUST_EXIT_TO_TALK if sleep else 0)
+        fnpr = [(2 if sleep else 1, 0x0F)]
+    else:
+        mnam = ((1 << len(seats)) - 1) | keep
+        mnam |= MUST_EXIT_TO_TALK if any(s['sleep'] for s in seats) else 0
+        fnpr = [(2 if s['sleep'] else 1, _seat_entries(s, tes4_flags)) for s in seats]
+    out = pack_uint32_subrecord('MNAM', mnam) + pack_subrecord('WBDT', _PLAIN_WBDT)
+    return out + b''.join(pack_subrecord('FNPR', struct.pack('<HH', t, e)) for t, e in fnpr)
+
+
 def convert_FURN(rec: dict) -> bytes:
-    extra = b''
-    tes4_flags = get_int(rec, 'MNAM.Flags')
-
-    # PNAM — 4 unknown bytes (empty placeholder, required by engine)
-    extra += pack_subrecord('PNAM', b'\x00\x00\x00\x00')
-    # FNAM — U16 flags (bit 1 = Ignored By Sandbox); pass 0
-    extra += pack_subrecord('FNAM', struct.pack('<H', 0))
-
+    """FURN: keywords, PNAM (4 empty bytes the engine requires), FNAM 0, then the seat markers."""
     modl = get_str(rec, 'Model.MODL')
     seats = _FURN_SEATS.get(_furn_model_key(modl)) if modl else None
-
-    if seats == []:
-        # NIF read successfully but has NO furniture markers: enabling any
-        # MNAM bit would make the engine index a non-existent NIF position.
-        # Emit no active markers (decorative furniture).
-        extra += pack_uint32_subrecord('MNAM', tes4_flags & 0xC0000000)
-        extra += pack_subrecord('WBDT', struct.pack('<Bb', 0, -1))
-    elif seats:
-        # Enable every clustered seat; per-record approach restriction is
-        # carried by the FNPR entry flags below (Oblivion restricts by
-        # enabling a SUBSET of entry markers — e.g. SEChair01F/R/L share a
-        # NIF and enable different entries).
-        mnam = (1 << len(seats)) - 1
-        mnam |= tes4_flags & 0xC0000000
-        any_sleep = any(s['sleep'] for s in seats)
-        if any_sleep:
-            mnam |= 0x08000000  # Must Exit to Talk (all vanilla beds set it)
-        extra += pack_uint32_subrecord('MNAM', mnam)
-        # WBDT — workbench data: type None, skill -1 (vanilla standard)
-        extra += pack_subrecord('WBDT', struct.pack('<Bb', 0, -1))
-        # FNPR — one per NIF marker position, in position order:
-        # Type (1=Sit, 2=Sleep) + entry-point flags.  Only the entry
-        # directions whose TES4 entry marker was enabled in this record's
-        # bitmask are allowed; if the record enables none of a seat's
-        # entries, allow all of them (seat unreachable otherwise).
-        for seat in seats:
-            enabled = 0
-            for entry_index, flag in seat['members']:
-                if tes4_flags & (1 << entry_index):
-                    enabled |= flag
-            if not enabled:
-                enabled = seat['entry_flags']
-            anim_type = 2 if seat['sleep'] else 1
-            extra += pack_subrecord('FNPR', struct.pack('<HH', anim_type, enabled))
-    else:
-        # Source NIF unavailable: conservative single seat, all entries.
-        is_sleep = bool(tes4_flags & 0x80000000)
-        mnam = 0x00000001 | (tes4_flags & 0xC0000000)
-        if is_sleep:
-            mnam |= 0x08000000
-        extra += pack_uint32_subrecord('MNAM', mnam)
-        extra += pack_subrecord('WBDT', struct.pack('<Bb', 0, -1))
-        extra += pack_subrecord('FNPR', struct.pack('<HH', 2 if is_sleep else 1, 0x0F))
-
+    keywords = furn_keywords(seats)
+    extra = pack_keywords(keywords) if keywords else b''
+    extra += pack_subrecord('PNAM', b'\0\0\0\0') + pack_subrecord('FNAM', struct.pack('<H', 0))
+    extra += _furn_markers(seats, get_int(rec, 'MNAM.Flags'))
     return _simple_object(rec, 'FURN', extra_subs=extra)
 
 

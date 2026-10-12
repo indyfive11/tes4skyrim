@@ -18,6 +18,7 @@ from asset_convert.nif.nif_converter import (
     convert_nif,
 )
 from asset_convert.nif.furniture_markers import cluster_seats
+from asset_convert.nif.particles import skyrimize_billboard
 from asset_convert.nif.shaders import resolve_lowres
 from asset_convert.character import wearable_plan, wearable_plan_falloutnv
 from asset_convert.character.head_gear import remap_bone_names
@@ -1340,6 +1341,41 @@ class TestSunbeamBillboard:
         assert not shader.shader_flags_2.slsf_2_z_buffer_write
         assert shader.shader_flags_2.slsf_2_double_sided
         assert 'NiAlphaProperty' in types
+
+
+def _particle_billboard(mode):
+    """A -90°X billboard over a flame quad and a particle system."""
+    bb = NifFormat.NiBillboardNode()
+    bb.billboard_mode = mode
+    r = bb.rotation
+    r.m_11, r.m_12, r.m_13 = 1.0, 0.0, 0.0
+    r.m_21, r.m_22, r.m_23 = 0.0, 0.0, 1.0
+    r.m_31, r.m_32, r.m_33 = 0.0, -1.0, 0.0
+    bb.num_children = 2
+    bb.children.update_size()
+    bb.children[0] = NifFormat.NiTriShape()
+    bb.children[1] = NifFormat.NiParticleSystem()
+    return bb
+
+
+class TestBillboardDemotion:
+    """A demoted billboard keeps its rotation only where the engine reads it.
+
+    See: docs/commentary/asset_convert_nif.md#billboard-demotion
+    """
+
+    def test_mode1_keeps_the_stand_up_rotation(self):
+        """Mode 1's rotation picks the spin axis, so demotion must keep it."""
+        bb = _particle_billboard(1)
+        authored = _rotation_rows(bb)
+        plain = skyrimize_billboard(bb)
+        assert not isinstance(plain, NifFormat.NiBillboardNode)
+        assert _rotation_rows(plain) == authored
+
+    def test_face_camera_mode_drops_the_rotation(self):
+        """Mode 0 cancels a billboard's own rotation, so demotion gives identity."""
+        plain = skyrimize_billboard(_particle_billboard(0))
+        assert _rotation_rows(plain) == (1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
 
 
 class TestFlameNodeConversion:

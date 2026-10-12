@@ -337,32 +337,47 @@ def _apply_shader_profile(data):
     return changed
 
 
-def run(export_dir, output_meshes_root):
-    """Profile + place every GRAS model NIF.
+def _grass_source(rel, output_meshes_root, master_meshes_roots):
+    """(converted NIF for `rel`, whether this plugin owns it), or (None, False)."""
+    roots = [Path(output_meshes_root)] + [Path(r) for r in master_meshes_roots]
+    for i, root in enumerate(roots):
+        nif = win_join(root / current_namespace(), rel)
+        if nif.exists():
+            return nif, i == 0
+    return None, False
+
+
+def run(export_dir, output_meshes_root, master_meshes_roots=()):
+    """Profile + place every GRAS model NIF; (processed, modified, missing).
 
     output_meshes_root is the plugin meshes root (e.g.
     output/Oblivion.esm/meshes): converted sources live under its namespace
     subtree, and profiled COPIES are placed at meshes\\landscape\\grass\\
-    per grass_model_dest() (sources stay put — FLOR/STAT records may share
-    them).  Each `rel` is backslash-form, so `win_join` splits it explicitly.
-    Returns (processed, modified, missing) counts.
+    per grass_model_dest().  A model only a master converted is copied from
+    its `master_meshes_roots` entry and profiled as the copy, leaving the
+    master's mesh untouched; one a master already places is left to it.
     """
     output_meshes_root = Path(output_meshes_root)
     paths = load_grass_model_paths(export_dir)
     processed = modified = missing = 0
     for rel in sorted(paths):
-        nif = win_join(output_meshes_root / current_namespace(), rel)
-        if not nif.exists():
+        if any(win_join(Path(r), grass_model_dest(rel)).exists()
+               for r in master_meshes_roots):
+            continue
+        nif, owned = _grass_source(rel, output_meshes_root, master_meshes_roots)
+        if nif is None:
             missing += 1
             continue
         processed += 1
-        if apply_grass_profile(nif):
-            modified += 1
         # grass_model_dest() returns backslash-form (it doubles as the GRAS
         # MODL value written into the binary record -- see its docstring).
         dest = win_join(output_meshes_root, grass_model_dest(rel))
         dest.parent.mkdir(parents=True, exist_ok=True)
+        if owned and apply_grass_profile(nif):
+            modified += 1
         shutil.copy2(nif, dest)
+        if not owned and apply_grass_profile(dest):
+            modified += 1
     return processed, modified, missing
 
 

@@ -83,6 +83,10 @@ SCRIPT_DRIVEN_SEQUENCES = frozenset((
 AUTOPLAY_SEQUENCE = 'AutoPlay'
 AUTOLOOP_SEQUENCE = 'AutoLoop'
 
+#: Name suffixes of a looping sequence's own lead-in and lead-out, played once around its loop.
+INTRO_SUFFIX = ' Intro'
+OUTRO_SUFFIX = ' Outro'
+
 #: nif.xml CycleType LOOP.
 CYCLE_LOOP = 0
 #: nif.xml CycleType CLAMP (1 is REVERSE).
@@ -908,21 +912,28 @@ def clone_sequence_as(root, seq, new_name, cycle_type):
 def autoplay_ambient_sequences(root, stats=None):
     """Turn Oblivion's self-playing "Idle" sequence into vanilla's AutoPlay pair.
 
-    The authored Idle becomes AutoLoop and KEEPS its cycle type; a CLAMP clone
-    named AutoPlay is added for the graph's start state. Script-driven names
-    are left alone.
+    The authored Idle becomes AutoLoop and KEEPS its cycle type. The graph's
+    start state plays AutoPlay: Idle's own lead-in (`Idle Intro`) when it has
+    one, else a CLAMP clone of Idle. Script-driven names are left alone.
     See: docs/commentary/asset_convert_nif.md#autoplay-ambient-sequences
     """
-    renamed = 0
+    named = []
     for block in root.tree():
-        if not isinstance(block, NifFormat.NiControllerSequence):
-            continue
-        raw = getattr(block, 'name', b'') or b''
-        name = raw.decode('latin-1') if isinstance(raw, bytes) else str(raw)
-        if name.lower() not in _AMBIENT_SEQUENCES:
+        if isinstance(block, NifFormat.NiControllerSequence):
+            raw = getattr(block, 'name', b'') or b''
+            name = raw.decode('latin-1') if isinstance(raw, bytes) else str(raw)
+            named.append((name.lower(), block))
+    by_name = dict(reversed(named))
+    renamed = 0
+    for name, block in named:
+        if name not in _AMBIENT_SEQUENCES:
             continue
         block.name = AUTOLOOP_SEQUENCE.encode('latin-1')
-        clone_sequence_as(root, block, AUTOPLAY_SEQUENCE, CYCLE_CLAMP)
+        intro = by_name.get((name + INTRO_SUFFIX).lower())
+        if intro is not None:
+            intro.name = AUTOPLAY_SEQUENCE.encode('latin-1')
+        else:
+            clone_sequence_as(root, block, AUTOPLAY_SEQUENCE, CYCLE_CLAMP)
         renamed += 1
     if renamed and stats is not None:
         stats['autoplay_sequences'] = stats.get('autoplay_sequences', 0) + renamed

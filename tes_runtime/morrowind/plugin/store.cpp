@@ -9,6 +9,7 @@
 #include <list>
 #include <sstream>
 
+#include "chargen_tables.h"
 #include "components/esm3/infoorder.hpp"
 #include "log.h"
 #include "paths.h"
@@ -301,7 +302,8 @@ namespace {
 // while its cell is unloaded, which is why SCPT_instances is not here.
 constexpr const char* kOwnFormTables[] = {
     "quests_formid.txt", "bases_formid.txt", "items_formid.txt",
-    "factions_formid.txt", "GLOB.txt"};
+    "factions_formid.txt", "GLOB.txt", "attributes_formid.txt", "chargen.txt",
+    "stats.txt"};
 
 // `Plugin.esm|FormID` out of one row's value, when the file is `plugin`'s own.
 // The file is whatever follows the last ',' before the first '|' (GLOB rows
@@ -392,8 +394,12 @@ StoreStats LoadStoreFrom(const std::string& rootIn) {
         if (ok) ++stats.files;
     }
     ClearScriptTables();
+    ClearChargenTables();
+    LoadSharedChargen(root);
     for (const std::string& plugin : plugins) {
         LoadScriptTables(root + plugin + "\\");
+        LoadChargenTable(root + plugin + "\\", LayerIndex(plugin));
+        LoadStatsTable(root + plugin + "\\", LayerIndex(plugin));
     }
     // Load order, masters first, as OpenMW reads its content files.
     std::vector<std::string> byDepth = plugins;

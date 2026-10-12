@@ -756,6 +756,34 @@ class TestFalloutQuestDeltas:
         assert 'TargetCount=' in superseded_keys(rec)
 
 
+class TestFalloutIdle(unittest.TestCase):
+    """FO3/FNV IDLE keeps its Parent/Previous in ANAM and its anim data in DATA, the reverse of TES4.
+
+    See docs/commentary/tes4_export_falloutnv.md#idle-anam-data-swapped.
+    """
+
+    #: SitDownStool (FalloutNV.esm 00027980): parent StoolSitting, previous DefaultSitIdleStool.
+    ANAM = bytes.fromhex('7e7902007f790200')
+
+    def test_anam_carries_parent_and_previous(self):
+        """The parent link survives whole instead of as its low two bytes."""
+        from tes4_export.tes4_reader import Record, Subrecord
+        from tes4_export.record_types.falloutnv import export_deltas
+        rec = Record(type='IDLE', data_size=0, flags=0, form_id=0x00027980,
+                     subrecords=[Subrecord('ANAM', self.ANAM),
+                                 Subrecord('DATA', bytes([20, 1, 3, 0, 0xF6, 0xFF, 1, 0]))])
+        got = dict(line.partition('=')[::2] for line in export_deltas(rec))
+        assert (got['ANAM.Parent'], got['ANAM.Previous']) == ('0002797E', '0002797F')
+        assert (got['DATA.AnimGroupSection'], got['DATA.LoopMin'], got['DATA.LoopMax']) == ('20', '1', '3')
+        assert (got['DATA.ReplayDelay'], got['DATA.Flags']) == ('-10', '1')
+
+    def test_tes4_layout_lines_are_superseded(self):
+        """The TES4 exporter's ANAM/DATA reading is dropped for an FNV IDLE."""
+        from tes4_export.export_falloutnv import superseded_keys
+        from tes4_export.tes4_reader import Record
+        assert superseded_keys(Record(type='IDLE', data_size=0, flags=0, form_id=1)) == ('ANAM.', 'DATA.')
+
+
 class TestINFOResultScripts(unittest.TestCase):
     """FO3/FNV INFOs embed a Begin and an End script split by NEXT; TES4 one.
 

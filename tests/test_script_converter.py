@@ -21,7 +21,6 @@ from script_convert.constants import (
     TYPE_MAP,
     ACTOR_VALUE_MAP,
     TES4_ATTRIBUTES,
-    ATTRIBUTE_STUB_VALUE,
     PAPYRUS_MAX_SCRIPT_NAME,
     is_generated_script_type,
     papyrus_script_name,
@@ -616,18 +615,34 @@ class TestActorValueMap:
         for attr in TES4_ATTRIBUTES:
             assert attr not in ACTOR_VALUE_MAP
 
-    def test_attribute_read_is_stubbed_open(self, converter):
-        """A read of a removed attribute yields a value that passes the gate."""
+    def test_player_attribute_reads_its_global(self, converter):
+        """The player's attribute is the global MorrowindRuntime keeps current."""
         result = conv_expr(converter,
             'Player.GetAV Strength >= 30 && Player.GetAV Endurance >= 30',
             'Quest')
-        assert result == '100.0 >= 30 && 100.0 >= 30'
+        assert result == ('TES4_Attributes.Read(TES4PlayerStrength) >= 30 && '
+                          'TES4_Attributes.Read(TES4PlayerEndurance) >= 30')
 
-    def test_attribute_write_is_dropped(self, converter):
-        result = conv_line(converter, 'Player.SetAV Strength 50',
-                                                  'Quest')
-        assert result.lstrip().startswith(';')
-        assert 'SetActorValue' not in result
+    def test_player_attribute_writes_its_global(self, converter):
+        """SetAV writes the global and ModAV adds to it; the runtime moves the attribute."""
+        assert conv_line(converter, 'Player.SetAV Strength 50', 'Quest').strip() == \
+            'TES4_Attributes.Write(TES4PlayerStrength, 50)'
+        assert conv_line(converter, 'player.modav Luck 1', 'Quest').strip() == \
+            'TES4_Attributes.Modify(TES4PlayerLuck, 1)'
+
+    def test_npc_attribute_reads_its_stat_faction(self, converter):
+        """Another actor's attribute is its stat faction rank; the player global rides along."""
+        assert conv_expr(converter, 'OtherRef.GetAV Strength >= 30', 'Quest') == (
+            'TES4_Attributes.ReadActor(OtherRef, TES4AttributeStrength, TES4PlayerStrength) >= 30')
+        assert conv_line(converter, 'OtherRef.ModAV Luck 2', 'Quest').strip() == (
+            'TES4_Attributes.ModifyActor(OtherRef, TES4AttributeLuck, TES4PlayerLuck, 2)')
+
+    def test_npc_kept_skill_reads_its_stat_faction(self, converter):
+        """An NPC's Athletics is its rank; the player's still reads the Skyrim stand-in."""
+        assert conv_line(converter, 'OtherRef.SetAV Athletics 40', 'Quest').strip() == (
+            'TES4_Attributes.WriteSkill(OtherRef, TES4SkillAthletics, "Stamina", 40)')
+        assert conv_expr(converter, 'player.GetAV Athletics > 5', 'Quest') == (
+            'Game.GetPlayer().GetActorValue("Stamina") > 5')
 
     def test_skill_read_still_maps(self, converter):
         """Skills survive the attribute no-op -- only attributes are stubbed."""
@@ -637,51 +652,59 @@ class TestActorValueMap:
 
 
 class TestFalloutActorValueNames:
-    """FO3/FNV actor-value names resolve to Skyrim's, stub like attributes, or go inert.
+    """FO3/FNV actor-value names read as the conditions map them, stub, or go inert.
 
     See: docs/commentary/script_convert.md#fallout-actor-value-names
     """
 
-    @pytest.mark.parametrize('name, skyrim', [('Repair', 'Smithing'), ('Speech', 'Speechcraft'),
-                                              ('Barter', 'Speechcraft'), ('Lockpick', 'Lockpicking')])
+    @pytest.mark.parametrize('name, skyrim', [
+        ('Repair', 'Smithing'), ('Speech', 'Speechcraft'), ('Barter', 'Speechcraft'),
+        ('Lockpick', 'Lockpicking'), ('Medicine', 'Restoration'), ('Guns', 'Marksman'),
+        ('EnergyWeapons', 'Marksman'), ('Unarmed', 'OneHanded')])
     def test_renamed_skill_reads_skyrim_name(self, converter, name, skyrim):
+        """Each renamed skill reads the Skyrim value its condition reads."""
         result = conv_expr(converter, f'player.getav {name} >= 50', 'Quest')
         assert result == f'Game.GetPlayer().GetActorValue("{skyrim}") >= 50'
 
-    def test_renamed_skill_write(self, converter):
-        result = conv_line(converter, 'player.modav Speech 5', 'Quest')
-        assert 'ModActorValue("Speechcraft", 5)' in result
+    def test_melee_weapons_reads_the_higher_half(self, converter):
+        """Melee Weapons covered both hands, like Blade and Blunt."""
+        result = conv_expr(converter, 'player.getav MeleeWeapons >= 50', 'Quest')
+        assert 'HigherActorValue(Game.GetPlayer(), "OneHanded", "TwoHanded")' in result
 
-    @pytest.mark.parametrize('name', ['Perception', 'Charisma', 'Strength'])
+    def test_renamed_skill_write(self, converter):
+        """A write renames the argument too."""
+        assert 'ModActorValue("Speechcraft", 5)' in conv_line(converter, 'player.modav Speech 5', 'Quest')
+
+    @pytest.mark.parametrize('name', ['Perception', 'Charisma'])
     def test_special_read_is_stubbed_open(self, converter, name):
-        """All seven S.P.E.C.I.A.L. stats read alike, not five open and two shut."""
+        """All seven S.P.E.C.I.A.L. stats read alike."""
         assert conv_expr(converter, f'player.getav {name} >= 6', 'Quest') == '100.0 >= 6'
 
     def test_special_write_is_dropped(self, converter):
+        """A S.P.E.C.I.A.L. write has nothing to write to."""
         result = conv_line(converter, 'player.setav Charisma 7', 'Quest')
-        assert result.lstrip().startswith(';')
-        assert 'SetActorValue' not in result
+        assert result.lstrip().startswith(';') and 'SetActorValue' not in result
 
     def test_unmapped_read_is_inert(self, converter):
-        """Karma is no Skyrim actor value, so the read goes inert rather than naming it."""
-        result = conv_expr(converter, 'player.getav Karma < 0', 'Quest')
-        assert 'Karma"' not in result
-        assert any('Karma' in c for c in converter._line_comments)
+        """Karma is no Skyrim actor value: the comparison folds, even against a negative."""
+        assert conv_expr(converter, 'player.getav Karma >= -250', 'Quest') == 'false'
 
     def test_unmapped_write_is_dropped(self, converter):
-        result = conv_line(converter, 'player.modav Medicine 10', 'Quest')
-        assert result.lstrip().startswith(';')
-        assert 'ModActorValue' not in result
+        """A write to a value Skyrim lacks becomes a comment."""
+        result = conv_line(converter, 'player.modav Science 10', 'Quest')
+        assert result.lstrip().startswith(';') and 'ModActorValue' not in result
 
     def test_rename_applies_to_the_actor_value_argument_only(self, converter):
         """`lockpick` is also Fallout's bobby-pin item, which must keep its name."""
-        result = conv_expr(converter, 'player.GetItemCount lockpick < 1', 'Quest')
-        assert 'Lockpicking' not in result
+        assert 'Lockpicking' not in conv_expr(converter, 'player.GetItemCount lockpick < 1', 'Quest')
 
-    def test_shared_name_passes_through(self, converter):
-        """A value Skyrim has under the same name is untouched."""
-        result = conv_expr(converter, 'player.getav CarryWeight > 200', 'Quest')
-        assert result == 'Game.GetPlayer().GetActorValue("CarryWeight") > 200'
+
+def test_negative_comparand_folds_an_inert_read(converter):
+    """`-250` is unary minus over a literal, and still a number.
+
+    See: docs/commentary/script_convert.md#negative-comparand
+    """
+    assert conv_expr(converter, 'GetPCMiscStat 99 >= -250', 'Quest') == 'false'
 
 
 # ===========================================================================
@@ -2585,19 +2608,22 @@ class TestObseBlockAndCallFixes:
 
     def test_nested_call_keeps_outer_arguments(self, converter):
         """A command inside one argument does not erase the ones after it."""
-        body = self._poll(converter, 'Call G 30 * ( getPCMiscStat 8 - x ), 1, 1, -1')
-        assert 'Locks Picked") - x), 1, 1, -1)' in body
+        body = self._poll(converter, 'Call G 30 * ( getPCMiscStat 15 - x ), 1, 1, -1')
+        assert 'Houses Owned") - x), 1, 1, -1)' in body
 
     def test_misc_stat_by_name(self, converter):
-        """The TES4 index becomes Skyrim's stat name; an untracked one reads 0."""
-        assert 'Game.QueryStat("Locations Discovered")' in self._poll(converter, 'set n to getPCMiscStat 7')
+        """The TES4 index becomes Skyrim's stat name; one no Skyrim stat stands for is our global."""
+        assert ('(Game.QueryStat("Locations Discovered") + TES4MiscStat07.GetValueInt())'
+                in self._poll(converter, 'set n to getPCMiscStat 7'))
         assert 'Game.IncrementStat("Houses Owned", 2)' in self._poll(converter, 'ModPCMiscStat 15 2')
-        assert 'QueryStat' not in self._poll(converter, 'set n to getPCMiscStat 13')
+        body = self._poll(converter, 'set n to getPCMiscStat 13')
+        assert 'QueryStat' not in body and 'TES4MiscStat13.GetValueInt()' in body
 
-    def test_engine_kept_stat_write_is_dropped(self, converter):
-        """Nehrim's EP write to stat 22 never reaches Days as a Vampire."""
-        assert 'IncrementStat' not in self._poll(converter, 'ModPCMiscStat 22 x')
-        assert 'Game.QueryStat("Days as a Vampire")' in self._poll(converter, 'set n to getPCMiscStat 22')
+    def test_engine_kept_stat_write_is_our_global(self, converter):
+        """Nehrim's EP write to stat 22 lands in our global, never Days as a Vampire."""
+        body = self._poll(converter, 'ModPCMiscStat 22 x')
+        assert 'IncrementStat' not in body and 'TES4MiscStat22.Mod(x)' in body
+        assert converter._property_refs['TES4MiscStat22'] == 'GlobalVariable'
 
 
 class TestSplitSkillReads:
@@ -3020,12 +3046,12 @@ class TestInfoFragmentEmission:
                          {'info:00032469': 12.62})
         begin = psc.split('Function Fragment_1', 1)[1].split('EndFunction')[0]
         end = psc.split('Function Fragment_0', 1)[1].split('EndFunction')[0]
-        assert 'TES4Polyfill.LineBegan(akSpeakerRef, 12.62)' in begin
+        assert 'TES4Polyfill.LineBegan(akSpeakerRef, 12.62, Self.GetFormID())' in begin
         assert 'TES4Polyfill.LineEnded(akSpeakerRef, 12.62)' in end
 
     def test_unmeasured_line_reports_zero(self, tmp_path):
         psc = self._emit(tmp_path, {'FormID': '00000ABC'})
-        assert 'TES4Polyfill.LineBegan(akSpeakerRef, 0)' in psc
+        assert 'TES4Polyfill.LineBegan(akSpeakerRef, 0, Self.GetFormID())' in psc
 
     def test_result_runs_before_line_ended(self, tmp_path):
         """A poll waiting on this speaker (SayLine's busy wait) proceeds the
@@ -3187,6 +3213,20 @@ class TestSayTimerConversion:
         finally:
             ScriptConverter.force_greet_slots = saved
         assert 'TES4Polyfill.ForceGreet(TES4ForceGreets, 1, 1, GaiusRef)' in result
+
+    def test_startconversation_walk_runs_the_route_script(self, converter):
+        """A started topic whose lines continue hands both actors to the plugin's walk.
+
+        See: docs/commentary/tes5_import_dialogue.md#script-started-conversation-chains
+        """
+        saved = ScriptConverter.conversation_starts
+        ScriptConverter.conversation_starts = {'sermon01': 'TES4_ConvRoute_Knights'}
+        try:
+            result = conv_lines(converter, 'StartConversation ProphetRef Sermon01', 'Actor')
+        finally:
+            ScriptConverter.conversation_starts = saved
+        assert result.startswith('TES4_ConvRoute_Knights.Run(Self, ')
+        assert result.endswith(', Sermon01)')
 
     def test_forceflee_joins_its_destinations_flee_pool(self, converter):
         """`ForceFlee <cell>, <ref>` fills a slot of that destination's pool; a variable named Flee does not count.
@@ -3703,16 +3743,19 @@ class TestTES4SpeedAttribute:
         assert 'GetTES4Speed(' in read and read.endswith(', 33, 90.0, 130.0)')
         assert 'SetTES4Speed(' in write and write.endswith(', x, 33, 90.0, 130.0)')
 
-    def test_player_baseline_is_the_attribute_stub(self, xref):
-        """The player has no Speed attribute; its gates keep falling open."""
+    def test_player_speed_stays_on_the_walk_formula(self, xref):
+        """Player Speed reads and writes share the movement baseline; a Mod adds to it."""
         conv = self._converter(xref)
         out = conv_line(conv, 'set x to player.GetBaseAV Speed', 'ObjectReference')
-        assert f'GetTES4Speed(Game.GetPlayer(), {ATTRIBUTE_STUB_VALUE}, 90.0, 130.0)' in out
+        assert 'GetTES4Speed(Game.GetPlayer(), 100.0, 90.0, 130.0)' in out
+        write = conv_line(conv, 'player.modAV Speed 100', 'ObjectReference')
+        assert write.strip() == ('TES4Polyfill.SetTES4Speed(Game.GetPlayer(), TES4Polyfill.GetTES4Speed('
+                                 'Game.GetPlayer(), 100.0, 90.0, 130.0) + (100), 100.0, 90.0, 130.0)')
 
-    def test_unknown_subject_keeps_the_stub(self, converter):
-        """With no actor record to read a baseline from, nothing changes."""
-        assert conv_line(converter, 'OtherRef.SetAV Speed 5', 'ObjectReference').startswith(
-            ';TES4 attribute Speed')
+    def test_unknown_subject_writes_its_stat_faction(self, converter):
+        """With no actor record to read a walk baseline from, Speed is the stat faction's."""
+        assert conv_line(converter, 'OtherRef.SetAV Speed 5', 'ObjectReference').strip() == (
+            'TES4_Attributes.WriteActor(OtherRef, TES4AttributeSpeed, TES4PlayerSpeed, 5)')
 
 
 class TestLocalVariableShadowsPlayer:
@@ -3851,8 +3894,40 @@ class TestChargenMenus:
                       ('TES4Msg_ChargenBirthsign_02', 'Title', ['J', 'K'])],
             'actions': [['SpellA'], [], [], [], [], [], [], [], [],
                         ['SpellJ1', 'SpellJ2'], []],
+            'choice_global': 'TES4ChargenBirthsignChoice',
         },
     }
+
+    def test_unchosen_class_and_sign_read_the_choice_globals(self, converter):
+        """Morroblivion opens each menu only while nothing is chosen: `GetPCIsClass
+        CharactergenClass` (the player record's starting class) and
+        `GetPlayerBirthsign == 0`. Both read the menus' choice globals, which stay 0
+        until a pick; a listed class is its row."""
+        converter.chargen_menus = dict(self.PLAN, **{'class': {
+            'choice_global': 'TES4ChargenClassChoice', 'start': 'charactergenclass',
+            'edid_to_index': {'mage': 2}}})
+        assert conv_expr(converter, 'GetPCIsClass CharactergenClass', 'Quest') == \
+            '(TES4ChargenClassChoice.GetValueInt() == 0)'
+        assert conv_expr(converter, 'player.GetIsClass Mage', 'Quest') == \
+            '(TES4ChargenClassChoice.GetValueInt() == 3)'
+        assert conv_expr(converter, 'GetPlayerBirthsign == 0', 'Quest') == \
+            'TES4ChargenBirthsignChoice.GetValueInt() == 0'
+        assert converter._property_refs['TES4ChargenClassChoice'] == 'GlobalVariable'
+
+    def test_runtime_menu_is_asked_first(self, converter):
+        """MorrowindRuntime's menu is asked for; the message pages show only when it
+        does not answer (-1), and only then does the script grant the spells and
+        write the choice -- the runtime did both for its own menu."""
+        converter.chargen_menus = self.PLAN
+        out = conv_lines(converter, 'ShowBirthsignMenu', 'Quest')
+        ask = ('Int TES4_menuPick1 = TES4_Chargen.Ask(TES4ChargenRequest, 2, '
+               'TES4ChargenBirthsignChoice)')
+        assert ask in out
+        branch = out.index('If TES4_menuPick1 == -1')
+        assert out.index(ask) < branch < out.index('.Show()')
+        assert branch < out.index('AddSpell(SpellA') < out.index('TES4_ChargenMenuBusy = False')
+        assert branch < out.index('.SetValue(TES4_menuPick1 + 1)')
+        assert converter._property_refs['TES4ChargenRequest'] == 'GlobalVariable'
 
     def test_menu_emission(self, converter):
         converter.chargen_menus = self.PLAN
@@ -3948,6 +4023,15 @@ class TestChargenMenus:
             < out.index('.SetValue(TES4_menuPick1 + 1)')
         assert (converter._property_refs['TES4ChargenBirthsignChoice']
                 == 'GlobalVariable')
+
+    def test_page_variable_write_is_mirrored(self, converter):
+        """A write to a variable a game's statistics page showed also writes its
+        mirror global, which the Statistics tab reads; other writes do not."""
+        out = conv_lines(converter, 'set ErothinBankQuest.PlayerKontostand to 5', 'Quest')
+        mirror = 'TES4PageStat_ErothinBankQuest_PlayerKontostand'
+        assert f'{mirror}.SetValue(' in out
+        assert converter._property_refs[mirror] == 'GlobalVariable'
+        assert 'TES4PageStat' not in conv_lines(converter, 'set OtherQuest.Value to 5', 'Quest')
 
     def test_menu_show_retries_on_display_failure(self, converter):
         """Show() returns -1 when the box cannot display (a menu/dialogue
@@ -5395,11 +5479,13 @@ class TestGetDestroyedReadsWhatSetDestroyedWrote:
 
     def test_gate_close_marks_the_gate_destroyed(self, converter):
         """The engine call that closes a gate feeds the same FormList, which is
-        what lets the gate's own `getdestroyed` poll advance the quest."""
+        what lets the gate's own `getdestroyed` poll advance the quest, and
+        counts Oblivion Gates Shut, as Oblivion.exe's own call did."""
         src = ("scn T\nbegin onActivate\n"
                "  CloseCurrentOblivionGate\nend\n")
         out = converter.convert_standalone('T', src, 'ObjectReference', 'T')
-        assert 'TES4Polyfill.CloseCurrentOblivionGate(TES4DestroyedRefs)' in out
+        assert 'TES4Polyfill.CloseCurrentOblivionGate(TES4DestroyedRefs, TES4MiscStat13)' in out
+        assert 'GlobalVariable Property TES4MiscStat13 Auto' in out
 
 
 class TestDisablingAGateStillAdvancesTheQuest:
@@ -5908,6 +5994,20 @@ class TestQuestStartDoesNotClobberSeededWrites:
         out = _comment_dangling(text).split('\n')
         assert out[2] == '  TES4_ArenaScript.TES4Start(Arena as TES4_ArenaScript)'
         assert out[3].lstrip().startswith(';')
+
+    def test_static_script_call_survives_any_prefix(self, monkeypatch):
+        """Nehrim's own scripts are NEHRIM_, but its static scripts stay TES4_."""
+        from asset_convert.game_paths import NAMESPACE_ENV, current_namespace, set_namespace
+        from script_convert.pipeline import _comment_dangling
+        previous = current_namespace()
+        monkeypatch.setenv(NAMESPACE_ENV, previous)
+        set_namespace('nehrim')
+        try:
+            out = _comment_dangling('Function F()\n  TES4_Attributes.WriteActor(a, b, c, 1)\n'
+                                    'EndFunction')
+        finally:
+            set_namespace(previous)
+        assert out.split('\n')[1] == '  TES4_Attributes.WriteActor(a, b, c, 1)'
 
     def test_converted_fragment_is_hoisted(self, converter):
         """The emitter itself applies the hoist, not just the function."""
@@ -6741,3 +6841,55 @@ class TestGameModeStepsAreRates:
         body = body[:body.index('EndFunction')]
         assert 'akRef.SendModEvent("TES4Track", aiAxis as String, afValue)' in body
         assert '!(akRef as Actor)' in body
+
+@pytest.mark.parametrize('owns_script', [False, True])
+def test_compile_shared_sources_respects_empty_plugin_ownership(tmp_path, monkeypatch, owns_script):
+    """Empty ownership succeeds; an owned script that fails compilation still fails."""
+    import json
+    import papyrus_compile as compiler
+    from script_convert.ownership import write_owned
+
+    monkeypatch.setattr(compiler, 'SCRIPT_DIR', tmp_path)
+    export = tmp_path / 'export'
+    export.mkdir()
+    names = ['Base.esm', 'Empty.esp']
+    (export / 'sources.json').write_text(json.dumps({'version': 1, 'sources': {
+        name: {'kind': 'archive', 'plugin': name, 'group_id': 'pack',
+               'group_label': 'Pack', 'group_plugins': names} for name in names}}))
+    for name in names:
+        records = export / 'Pack' / name
+        records.mkdir(parents=True)
+        (records / '_HEADER.txt').write_text('Master[0]=Base.esm\n'
+                                             if name == 'Empty.esp' else '')
+    output = tmp_path / 'output'
+    source = output / 'Pack' / 'scripts' / 'source'
+    source.mkdir(parents=True)
+    (source / 'MasterScript.psc').write_text('Scriptname MasterScript extends Quest\n')
+    write_owned(source, 'Base.esm', ['MasterScript'])
+    write_owned(source, 'Empty.esp', ['OwnScript'] if owns_script else [])
+    if owns_script:
+        (source / 'OwnScript.psc').write_text('Scriptname OwnScript extends Quest\n')
+    executable = tmp_path / 'external' / 'papyrus-compiler' / 'papyrus.exe'
+    executable.parent.mkdir(parents=True)
+    executable.touch()
+    data = tmp_path / 'Skyrim' / 'Data'
+    headers = data / 'Source' / 'Scripts'
+    headers.mkdir(parents=True)
+    (headers / 'Debug.psc').write_text('Scriptname Debug\n')
+
+    compiled_names = set()
+    def fail_compile(self, argv, timeout):
+        from pathlib import Path
+        inputs = Path(argv[argv.index('-i') + 1])
+        scripts = list(inputs.glob('*.psc')) if inputs.is_dir() else [inputs]
+        compiled_names.update(path.stem for path in scripts)
+        if not scripts:
+            return '', 0
+        return 'OwnScript.psc:1:1: forced compilation failure', 1
+    monkeypatch.setattr(compiler._Compiler, '_run', fail_compile)
+    result = compiler.phase_compile('Empty.esp', {'tes5DataPath': str(data)}, str(output))
+
+    assert result is (not owns_script)
+    assert compiled_names == ({'OwnScript'} if owns_script else set())
+    assert (source / 'MasterScript.psc').is_file()
+

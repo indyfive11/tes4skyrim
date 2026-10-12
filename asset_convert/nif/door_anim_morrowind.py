@@ -16,7 +16,11 @@ import math
 
 from pyffi.formats.nif import NifFormat
 
+from asset_convert.collision.cms import decode_cms_materials
+from asset_convert.collision.cms_builder import (GAME_UNITS_PER_HAVOK,
+                                                 build_cms_collision)
 from asset_convert.nif.nif_passes import add_bsx_flags
+from asset_convert.nif.object_anim_morrowind import start_end_keys
 from asset_convert.nif.sequences import (MANAGED_CONTROLLER_FLAGS, palette_bytes,
                                          palette_lookup, transform_manager)
 
@@ -64,6 +68,9 @@ _NO_BASE_VALUE = -3.4028234663852886e+38
 #: Least panel offset, in half-widths, that leaves room to swing about an edge.
 HINGE_RATIO = 0.25
 
+#: Least load-door collision half-depth (game units). See: docs/commentary/asset_convert_nif.md#a-load-door-needs-reach
+LOAD_DOOR_REACH = 18.0
+
 #: Rotation below which an axis is holding still, not turning (0.5 degrees).
 _STILL_RADIANS = 0.0087
 
@@ -108,17 +115,6 @@ def _interpolator(start: float, stop: float):
     return interp
 
 
-def _text_keys():
-    """The `start`/`end` pair every vanilla door sequence carries."""
-    block = NifFormat.NiTextKeyExtraData()
-    block.num_text_keys = 2
-    block.text_keys.update_size()
-    block.text_keys[0].time, block.text_keys[0].value = 0.0, b'start'
-    block.text_keys[1].time = SWING_SECONDS
-    block.text_keys[1].value = b'end'
-    return block
-
-
 def _sequence(name: str, hinge, manager, controller, start: float,
               stop: float):
     """One named NiControllerSequence swinging `hinge` from `start` to `stop`."""
@@ -130,7 +126,7 @@ def _sequence(name: str, hinge, manager, controller, start: float,
     seq.frequency = 1.0
     seq.weight = 1.0
     seq.manager = manager
-    seq.text_keys = _text_keys()
+    seq.text_keys = start_end_keys(SWING_SECONDS)
     seq.num_controlled_blocks = 1
     seq.controlled_blocks.update_size()
     block = seq.controlled_blocks[0]
@@ -335,6 +331,125 @@ def _static_body(body) -> None:
         col_filter = getattr(body, name, None)
         if col_filter is not None:
             col_filter.layer = _SKYL_STATIC
+
+
+def _boxes(shape, seen):
+    """Every bhkBoxShape under `shape`, each paired with its face area."""
+    if shape is None or id(shape) in seen:
+        return
+    seen.add(id(shape))
+    if isinstance(shape, NifFormat.bhkBoxShape):
+        dims = shape.dimensions
+        axes = sorted(('x', 'y', 'z'), key=lambda a: getattr(dims, a))
+        face = getattr(dims, axes[1]) * getattr(dims, axes[2])
+        yield shape, axes[0], face
+        return
+    yield from _boxes(getattr(shape, 'shape', None), seen)
+    for child in (getattr(shape, 'sub_shapes', None) or ()):
+        yield from _boxes(child, seen)
+
+
+def _widen_panel(shape, seen) -> bool:
+    """Grow the broadest box's thinnest axis to LOAD_DOOR_REACH; did it grow?
+
+    Only the door's own panel moves -- the broadest face under the body, not
+    the latch and handle boxes beside it -- and only along its thin axis, so
+    the door keeps its width and height and still reads flush with its frame.
+    See: docs/commentary/asset_convert_nif.md#a-load-door-needs-reach
+    """
+    boxes = list(_boxes(shape, seen))
+    if not boxes:
+        return False
+    panel, thin, _face = max(boxes, key=lambda b: b[2])
+    reach = LOAD_DOOR_REACH / GAME_UNITS_PER_HAVOK
+    if getattr(panel.dimensions, thin) >= reach:
+        return False
+    setattr(panel.dimensions, thin, reach)
+    dims = panel.dimensions
+    panel.minimum_size = min(dims.x, dims.y, dims.z)
+    return True
+
+
+def _shift(point, axis: int, delta: float) -> tuple:
+    """`point` moved by `delta` along `axis`."""
+    moved = list(point)
+    moved[axis] += delta
+    return tuple(moved)
+
+
+def _extrude(tris, axis: int, reach: float) -> list:
+    """Each triangle swept `reach` either way along `axis`: 8 per triangle."""
+    out = []
+    for tri in tris:
+        front = tuple(_shift(p, axis, +reach) for p in tri)
+        back = tuple(_shift(p, axis, -reach) for p in tri)
+        out.append(front)
+        out.append((back[2], back[1], back[0]))
+        for i in range(3):
+            j = (i + 1) % 3
+            out.append((front[i], back[i], back[j]))
+            out.append((front[i], back[j], front[j]))
+    return out
+
+
+def give_door_reach(tris, reach: float) -> list:
+    """`tris` deepened so their thinnest axis spans at least 2 * `reach`.
+
+    The contract `_widen_panel` keeps for a box panel, for collision that
+    arrives as triangles -- often one flat sheet. Returns `tris` itself when
+    it is already deep enough.
+    See: docs/commentary/asset_convert_nif.md#a-load-door-needs-reach
+    """
+    if not tris:
+        return tris
+    spans = [max(p[a] for t in tris for p in t) - min(p[a] for t in tris for p in t)
+             for a in range(3)]
+    axis = spans.index(min(spans))
+    if spans[axis] >= 2.0 * reach:
+        return tris
+    return _extrude(tris, axis, reach - spans[axis] / 2.0)
+
+
+def _deepen_mesh(body) -> bool:
+    """Rebuild a door body's compressed mesh at LOAD_DOOR_REACH; did it change?"""
+    mopp = getattr(body, 'shape', None)
+    cms = getattr(mopp, 'shape', None)
+    if not isinstance(cms, NifFormat.bhkCompressedMeshShape) or cms.data is None:
+        return False
+    rows = decode_cms_materials(cms.data)
+    tris = [tri for tri, _mat in rows]
+    deep = give_door_reach(tris, LOAD_DOOR_REACH / GAME_UNITS_PER_HAVOK)
+    if deep is tris:
+        return False
+    per = len(deep) // len(tris)
+    rebuilt = build_cms_collision(
+        deep, [mat for _tri, mat in rows for _ in range(per)], NifFormat)
+    if rebuilt is None:
+        return False
+    rebuilt.shape.target = cms.target
+    body.shape = rebuilt
+    return True
+
+
+def widen_load_door(root) -> bool:
+    """Give a door that never swings the collision depth Skyrim's pick needs.
+
+    Morrowind content sets load doors behind the flat collision of the
+    building around them; Skyrim's activation ray stops on that wall unless
+    the door's own collision reaches LOAD_DOOR_REACH in front of its panel.
+    See: docs/commentary/asset_convert_nif.md#a-load-door-needs-reach
+    """
+    blocks = [root] + list(root.tree())
+    if any(isinstance(b, NifFormat.NiControllerManager) for b in blocks):
+        return False
+    grew = False
+    for block in blocks:
+        collision = getattr(block, 'collision_object', None)
+        body = getattr(collision, 'body', None) if collision else None
+        if body is not None:
+            grew = (_widen_panel(getattr(body, 'shape', None), set())
+                    or _deepen_mesh(body) or grew)
+    return grew
 
 
 def _drop_manager(root) -> bool:

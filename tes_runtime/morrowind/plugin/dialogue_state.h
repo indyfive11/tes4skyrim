@@ -163,6 +163,41 @@ struct GameHooks {
     int   (*playerLevel)() = nullptr;
     float (*actorValue)(const std::string& actor, const char* name) = nullptr;
     float (*statPercent)(const std::string& actor, const char* name) = nullptr;
+    // The BASE of that value, which a skill increase, a trainer or a book
+    // moves and a fortify never does.
+    float (*baseActorValue)(const std::string& actor, const char* name) = nullptr;
+    // The actor's race by runtime FormID (0 unknown): a change of race moves
+    // the skills for a reason that is not an increase, and sets the player's
+    // starting attributes. `female` is the actor's base record's sex.
+    // See: docs/commentary/morrowind_runtime.md#race-attributes
+    std::uint32_t (*race)(const std::string& actor) = nullptr;
+    bool (*female)(const std::string& actor) = nullptr;
+    // That race's name, "" when unknown.
+    std::string (*raceName)(const std::string& actor) = nullptr;
+    // The stage of the quest at `formId` in `plugin`, -1 when it does not
+    // resolve; the crime gold on the faction there, false when it does not.
+    // See: docs/commentary/morrowind_runtime.md#statistics-tab
+    int (*questStageOf)(const std::string& plugin, std::uint32_t formId) = nullptr;
+    bool (*factionCrimeGold)(const std::string& plugin, std::uint32_t formId,
+                             float* out) = nullptr;
+    // How far the player's Skyrim skill (by actor value name) is toward its
+    // next point, 0..1; negative when it cannot be read.
+    // See: docs/commentary/morrowind_runtime.md#skill-tooltips
+    float (*skillProgress)(const char* skill) = nullptr;
+    // The player's experience toward Skyrim's next level and what it takes;
+    // false when it cannot be read.
+    bool (*levelProgress)(float* points, float* most) = nullptr;
+    // Settles every TES4 plugin's player attribute globals with the sheet's
+    // store: what a script wrote moves the base, then the attribute is
+    // written back. Game thread.
+    // See: docs/commentary/morrowind_runtime.md#tes4-tables
+    void (*syncAttributeGlobals)() = nullptr;
+    // The value of the GLOB at `formId` in `plugin`, read and written in
+    // place; null when it does not resolve. Game thread.
+    float* (*globalSlot)(const std::string& plugin, std::uint32_t formId) = nullptr;
+    // `EnableClassMenu` (1) / `EnableBirthMenu` (2): the runtime's own menu.
+    // See: docs/commentary/morrowind_runtime.md#chargen-menus
+    void (*showChargenMenu)(int kind) = nullptr;
     void  (*advanceSkill)(const char* skill, float amount) = nullptr;
     void  (*showBarterMenu)(const std::string& actor) = nullptr;
     void  (*showTrainingMenu)(const std::string& actor) = nullptr;
@@ -271,6 +306,11 @@ struct GameHooks {
     void (*setActorValue)(const std::string& actor, const char* name,
                           float value) = nullptr;
     int  (*level)(const std::string& actor) = nullptr;
+    // How far active magic moves one of an actor's attributes, by TES3 id
+    // and index: every Fortify and Absorb it cast, less every Drain, Absorb
+    // and accrued Damage on it.
+    // See: docs/commentary/morrowind_runtime.md#attribute-effects
+    float (*attributeEffect)(const std::string& actor, int tes3Index) = nullptr;
     // The travel service. `followerCount` is how many actors travel WITH
     // the player, which multiplies the fare; `advanceHours` moves the game
     // clock on; `travelTo` puts the player and those followers at the
@@ -352,7 +392,19 @@ struct GameHooks {
                          const std::string& creature) = nullptr;
     void (*takeSoulGem)(const std::string& actor, const std::string& creature,
                         bool drop) = nullptr;
+    // `PlayGroup` / `LoopGroup`: queues `group` on the object's own animation,
+    // OpenMW's playGroup. `mode` is TES3's 0..2; `loops` is how many times a
+    // looping group repeats, kLoopForever for PlayGroup.
+    void (*playGroup)(const std::string& ref, const std::string& group, int mode,
+                      std::uint32_t loops) = nullptr;
+    // `SkipAnim`: holds the object's ambient animation still this tick.
+    void (*skipAnim)(const std::string& ref) = nullptr;
+    // Once a tick of unpaused play: advances every queue `playGroup` filled.
+    void (*animTick)() = nullptr;
 };
+
+// The loop count `PlayGroup` passes: a looping group repeats until replaced.
+constexpr std::uint32_t kLoopForever = 0xffffffffu;
 
 GameHooks& Hooks();
 
@@ -393,6 +445,8 @@ public:
     float Var(const std::string& owner, const std::string& name) const;
     void  SetVar(const std::string& owner, const std::string& name,
                  float value);
+    // Every variable name `owner` holds, lowercase, in order.
+    std::vector<std::string> VarNames(const std::string& owner) const;
 
     // --- the topics the player has heard of -----------------------------------
     // DialogueManager::mKnownTopics: a topic is LISTED only when the speaker
@@ -404,6 +458,10 @@ public:
 
     // --- the player's factions ---------------------------------------------
     const Membership& Faction(const std::string& faction) const;
+    // Every faction the player has a row for, member or not, by its id.
+    const std::map<std::string, Membership>& Factions() const {
+        return mFactions;
+    }
     // PCJoinFaction: rank 0 unless already a member.
     void JoinFaction(const std::string& faction);
     // PCRaiseRank joins at rank 0 first; PCLowerRank leaves below rank 0.
@@ -460,6 +518,9 @@ public:
     // --- reputation, crime, faction reactions, running scripts -------------
     int   reputation = 0;
     float crimeLevel = 0.0f;
+    // The player's class name as chosen, capitals kept (the chargen vars
+    // hold it lowercased). Never a tab or newline.
+    std::string className;
     int  FactionReaction(const std::string& a, const std::string& b) const;
     void SetFactionReaction(const std::string& a, const std::string& b,
                             int value);
