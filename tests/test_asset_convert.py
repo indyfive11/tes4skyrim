@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from asset_convert.nif import sequences
 from asset_convert.nif.nif_batch import _collect_nifs, batch_convert
 from asset_convert.nif.nif_converter import (
     OUTPUT_USER_VERSION as _SKY_UV,
@@ -3449,6 +3450,8 @@ class TestAmbientSequences:
     @pytest.mark.parametrize('rel', [
         'dungeons/caves/cplog01.nif',
         'dungeons/ayleidruins/interior/traps/artrapswingblade01.nif',
+        'oblivion/fire column/oblivioncitadelfirecolumn01.nif',
+        'architecture/lowerclass/doorfulllower02.nif',
     ])
     @pytest.mark.skipif(not EXPORT_MESHES.exists(), reason='Export meshes not available')
     def test_rest_world_rotation_matches_tes4(self, tmp_path, rel):
@@ -3474,6 +3477,188 @@ class TestAmbientSequences:
             diff = max(abs(getattr(want[name], f'm_{i}{j}') - getattr(got[name], f'm_{i}{j}'))
                        for i in (1, 2, 3) for j in (1, 2, 3))
             assert diff < 1e-3, f'{rel}: {name!r} rests {diff:.3f} off its TES4 rotation'
+
+
+_FIRE_COLUMN = 'oblivion/fire column/oblivioncitadelfirecolumn01.nif'
+_LOWER_DOOR = 'architecture/lowerclass/doorfulllower02.nif'
+
+
+def _quat_rows(w, x, y, z):
+    """A unit quaternion as a rotation matrix in pyffi's row-vector layout."""
+    import numpy as np
+    return np.array([
+        [1 - 2 * (y * y + z * z), 2 * (x * y + z * w), 2 * (x * z - y * w)],
+        [2 * (x * y - z * w), 1 - 2 * (x * x + z * z), 2 * (y * z + x * w)],
+        [2 * (x * z + y * w), 2 * (y * z - x * w), 1 - 2 * (x * x + y * y)]])
+
+
+def _first_frame_rotation(interp):
+    """The rotation a transform interpolator holds at its first key; None when it holds none.
+
+    Euler keys are composed X, then Y, then Z, as quaternions.  Without a
+    rotation key the pose plays, and a sentinel pose means no value.
+    """
+    data = interp.data
+    if data is not None and any(g.num_keys for g in data.xyz_rotations):
+        q = (1.0, 0.0, 0.0, 0.0)
+        for axis, group in enumerate(data.xyz_rotations):
+            half = (group.keys[0].value if group.num_keys else 0.0) / 2
+            turn = [math.cos(half), 0.0, 0.0, 0.0]
+            turn[axis + 1] = math.sin(half)
+            q = (q[0] * turn[0] - q[1] * turn[1] - q[2] * turn[2] - q[3] * turn[3],
+                 q[0] * turn[1] + q[1] * turn[0] + q[2] * turn[3] - q[3] * turn[2],
+                 q[0] * turn[2] - q[1] * turn[3] + q[2] * turn[0] + q[3] * turn[1],
+                 q[0] * turn[3] + q[1] * turn[2] - q[2] * turn[1] + q[3] * turn[0])
+        return _quat_rows(*q)
+    if data is not None and data.num_rotation_keys:
+        k = data.quaternion_keys[0].value
+        return _quat_rows(k.w, k.x, k.y, k.z)
+    q = interp.rotation
+    return _quat_rows(q.w, q.x, q.y, q.z) if q.w > -3.0e38 else None
+
+
+def _first_frame_world_rotations(path, sequence):
+    """{shape name: world rotation} at the first frame of the sequence called `sequence`.
+
+    Each node the sequence drives takes its entry's first-frame rotation, keyed
+    or posed; every other node keeps its bind rotation.
+    """
+    import numpy as np
+    NF, d = read_nif(path)
+    root = d.roots[0]
+    seqs = {bytes(b.name): b for b in root.tree() if isinstance(b, NF.NiControllerSequence)}
+    assert sequence in seqs, f'{path}: no sequence {sequence!r} among {sorted(seqs)}'
+    seq = seqs[sequence]
+    played = {}
+    for cb in seq.controlled_blocks:
+        if isinstance(cb.interpolator, NF.NiTransformInterpolator):
+            name = cb.get_node_name()
+            name = name if isinstance(name, bytes) else name.encode('latin-1')
+            played[name] = _first_frame_rotation(cb.interpolator)
+    out = {}
+
+    def walk(node, above):
+        """Carry the world rotation down the tree, row-vector order."""
+        mine = played.get(bytes(node.name))
+        if mine is None:
+            mine = np.array(node.rotation.as_list())
+        world = mine @ above
+        if isinstance(node, NF.NiTriBasedGeom):
+            out[bytes(node.name)] = world
+        for child in (getattr(node, 'children', None) or ()):
+            if child is not None and isinstance(child, NF.NiAVObject):
+                walk(child, world)
+    walk(root, np.eye(3))
+    return out
+
+
+def _accum_root_entry(*, pose=(1.0, 0.0, 0.0, 0.0), data=True, scale_keys=0,
+                      translation_keys=0, quat_keys=0, euler_keys=0, euler_axis=0):
+    """(root, manager) of a one-sequence mesh whose entry names the file root."""
+    root = NifFormat.NiNode()
+    root.name = b'Top'
+    interp = NifFormat.NiTransformInterpolator()
+    (interp.rotation.w, interp.rotation.x,
+     interp.rotation.y, interp.rotation.z) = pose
+    if data:
+        interp.data = NifFormat.NiTransformData()
+        interp.data.scales.num_keys = scale_keys
+        interp.data.translations.num_keys = translation_keys
+        interp.data.num_rotation_keys = quat_keys
+        if euler_keys:
+            interp.data.rotation_type = 4
+            interp.data.xyz_rotations[euler_axis].num_keys = euler_keys
+    seq = NifFormat.NiControllerSequence()
+    seq.name = b'Idle'
+    seq.target_name = b'Top'
+    seq.num_controlled_blocks = 1
+    seq.controlled_blocks.update_size()
+    seq.controlled_blocks[0].interpolator = interp
+    seq.controlled_blocks[0].node_name = b'Top'
+    mgr = NifFormat.NiControllerManager()
+    mgr.num_controller_sequences = 1
+    mgr.controller_sequences.update_size()
+    mgr.controller_sequences[0] = seq
+    return root, mgr
+
+
+class TestDroppedAccumRootPose:
+    """The file root's sequence entry is dropped; its pose must reach the node
+    whenever the pose is what would have played."""
+
+    def _pose(self, **entry):
+        """The pose the converter takes off the dropped entry, or None."""
+        root, mgr = _accum_root_entry(**entry)
+        return sequences._dropped_accum_root_pose(
+            root, mgr, sequences._seq_name_resolver(None))
+
+    def test_dataless_entry_gives_its_pose(self):
+        assert self._pose(data=False) == (1.0, 0.0, 0.0, 0.0)
+
+    @pytest.mark.parametrize('keys', [
+        {'scale_keys': 2}, {'translation_keys': 2}, {},
+    ])
+    def test_entry_keyed_on_another_channel_gives_its_pose(self, keys):
+        """Two constant scale keys do not stop the identity rotation from playing.
+
+        See: docs/commentary/asset_convert_nif.md#accum-root-classification
+        """
+        assert self._pose(**keys) == (1.0, 0.0, 0.0, 0.0)
+
+    @pytest.mark.parametrize('pose', [
+        (math.sqrt(0.5), 0.0, 0.0, math.sqrt(0.5)),      # a quarter turn about Z
+        (0.0, 0.0, 0.0, 1.0),                            # half a turn: w is zero
+        (-math.sqrt(0.5), 0.0, -math.sqrt(0.5), 0.0),    # a quarter turn about Y, w negative
+    ])
+    def test_the_pose_given_is_the_entry_s_own(self, pose):
+        """The entry's pose comes back as written, not as identity and not dropped."""
+        assert self._pose(pose=pose, scale_keys=2) == pytest.approx(pose)
+
+    @pytest.mark.parametrize('keys', [
+        {'quat_keys': 2},
+        {'quat_keys': 1},                     # a single key is still a key
+        {'euler_keys': 2},                    # counted in the Euler groups only
+        {'euler_keys': 1, 'euler_axis': 1},   # one key, on Y
+        {'euler_keys': 2, 'euler_axis': 2},   # on Z
+        {'quat_keys': 1, 'euler_keys': 2},    # the layout Oblivion's files use
+        {'quat_keys': 2, 'scale_keys': 2},
+    ])
+    def test_entry_with_a_rotation_key_gives_no_pose(self, keys):
+        assert self._pose(**keys) is None
+
+    @pytest.mark.parametrize('keys', [{'data': False}, {'scale_keys': 2}])
+    def test_sentinel_rotation_gives_no_pose(self, keys):
+        """-FLT_MAX in the pose means the channel has no value to bake."""
+        none = -3.4028234663852886e+38
+        assert self._pose(pose=(none, none, none, none), **keys) is None
+
+    @pytest.mark.parametrize('rel, played, converted', [
+        (_FIRE_COLUMN, b'Idle', b'AutoLoop'),   # stood a quarter turn off while Idle played
+        (_FIRE_COLUMN, b'Idle', b'AutoPlay'),
+        (_LOWER_DOOR, b'Open', b'Open'),        # root at 180 deg, the same two scale keys
+        (_LOWER_DOOR, b'Close', b'Close'),
+        (_CLAW_STAND, b'Idle', b'AutoLoop'),    # a data-less entry: must not regress
+    ])
+    @pytest.mark.skipif(not EXPORT_MESHES.exists(), reason='Export meshes not available')
+    def test_first_frame_world_rotation_matches_tes4(self, tmp_path, rel, played, converted):
+        """While a sequence plays, each shape faces as it does in TES4.
+
+        The root entry's pose and NonAccum's first key are one transform split
+        over two entries; keeping the root's bind rotation applies it twice.
+        See: docs/commentary/asset_convert_nif.md#accum-root-classification
+        """
+        src = EXPORT_MESHES / rel
+        if not src.exists():
+            pytest.skip(f'{src} not found')
+        dst = tmp_path / 'out.nif'
+        convert_nif(str(src), str(dst))
+        want = _first_frame_world_rotations(src, played)
+        got = _first_frame_world_rotations(dst, converted)
+        shared = set(want) & set(got)
+        assert shared, 'no comparable geometry'
+        for name in sorted(shared):
+            off = abs(want[name] - got[name]).max()
+            assert off < 1e-3, f'{rel}: {name!r} plays {off:.3f} off its TES4 rotation'
 
 
 _PALACE_FONT = 'architecture/palace/interior/palacefont01.nif'

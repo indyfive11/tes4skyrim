@@ -389,10 +389,23 @@ def _bake_accum_root_pose(root, quat):
     na.translation = na.translation * delta
 
 
+def _rotation_keyed(interp):
+    """Does the interpolator's data hold a rotation key, in either key form?
+
+    Without one the pose rotation is what plays, whatever the other channels key.
+    See: docs/commentary/asset_convert_nif.md#accum-root-classification
+    """
+    d = getattr(interp, 'data', None)
+    return d is not None and bool(
+        getattr(d, 'num_rotation_keys', 0)
+        or any(g.num_keys for g in d.xyz_rotations))
+
+
 def _dropped_accum_root_pose(root, mgr, resolve_name):
     """Apply the accum-root entry's pose to the root NODE, since the entry dies.
 
-    Only for an entry naming the FILE ROOT, the one the root-name rule drops.
+    Only for an entry naming the FILE ROOT, the one the root-name rule drops,
+    and only while its rotation is un-keyed: the pose is then what plays.
     See: docs/commentary/asset_convert_nif.md#accum-root-classification
     """
     root_name = bytes(getattr(root, 'name', b'') or b'')
@@ -410,7 +423,7 @@ def _dropped_accum_root_pose(root, mgr, resolve_name):
                 continue
             it = cb.interpolator
             if (isinstance(it, NifFormat.NiTransformInterpolator) and
-                    it.data is None and it.rotation.w > _NO_VALUE):
+                    not _rotation_keyed(it) and it.rotation.w > _NO_VALUE):
                 q = it.rotation
                 return (float(q.w), float(q.x), float(q.y), float(q.z))
             break

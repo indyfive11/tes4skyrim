@@ -608,6 +608,26 @@ harrada plants, claw switch, mine and spike traps, root gate, blacksap tank, and
 the Open/Close doors (benirus, Leyawiin middle/upper interior, rootskin). The rest
 play Idle/SpecialIdle at load and never showed the rest pose.
 
+**The pose is baked whenever the entry's rotation is un-keyed, not only when the
+entry is data-less** (`_rotation_keyed`). A `NiTransformInterpolator` plays its
+pose on every channel its data does not key, so an entry whose data holds only
+scale keys still plays the identity rotation. Two meshes in the converted
+folders of Oblivion.esm have a rotated root under such an entry:
+`oblivion\fire column\oblivioncitadelfirecolumn01.nif` (a quarter turn about X)
+and `architecture\lowerclass\doorfulllower02.nif` (half a turn about Z), each
+with two constant scale keys and no rotation or translation key. The root's
+rotation is the one NonAccum's keys start from in the fire column's `Idle` and
+in the door's `Open`. With the bake skipped the root kept its rotation, the
+root-rotation wrapper moved it one node down, and NonAccum's keys applied it
+again: the fire column, which plays `Idle` from load, stood a quarter turn off
+(seen in game: a column placed level stood upright). 20 more meshes have a
+keyed entry over an unrotated root, where the bake moves at most rounding
+residue; a third rotated one,
+`menus\armor repair\white spot.nif`, is in a folder the batch skips and converts
+the same either way. No root entry in Oblivion.esm, Knights.esp, DLCFrostcrag.esp
+or the Unofficial Patch holds a rotation key. Guarded by
+`TestDroppedAccumRootPose`.
+
 A pyffi `Matrix33` is the transpose of the column-vector quaternion matrix;
 `_apply_rotation` writes that layout. No mesh in either export has a
 non-identity dataless root pose, so the layout fix changed no output.
