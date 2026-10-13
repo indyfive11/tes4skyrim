@@ -20,7 +20,9 @@ scale.  That radius is authored data, read from the plugin's own bases and
 its masters'; a base that states none (an actor, a marker, a light) reaches 0.
 
 The cell record, its flag, height and type, and the lava overlay are left as
-they are; a lava interior gets the planes and the overlay.
+they are; a lava interior gets the planes and the overlay.  Two surfaces at
+one height flicker through each other, so under an overlay the planes lie
+`LAVA_PLANE_DROP` lower, as the game's own lava interior has them.
 
 DEFERRED, each to be revisited when the named case turns up:
 
@@ -61,6 +63,8 @@ PLANE_SIZE = 1024
 PLANE_SCALE = 10.0
 #: Distance between neighbouring planes: one scaled sheet, edge to edge as the game tiles them.
 PLANE_PITCH = PLANE_SIZE * PLANE_SCALE
+#: How far the planes lie under a lava overlay: Dawnguard.esm's lava interior holds its plane 2.0 under its lava meshes.
+LAVA_PLANE_DROP = 2.0
 #: Skyrim.esm's DefaultWater, the fallback `record_types.world` writes for a worldspace that names no water.
 SKYRIM_DEFAULT_WATER = 0x00000018
 #: The game's own model path, in its own archive: no namespace prefix, nothing is copied.
@@ -301,13 +305,15 @@ class WaterPlanner:
             self.activators += 1
         return self._activators[water_fid][0]
 
-    def planes_for(self, cell_rec: dict, refs=(), actors=()) -> list:
+    def planes_for(self, cell_rec: dict, refs=(), actors=(), under_overlay=False) -> list:
         """The packed persistent plane references of one cell; [] when it gets none.
 
         `refs` and `actors` are the cell's own source REFR and ACHR/ACRE
         records; the cover reaches as far as their bases' bound radii.  Ids
         are keyed on the cell's source FormID and the plane's place in the
         tiling.
+        `under_overlay` says the cell also gets the lava overlay at its
+        water height; its planes then lie `LAVA_PLANE_DROP` under that height.
 
         See: docs/commentary/tes5_import_landscape.md#interior-water-planes
         """
@@ -317,6 +323,8 @@ class WaterPlanner:
         if height is None:
             self.skips[reason] += 1
             return []
+        if under_overlay:
+            height -= LAVA_PLANE_DROP
         origins = plane_origins(content_corners(refs, actors, self._radii()))
         if not origins:
             self.skips['contents beyond the interior range'] += 1

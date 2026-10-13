@@ -674,7 +674,8 @@ def _cell_water_planes(cell_rec, cell_fid, ctx) -> list:
     try:
         return ctx['water'].planes_for(
             cell_rec, ctx['refr_by_cell'].get(cell_fid, ()),
-            ctx['achr_by_cell'].get(cell_fid, ()))
+            ctx['achr_by_cell'].get(cell_fid, ()),
+            under_overlay=ctx['lava'].cell_has_lava(cell_rec))
     except Exception as e:
         print(f"  ERROR placing water planes for {get_str(cell_rec, 'EditorID', '?')}: {e}")
         return []

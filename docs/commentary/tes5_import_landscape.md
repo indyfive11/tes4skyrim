@@ -178,7 +178,12 @@ The rule, for an interior with Has Water whose source is not FO3/FNV:
   its cell's source FormID and its place in the tiling.
 
 The cell record and the lava overlay are untouched: a lava interior gets the
-planes and the overlay, as `DLC1Bthalft01` has both.
+planes and the overlay, as `DLC1Bthalft01` has both. That interior holds its
+plane 2.0 under its lava meshes, and two surfaces at one height flicker through
+each other, so in a cell that gets the overlay the planes lie
+`LAVA_PLANE_DROP` (2.0) under the cell's water height; the overlay stays at
+that height. A cell whose lava water gets no overlay keeps its planes at the
+height.
 
 A failure of the planner costs a cell its planes and nothing else:
 `_cell_water_planes` prints one `ERROR placing water planes for <cell>` line

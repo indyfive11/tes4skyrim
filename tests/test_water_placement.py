@@ -587,7 +587,29 @@ def test_lava_reference_stays_in_the_temporary_group():
     assert found[-1] == overlay[0]
     assert _plane(overlay[0][0]) == (0.0, 0.0, -64.0)
     (plane, group), = _planes(found)
-    assert group == (8, cell) and _plane(plane) == (0.0, 0.0, -64.0)
+    assert group == (8, cell) and _plane(plane) == (0.0, 0.0, -64.0 - WP.LAVA_PLANE_DROP)
+
+
+def test_planes_lie_under_a_lava_overlay_and_nowhere_else():
+    """Only a cell that gets the overlay has its planes lowered, by the drop and no more."""
+    lava = [_watr(LAVA, 'Lava', 'lava'), _watr(WATER_1, 'Pond')]
+    cells = [_cell(water=LAVA, height='-64.0'),
+             _cell(CELL_B, water=WATER_1, height='-64.0', edid='PondCell')]
+    refs = [_ref('00000C01', 0.0, 0.0), _ref('00000C02', 0.0, 0.0, cell=CELL_B)]
+    _w, found = _build(cells, refs, waters=lava)
+    heights = {grp[1]: _plane(rec)[2] for rec, grp in _planes(found)}
+    assert heights == {int(CELL_A, 16): -66.0, int(CELL_B, 16): -64.0}
+    assert WP.LAVA_PLANE_DROP == 2.0
+
+
+def test_a_lava_water_without_an_overlay_keeps_the_cells_height():
+    """The drop follows the overlay, not the water type: no overlay, no drop."""
+    planner = _planner({'WATR': [_watr(LAVA, 'Lava', 'lava')]})
+    cell = _cell(water=LAVA, height='-64.0')
+    plane, = planner.planes_for(cell, [_ref('00000C01', 0.0, 0.0)])
+    assert _plane(plane) == (0.0, 0.0, -64.0)
+    low, = _planner().planes_for(cell, [_ref('00000C01', 0.0, 0.0)], under_overlay=True)
+    assert _plane(low) == (0.0, 0.0, -66.0)
 
 
 def test_lava_overlay_is_unchanged_by_the_planes():
