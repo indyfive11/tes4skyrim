@@ -1136,6 +1136,114 @@ Skyrim equivalent, and any magnitude now grants full immunity. Every creature
 and quest ability in Oblivion.esm authors 100; the partial values (10-60%)
 are only on enchantments and ingredients.
 
+## <a id="sun-damage-sunlight"></a>Sun Damage carries Skyrim's sunlight test
+
+**Code:** `tes5_import/record_types/magic.py` (`effect_item_conditions`, `SUNLIGHT_CONDITIONS`, `sunless_worldspaces`, `settle_sunless_worlds`), `tes5_import/record_types/equipment.py` (`_pack_effects`), `tes5_import/pipeline.py` (`_prescan_effect_families`)
+
+Oblivion's engine applies Sun Damage (SUDG, and Morrowind effect 135) only
+while the actor stands in sunlight. The effect itself says nothing about the
+sun; the test is the engine's. The import maps the effect to a Value Modifier
+on Health, detrimental, without the Recover flag, and until this rule wrote
+its items with no condition.
+
+On a constant effect that shape is applied again every second. The game uses
+it for exactly that: `DLC2abApoWaterDamageActual` (Dragonborn.esm) damages
+Health by 70 or 25 a second through two such slots. Skyrim.esm, Update.esm
+and the three DLC masters hold four detrimental slots of this shape on
+constant-effect spells, and all four are conditioned.
+
+So a converted actor with one of the vampirism abilities that hold the effect
+lost health every second, indoors and at night. Oblivion.esm holds five items
+with a
+Sun Damage effect: the abilities `Vampirism50` (1 a second), `Vampirism75`
+(4) and `Vampirism100` (8), the constant enchantment `DBenAppHands` (30) and
+the test spell `testsun`. 103 of its actor bases carry one of the abilities
+(102 `Vampirism100`, 1 `Vampirism50`), 21 of them placed directly; Knights.esp
+and DLCFrostcrag.esp hold no such item. `Vampirism25` holds no Sun Damage.
+
+**Seen in game** (a converted build, a player's report): in a group of
+interiors one kind of placed actor was found dead on every arrival, and a
+second kind in the same cells was alive. **Read from the records:** the first
+kind resolves to bases that carry `Vampirism100` (8 a second), the second
+carries no such ability. Other carriers and non-carriers were not looked at.
+With the three daylight conditions in (a first build of this rule) the same
+player found that kind alive, and staying alive. The worldspace test came
+after that look: nobody has looked at a vampire in a listed worldspace.
+
+**How the game tests for sunlight.** Its own vampire sun spells
+(`VampireSunDamage01`-`04`, `crVampireSunDamage`; constant abilities) carry
+on every effect item `GetGlobalValue(GameHour) <= 19`,
+`GetGlobalValue(GameHour) >= 5` and `IsInInterior == 0`. The player's four
+put a worldspace test in front. In Skyrim.esm it names Sovngarde alone; the
+versions that win in an install (Update.esm, then Dawnguard.esm) test
+`GetInWorldspace(SunDamageExceptionWorldSpaces) == 0`, a form list of 19
+worldspaces the game exempts (Sovngarde, Blackreach, cave and ruin worlds).
+Dawnguard.esm adds a test of its eclipse global. Their effects
+are stat and regeneration penalties, not damage. The conditions sit on the
+items, not on the effect records: an item condition switches a constant
+effect off and on again as it changes.
+
+The import does the same. `_pack_effects` writes the effect items of every
+spell, enchantment, potion, ingredient and scroll, and asks
+`effect_item_conditions` for what follows each EFIT. A Sun Damage slot gets
+the game's three daylight conditions, each byte for byte and in the game's
+order; every other slot, and every filler, gets none. The slot's magnitude,
+area and duration are as authored: in sunlight the damage is the authored
+magnitude a second, flat.
+
+**Worlds without a sun.** Oblivion scales Sun Damage by the weather's own Sun
+Damage value, so a worldspace whose weathers all carry 0 gives none. 18 of
+Oblivion.esm's 84 worldspaces are such: the Oblivion planes
+(`OblivionRD001`-`007` and four quest planes), `CamoranParadise`,
+`MS14World`, the two dream worlds, two daedric realms and
+`ArkvedsTowerWorld`. They are exteriors, so the daylight test alone would
+burn a vampire there by day.
+
+`settle_sunless_worlds` gives each plugin the game's own remedy: a form list
+`TES4SunDamageExceptionWorldSpaces` of its worldspaces whose climate lists
+weathers of which none has Sun Damage (`sunless_worldspaces`), and one more
+condition in front of the three, `GetInWorldspace(<list>) == 0`. A plugin
+with no such worldspace writes no list. A dependent plugin names its
+masters' lists, found by EditorID, and its own after them; its own list
+takes the number after the highest name found, so no EditorID is used twice
+down one chain (two independent masters each hold the unnumbered name, and
+both are named).
+
+Two limits, both left as before this rule (the damage applies):
+
+- A worldspace is judged only by a climate and weathers of its own plugin.
+  One that names a master's climate is not listed: the usual shape of a mod
+  that adds its own Oblivion plane on the base game's climate.
+- A worldspace with no climate is not listed. It takes its parent's weather,
+  or with no parent Oblivion's hardcoded default climate, which has a sun.
+  A child of a listed worldspace would be missed; Oblivion.esm has none.
+- A master's Sun Damage items name the master's lists. A sunless worldspace
+  that only a dependent plugin adds is unknown to them, and known to the
+  dependent's own items.
+
+Not taken over: the eclipse global lives in a master the converted plugins
+do not load.
+
+**Not converted:** Oblivion scales Sun Damage by the weather's own Sun Damage
+value and by the height of the sun, and its day runs from the climate's
+sunrise to its sunset. Skyrim's test knows none of that: outdoors between 5
+and 19 the damage is full in every worldspace that is not listed, under any
+weather, and outside those hours it is none. The exception is per
+worldspace: a weather without Sun Damage in an unlisted worldspace (the
+storm near an Oblivion gate) still burns.
+
+**Open:** 59 interior cells of Oblivion.esm are flagged to behave like an
+exterior (the Arena, a castle courtyard, the towers of the Oblivion planes).
+They are written as interiors that show the sky, where `IsInInterior` is
+read as true, so Sun Damage does not apply there. Whether Oblivion applies
+it in such a cell was not established.
+
+Damage Health, Damage Magicka and Damage Fatigue on an ability keep ticking
+with no condition. Oblivion applies those wherever the actor stands, so they
+are left as they are. A Damage Attribute slot that the `direct_attribute_magic`
+add-on gives a Value Modifier is the same shape and is NOT like Oblivion,
+where an attribute stops at 0. This rule does not touch it.
+
 ## <a id="morrowind-effects"></a>Morrowind effects key on an index, not a code
 
 **Code:** `tes5_import/record_types/magic_morrowind.py`
