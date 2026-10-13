@@ -13,6 +13,7 @@ from script_convert.command_rows import (
 )
 from tes5_import.base.mesh_bounds import get_mesh_physics_flags
 from tes5_import.base.text_reader import parse_export_file, unescape_value
+from tes5_import.record_types.world_falloutnv import is_fallout_export
 from asset_convert.game_paths import current_namespace
 from core.plugin_masters import (
     master_chain, master_dir, masters_from_export_header
@@ -69,6 +70,7 @@ def _new_scan_out() -> dict:
         'pack_type': {}, 'actor_packages': {},
         'actor_speed': {}, 'move_gmsts': {},
         'record_model': {},
+        'record_items': {}, 'leveled_templates': set(),
         # LIGH FormIDs whose DATA 'Can be Carried' flag is set -- the only LIGH
         # that behave as inventory items (a torch/stone), vs the ~99.8% that are
         # placed world lights.  See carriable_only / _scan_light.
@@ -112,7 +114,8 @@ def _spell_effect_list(rec: dict) -> list:
 
 def index_record_details(tables: dict, sig: str, formid: str, edid: str,
                          rec: dict, rekey=lambda v: v) -> None:
-    """Fill the tables a record's own fields feed: model, enable parent, MGEF shader, SPEL effects, GLOB, enchanted BOOK.
+    """Fill the tables a record's own fields feed: model, enable parent, MGEF shader, SPEL effects, GLOB, enchanted
+    BOOK, item list, leveled template.
 
     `tables` maps table name -> dict/set (a scan result, or a graph's `vars()`), so the
     CLI scan and the importer's hand-built graph index these identically; `rekey`
@@ -143,7 +146,24 @@ def index_record_details(tables: dict, sig: str, formid: str, edid: str,
             pass
     elif sig == 'BOOK' and (rec.get('ENAM') or '').strip().strip('0'):
         tables['enchanted_books'].add(formid)
+    if sig == 'LVLC' and rec.get('TNAM.Template'):
+        tables['leveled_templates'].add(rekey(rec['TNAM.Template']))
     _index_move_speed(tables, sig, formid, low, rec)
+    _index_items(tables, formid, rec, rekey)
+
+
+def _index_items(tables: dict, formid: str, rec: dict, rekey) -> None:
+    """A record's authored item list as ((item FormID, count), ...), entry by entry; a leveled list is one entry.
+
+    Every record that exports an `ItemCount` gets a row, an empty one too, so
+    a plugin's emptied copy replaces its master's list.
+    See: docs/commentary/script_convert.md#getitemcount-before-the-inventory-is-built
+    """
+    if 'ItemCount' not in rec:
+        return
+    tables['record_items'][formid] = tuple(
+        (rekey(rec[f'Item[{i}].FormID']), _int_or(rec.get(f'Item[{i}].Count'), 0))
+        for i in range(_int_or(rec['ItemCount'], 0)) if rec.get(f'Item[{i}].FormID'))
 
 
 #: The GMSTs of TES4's walk-speed formula: walk = Min + (Max - Min) * Speed / 100.
@@ -265,7 +285,7 @@ _SIG_SCANNERS = {'SCPT': _scan_scpt, 'CELL': _scan_cell, 'NPC_': _scan_actor,
 
 #: Id fields the scan reads, re-keyed with the record's own FormID.
 _ID_FIELDS = ('SCRI', 'NAME', 'ParentWRLD', 'DATA.EffectShader',
-              'DATA.EnchantEffect', 'XESP.Reference')
+              'DATA.EnchantEffect', 'XESP.Reference', 'TNAM.Template')
 
 
 def _index_remap(root_dir: str, export_dir: str):
@@ -312,8 +332,8 @@ def _scan_record_lines(sig: str, lines: list, out: dict, remap: dict = None):
         formid = _rekey(formid, remap, keep_unmapped=False)
         if formid is None:
             return          # names a file the root plugin does not load
-        for key in [k for k in rec if k in _ID_FIELDS
-                    or k.startswith('AIPackage[')]:
+        for key in [k for k in rec if k in _ID_FIELDS or k.startswith('AIPackage[')
+                    or (k.startswith('Item[') and k.endswith('.FormID'))]:
             rec[key] = _rekey(rec[key], remap)
     edid = rec.get('EditorID')
     if edid:
@@ -408,6 +428,10 @@ class CrossRefGraph:
         # BOOK records with an ENAM: written as SCRL, so `Book` would not bind.
         self.enchanted_books: set[str] = set()
         self.record_base: dict[str, str] = {}  # placed ref FormID -> base record FormID (NAME)
+        #: Record FormID -> its authored item list, ((item FormID, count), ...); see `_index_items`.
+        self.record_items: dict[str, tuple] = {}
+        #: FormIDs a leveled creature list names as its template: their script also runs on what the list spawns.
+        self.leveled_templates: set[str] = set()
         #: Placed ref FormID -> its ENABLE PARENT's FormID (XESP), what `getParentRef` returns.
         self.record_parent: dict[str, str] = {}
         #: (script EditorID, variable), lowercase, that ANOTHER script assigns (`set Owner.var to X`).
@@ -542,6 +566,8 @@ class CrossRefGraph:
         self.record_parent.update(out['record_parent'])
         self.record_type.update(out['record_type'])
         self.record_model.update(out['record_model'])
+        self.record_items.update(out['record_items'])
+        self.leveled_templates.update(out['leveled_templates'])
         self.cell_geom.update(out['cell_geom'])
         self.carriable_light.update(out['carriable_light'])
         self.enchanted_books.update(out['enchanted_books'])
@@ -944,6 +970,25 @@ class CrossRefGraph:
                 index.setdefault(base, []).append(ref_fid)
             self._placed_index = index
         return index.get(base_fid, [])
+
+    def listed_item_count(self, base_fids, item_fid: str) -> int:
+        """The count EVERY record in `base_fids` lists `item_fid` with, in one direct entry above 0; else 0.
+
+        See: docs/commentary/script_convert.md#getitemcount-before-the-inventory-is-built
+        """
+        counts = set()
+        for base in base_fids:
+            listed = [n for fid, n in self.record_items.get(base, ()) if fid == item_fid]
+            counts.add(listed[0] if len(listed) == 1 else 0)
+        return max(counts.pop(), 0) if len(counts) == 1 else 0
+
+    def is_fallout_source(self) -> bool:
+        """Did these records come from FO3/FNV?  Asked of the record types held, once."""
+        known = getattr(self, '_fallout_source', None)
+        if known is None:
+            known = is_fallout_export(dict.fromkeys(self.record_type.values(), True))
+            self._fallout_source = known
+        return known
 
     def script_self_signature(self, script_edid: str) -> str:
         """Signature every record carrying the script shares (its `getSelf`), or ''."""

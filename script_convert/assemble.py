@@ -29,6 +29,7 @@ from script_convert import symbols as _symbols
 from script_convert.poll_interval import (QUEST_DELAY_CALL, active_interval,
                                           float_literal, interval_literal,
                                           quest_delay_helper)
+from script_convert import authored_items
 from script_convert.frame_steps import frame_steps
 from script_convert.poll_motion import relative_sets
 from script_convert import start_pose
@@ -272,6 +273,7 @@ def _load_facts(conv, tree) -> None:
     sc.suppressed_fall_damage = 'resetfalldamagetimer' in called
     sc.declares_quest_delay = 'fquestdelaytime' in declared
     sc.frame_steps = frame_steps(tree, getattr(conv, '_script_extends', ''))
+    sc.removals = authored_items.removals(exprs)
     _load_time_facts(sc, tree, called, btypes)
     sc.uses_timer = 'timer' in names
     sc.uses_say = bool(called & {'say', 'sayto'})

@@ -81,6 +81,7 @@
 - [A ref tested against `1` is still a null test](#ref-compared-to-one)
 - [A declaration can nest at ANY depth](#declarations-nest-at-any-depth)
 - [Not every INFO needs a fragment — the dialogue stutter](#info-fragment-stutter)
+- [`GetItemCount` before the engine has built the inventory](#getitemcount-before-the-inventory-is-built)
 
 ## Papyrus / Script Conversion Notes
 <a id="papyrus-script-conversion-notes"></a>
@@ -6816,3 +6817,245 @@ Blast radius on the rebuild: Oblivion 6 scripts (the three artifact spells,
 SE13Ally, SE13KnightOfOrder, SE14VoiceofSheogorathSpell), no CharacterGen or
 MQ script; Nehrim's arena fighters, the beggar and the IsPlayable2 line in
 AAGeneralUpdateQuest; Morrowind_ob 2 OnKnockout scripts. Everything compiles.
+
+## <a id="getitemcount-before-the-inventory-is-built"></a>`GetItemCount` before the engine has built the inventory
+
+**Code:** `script_convert/authored_items.py`, `commands.py:get_item_count`,
+`cross_ref.py` (`_index_items`, `record_items`, `listed_item_count`,
+`leveled_templates`, `is_fallout_source`), the removal scan in
+`assemble.py:_load_facts` and `converter.py:convert_fragment`,
+`TES4Polyfill.AuthoredItemCount`. **Tests:** `tests/test_authored_items.py`.
+
+**Symptom.** A quest advanced by itself. Oblivion.esm's `Dark12DeadDropScript`
+sits on a dead-drop container and polls it:
+
+    if RottedBoxRef.GetItemCount DarkLachanceOrders1 < 1
+        SetStage Dark12Harem 100
+        SetStage Dark13Justice 10
+
+The container's base record lists one copy of the orders, so in Oblivion the
+read is 1 until the player takes them. Converted, the poll read 0 and set both
+stages by itself.
+
+**What was measured.** One reading, in game: the console's `GetItemCount` of
+the orders on that one container printed 0 while its CONT record lists them.
+The container is far away, initially disabled and was never opened. The
+reading does not separate those three, nor a fourth: that the converted record
+has no count subrecord ([below](#getitemcount-no-count-subrecord)). The rule
+rests on the reading "Skyrim answers 0 for the items a base record lists as
+long as the engine has not built that reference's inventory". That sentence is
+the working explanation, not a measurement.
+
+The poll gate is not at fault and is unchanged. `SafeGameModeGate` only
+decides whether the poll re-arms. The poll's body is not gated, and its first
+pass is started by `OnCellAttach`, which registers the update without asking
+the gate and fires for disabled references too: the poll ran on one.
+
+**The read.** `TES4Polyfill.AuthoredItemCount(ref, item, N)` takes the count the
+base record lists. It answers N only when `ref.GetNumItems() > 0` and
+`ref.GetContainerForms()` is empty and the native count is 0; in every other
+state it answers the native count. As read in the script extender's source
+(`PapyrusObjectReference.cpp`), not seen in game:
+
+- `GetContainerForms` returns an empty array for a reference that carries no
+  container-changes data at all, whatever its base record lists.
+- `GetNumItems` counts the base record's entries that are not leveled lists and
+  whose count plus recorded change is above 0, plus the items added later.
+
+So "the base lists something and no forms come back" is taken for "never
+built". A container the player emptied has changes and `GetNumItems` 0; one
+that lost only some items has forms left.
+
+**The order of its calls.** Each native is a call of its own, and the
+inventory can change between two of them: the player opens the container
+while the script waits for its next call. The function is written for that:
+
+1. The native count is read first. If it is not 0 it is the answer: a count
+   above 0 is right in either state, and this is the only call made while the
+   item is there.
+2. A count of 0 is never returned from before the state was known. It is read
+   again after the state test. The first version returned the count it had
+   read first, so a container opened in between answered 0 with the item in
+   it.
+3. `GetNumItems` is asked on both sides of `GetContainerForms`. With one call
+   each, a container that was emptied or filled between the two reads like one
+   never built.
+
+`tests/test_authored_items.py` holds the function line for line, a model of the
+three natives as described above, and every placement of ONE change (opened,
+item taken, emptied, something put in, the changes lost again) between two of
+its calls: each answer is the true count at some instant of the call. Two
+opposite changes inside one call, a container emptied and then filled again
+between consecutive natives, can still read as never built. `GetContainerForms`
+allocates an array; it is called only when the native count is 0 and
+`GetNumItems` is above 0.
+
+**The rule.** `authored_items.call_text` converts a read to that call only when
+ALL of this is known at conversion time, and declines otherwise, which leaves
+the command row's plain `GetItemCount`:
+
+- **The receiver's base record.** A named receiver must be the EditorID of a
+  placed reference (REFR, ACHR, ACRE); its base is its NAME. A bare call, or
+  `GetSelf.`, in a script that extends `ObjectReference` or `Actor` acts on the
+  script's own reference, an instance of ANY record carrying the script, so
+  every one of them must give the same answer.
+- **The item.** One argument naming a record by EditorID (quoted or not).
+- **The count.** Each base lists that item in exactly ONE direct entry, with
+  the same count above 0. That count is N.
+- **Nothing else in the script takes it out.** See the next paragraph.
+
+**A script that also removes the item keeps the plain read.** The CK wiki's
+notes on `RemoveItem` say it "does not work on items pre-placed inside
+containers until that container is opened"; not measured here. A script that
+read N from the record and then removed that many would act on items the
+engine cannot remove yet: `XPEbroccaCrematorySCRIPT` reads the counts of the
+bones in an urn, removes that many and adds as much ash, so on a never-opened
+urn it would hand out ash for bones that stay. So a read is left plain when
+the SAME script (one SCPT, or one stage or dialogue result) contains a call
+that the command rows convert to `RemoveItem` or `RemoveAllItems`
+(`authored_items.removals`) and that may take this item out of this receiver:
+
+- **Item:** the same record, or one that cannot be told: a variable, a name of
+  no record, any item for `RemoveAllItems`. Another record does not count.
+- **Receiver:** the same placed reference, or the own reference on both sides.
+  A named placement of a record that carries the script may be the script's
+  own reference, so it counts against a bare read, and a bare removal counts
+  against a read of such a placement (the patch's `Dark09AdamusScript` reads
+  bare and removes through `AdamusPhillidaRef`). A variable, an unknown name
+  and a bare call in a script with no reference of its own cannot be told and
+  count. The player and another placed reference, also a second placement of
+  the same base record, do not.
+
+**Cannot tell: the read stays as it was.**
+
+- The player: `player`, `playerref`, and a script the player record carries.
+- A receiver or an item that is a script variable, also one named like a
+  record: the variable wins, as it does in `_convert_ref`.
+- A receiver that names a base record, a quest or nothing in the export, or
+  that is written as a raw FormID.
+- A bare call in a quest, magic-effect or dialogue script.
+- A bare call in a script that a leveled creature list's template carries
+  (`TNAM`, kept in `leveled_templates`). The script also runs on what the list
+  spawns. The importer hands the spawn the template's script but not its
+  items: the shell record it builds takes its inventory from the rolled entry
+  (`tes5_import/actors/leveled_actors.py`). A placement of the template record
+  itself, named by its reference, is still read.
+- An item the base lists only through a leveled list, and a leveled list named
+  as the item: neither is an authored count.
+- A count of 0 or below. Oblivion's restocking stock is negative, and the
+  importer writes it positive.
+- An item listed twice. The exporter writes one `Item[n]` entry per CNTO
+  subrecord, so two entries are two subrecords; whether Skyrim adds them up
+  was not established, so they are not summed.
+- Bases that disagree, an owner without an item list included.
+- A call with no argument or more than one.
+- Every read of an FO3/FNV export (`CrossRefGraph.is_fallout_source`, asked of
+  the record types the graph holds). There an actor can take its inventory and
+  its script from a template (`actors_falloutnv._flatten_one`): the importer
+  copies the template's list onto a stub that has none, keeps a stub's own
+  list although its flags name the template as the source, and a script
+  inherited that way runs on records the scan does not know as its carriers.
+  The template flag of one record does not cover the last case, and no such
+  export was at hand to measure a finer rule on.
+
+**The item lists.** `cross_ref._index_items` keeps `record_items[FormID] =
+((item FormID, count), ...)` for every record that exports an `ItemCount`
+(CONT, NPC_, CREA), an empty tuple included, so a plugin's emptied copy of a
+master's container replaces the master's list. `leveled_templates` holds the
+record each LVLC names as its template. Both are filled from
+`index_record_details`, which the export scan and the importer's hand-built
+graph share ([mirror](tes5_import_pipeline.md#phase-0-xref-mirrors-cli-scan)),
+and a master's ids are re-keyed into the plugin's load order like its other id
+fields. A script in a dependent plugin therefore resolves a master's
+reference, record and item the same way. Both forms of the read declare the
+same properties, so the importer's bindings do not depend on which one was
+written.
+
+**Blast radius.** Five exports converted before and after (19,773 scripts):
+only the call text of these reads changes, every other line and file is
+byte-identical.
+
+| Export | Scripts | Reads | On |
+|---|---|---|---|
+| Oblivion.esm | 5 | 7 | 5 container scripts |
+| Unofficial Oblivion Patch | 1 | 4 | 1 container script |
+| Knights.esp, DLCFrostcrag.esp, one third-party plugin | 0 | 0 | |
+
+In Oblivion.esm: `CGChest02SCRIPT`, `Dark07CabinetScript` (3 reads),
+`Dark11ChorrolDropScript`, `Dark12DeadDropScript` and `Dark15DeadDropScript`.
+The patch adds its own `Dark07CabinetScript` (4 reads). N is 1 in all eleven.
+Every N was checked against the export text by a second reader, the same
+reader predicted this exact set from the TES4 sources, and its list of reads
+is the list of calls the rule itself saw during the conversion.
+
+Of the 1,272 `GetItemCount` reads in those sources (scripts, stage results,
+dialogue results) 11 convert. What the rule left alone:
+
+| Reads | Why |
+|---|---|
+| 822 | on the player |
+| 382 | an item the base does not list |
+| 18 | a receiver that is a script variable |
+| 14 | the script also takes the item out of the receiver |
+| 8 | a bare call in a script a leveled list's template carries |
+| 7 | a receiver written as a raw FormID |
+| 3 | a bare call in a dialogue result |
+| 2 | a bare call in a magic-effect script |
+| 2 | a count of -1 |
+| 2 | an item behind a leveled list (one script and the patch's copy of it) |
+| 1 | the three records carrying the script disagree (one lists the item) |
+
+None is listed twice, none names a leveled list as its item. The 14 are
+`XPEbroccaCrematorySCRIPT` (6), `EdlaDarkHeartSCRIPT`, `FGC02Thief` and
+`DANamiraPriestScript` in Oblivion.esm, and the patch's `Dark09AdamusScript`
+(3), `UOPDark07MedicineFixScript` and one `Dark07Medicine` stage result. The 8
+are `SE14AttackCountScript` (6), `MQ12GoblinInventorySCRIPT` and
+`MQ12UndeadInventorySCRIPT`.
+
+**Not fixed here.**
+
+- **A read the rule leaves plain** answers as before: whatever the native
+  count is, by the reading above 0 until the inventory is built. That includes
+  the 14 and the 8. `DANamiraPriestScript` is one where the removal comes long
+  after the read: telling that apart needs the order statements run in, which
+  the rule does not look at.
+- **`RemoveItem` on a never-opened container** (the wiki note above). In the
+  five exports 131 of 1,699 `RemoveItem` / `RemoveItemNS` calls take an item
+  that the receiver's base record lists (the receiver and the count read as in
+  the rule, the template guard aside): 75 in Oblivion.esm (8 on containers, 67
+  on actors), 49 in the patch's export, 5 in Knights.esp, 2 in the third-party
+  plugin. 13 more in Oblivion.esm name a leveled list the base lists. They
+  convert to the plain native.
+- **The condition function.** 771 conditions in Oblivion.esm call
+  `GetItemCount` (CTDA function 47: 687 on dialogue, 72 on packages, 12 on
+  quests), 97 in the patch's export, 5 in Knights.esp. They are converted as
+  conditions and do not pass through this rule. Whether a condition reads the
+  same 0 was not measured.
+
+<a id="getitemcount-no-count-subrecord"></a>
+**Converted containers carry no count subrecord.** In one built plugin of the
+base game all 873 CONT records were read: 816 hold CNTO entries and none holds
+COCT, the subrecord that counts them (an NPC_ of the same plugin does carry
+it). Whether this bears on the symptom is open. The function needs
+`GetNumItems` above 0 on a reference never built; if the engine does not read
+such a list at all, it answers the plain 0: no worse than before, and not
+fixed.
+
+**Not verified.**
+
+- Not yet seen in game. The tests pin the emitted text, the item lists, the
+  function's text and its decisions over a model of the natives.
+- A container in a loaded cell that nobody has opened was not measured. The
+  function tests the state, not the distance, so it does not depend on the
+  answer.
+- An actor's worn items: the importer moves them into an outfit, so the
+  converted base record can list fewer items than the authored one, or none.
+  With none left `GetNumItems` is 0 (it reads the base record's list, not the
+  outfit) and the read is the plain count, as before. Otherwise the read is N
+  while the inventory is unbuilt and whatever the outfit put there after.
+- A leveled list beside the direct entry that can yield the same item is not
+  looked at: the read is the direct count until the inventory is built.
+- Whether a reference can lose its container-changes data again (a cell
+  reset). One that did would read like one never built.
+- `Drop`, which also takes an item out of an inventory, is not among the
+  removals: only what converts to `RemoveItem` and `RemoveAllItems` is.

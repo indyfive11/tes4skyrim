@@ -68,6 +68,8 @@ class ScriptContext:
     frame_steps: dict = field(default_factory=dict)
     #: (command, axis) of each placed-pose read on the script's own reference (start_pose.read).
     start_pose: set = field(default_factory=set)
+    #: (receiver, item) source names of the calls that take items out of an inventory (authored_items.removals).
+    removals: frozenset = frozenset()
     #: Authored quest-script delay in seconds (FO3/FNV DATA.Delay); 0 = none.
     quest_delay: float = 0.0
     #: The script declares TES4's `fQuestDelayTime`, its own poll cadence.
