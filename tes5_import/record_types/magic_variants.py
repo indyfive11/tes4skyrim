@@ -11,6 +11,7 @@ script variant, then its Constant clone.
 import struct
 import threading
 
+from core import extensions
 from ..base.owned_records import MGEF_FAMILY_KEYWORDS
 from ..base.text_reader import get_int, get_str
 from ..base.writer import (pack_formid_subrecord, pack_record,
@@ -293,7 +294,8 @@ def build_av_variants(mgef_records: list, effect_records: list, writer) -> int:
         fid = generated_formid(writer, 'MGEF', edid, 'MGEF_AV', (code, av))
         full = get_str(src, 'FULL')
         head = pack_string_subrecord('FULL', _variant_name(full, name)) if full else b''
-        archetype, tes5_av = (A_SCRIPT, AV_NONE) if runtime else (get_archetype(code, src), tes5_av)
+        archetype, tes5_av = ((extensions.attribute_effect(code, av, src) or (A_SCRIPT, AV_NONE)) if runtime
+                              else (get_archetype(code, src), tes5_av))
         data = build_data(src, code, archetype, tes5_av, 0)
         head += pack_formid_subrecord('MDOB', menu_display_object(data))
         _emit(writer, fid, edid, head, data, mgef_tail(src), src,

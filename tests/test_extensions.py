@@ -6,6 +6,7 @@ Every add-on here is a stand-in made for one test, so this file needs neither th
 See: docs/reference/pipeline.md#optional-add-ons
 """
 
+import collections
 import json
 import os
 import struct
@@ -25,17 +26,29 @@ from tes5_import.overrides.builder import generic_substitutions
 from tes5_import.overrides.manifest import (MasterManifest, load_master_manifests, manifest_path,
                                             write_manifest)
 from tes5_import.record_types.common import VENDOR_KYWD
+from tes5_import.record_types import magic_variants
 from tes5_import.record_types.creature import convert_CREA
 from tes5_import.record_types.equipment import convert_WEAP
 from tes5_import.record_types.npc import convert_NPC_
 from tes5_import.registry import IMPORT_DISPATCH
-from tests.extension_records import CREA, NPC, WEAPONS, subrecords, weap
+from tests.extension_records import (CREA, EFFECTS, NPC, OTHER_ENTRIES, WEAPONS, VariantWriter, effect_entry,
+                                     mgef, subrecords, weap)
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 #: A subrecord and a keyword no converter writes.
 MARK = pack_subrecord('XXXX', b'\x01\x02\x03')
 MARK_KEYWORD = 0x01ABCDEF
+
+#: A pair (archetype, actor value) no converter writes on an attribute effect.
+MARK_EFFECT = (77, 99)
+
+#: A tuple subclass holding a pair: a type of its own, so not the tuple a hook returns.
+NAMED_PAIR = collections.namedtuple('NAMED_PAIR', 'archetype actor_value')
+
+#: (pair at a bound of one of its two fields, the pair one beyond it): unsigned and signed 32 bits.
+FIELD_BOUNDS = [((0, 30), (-1, 30)), ((2 ** 32 - 1, 30), (2 ** 32, 30)),
+                ((34, -2 ** 31), (34, -2 ** 31 - 1)), ((34, 2 ** 31 - 1), (34, 2 ** 31))]
 
 #: One source record a built master's manifest pairs with its converted FormID.
 MANIFEST_RECORDS = {'00000A11': {'fid': 0x01000A11, 'companions': []}}
@@ -111,6 +124,19 @@ def _install(monkeypatch, name: str, **hooks):
 def _quiet(_kind, _rec) -> bytes:
     """An ``actor_subrecords`` adding nothing: the least an add-on defines."""
     return b''
+
+
+def _variants(entries=(('FOAT', 4),)) -> list:
+    """[(EditorID, (archetype, actor value))] of the effect variants the converter builds for `entries`."""
+    writer = VariantWriter()
+    magic_variants.reset()
+    try:
+        magic_variants.build_av_variants([mgef(code) for code in EFFECTS],
+                                         [effect_entry(*entry) for entry in entries], writer)
+    finally:
+        magic_variants.reset()
+    return [(dict(subrecords(record))['EDID'].rstrip(b'\0').decode(),
+             struct.unpack_from('<Ii', dict(subrecords(record))['DATA'], 64)) for _sig, record in writer.records]
 
 
 def _enable(monkeypatch, *names):
@@ -203,8 +229,8 @@ def test_an_unknown_name_in_the_environment_ends_the_run_at_every_hook(monkeypat
     """A process that inherits a name it cannot load never skips it: every hook raises the run-ending error."""
     _enable(monkeypatch, 'no_such_add_on')
     for call in (loader.enabled, loader.reset, loader.build_stamp, lambda: loader.actor_subrecords('NPC_', NPC),
-                 lambda: loader.weapon_keywords({}, 1),
-                 lambda: loader.create_records(_Writer(), loader.RecordContext(True, {})),
+                 lambda: loader.weapon_keywords({}, 1), lambda: loader.attribute_effect('FOAT', 4, {}),
+                 _variants, lambda: loader.create_records(_Writer(), loader.RecordContext(True, {})),
                  lambda: loader.check_master_build('FakeMaster.esm.manifest.json', {})):
         with pytest.raises(loader.ExtensionError, match='there is no add-on "no_such_add_on"'):
             call()
@@ -255,12 +281,12 @@ def test_a_leftover_folder_without_a_package_is_not_an_add_on(monkeypatch, add_o
                                      {'weapon_keywords': [MARK_KEYWORD]}],
                          ids=['empty', 'misspelled hook', 'reset alone', 'a hook name that is not a function'])
 def test_a_package_that_defines_no_hook_is_not_an_add_on(monkeypatch, members):
-    """It would load, be named as enabled and do nothing: refused, with the three hook names in the message."""
+    """It would load, be named as enabled and do nothing: refused, with the four hook names in the message."""
     _install(monkeypatch, 'fake_idle', **members)
     with pytest.raises(SystemExit) as stop:
         loader.set_extensions({'extensions': ['fake_idle']})
     assert ('the package "fake_idle" defines none of the hooks '
-            'create_records, actor_subrecords, weapon_keywords') in str(stop.value)
+            'create_records, actor_subrecords, weapon_keywords, attribute_effect') == str(stop.value).split(': ', 2)[2]
     _enable(monkeypatch, 'fake_idle')
     with pytest.raises(loader.ExtensionError, match='defines none of the hooks'):
         loader.weapon_keywords({}, 1)
@@ -511,20 +537,23 @@ def test_with_no_add_on_every_hook_returns_its_neutral_value_untouched():
     assert loader.create_records(None, None) == {}
     assert loader.actor_subrecords('NPC_', None) == b''
     assert loader.weapon_keywords(None, 1) == []
+    assert loader.attribute_effect(None, None, None) is None
     assert loader.reset() is None
     assert loader.build_stamp() == {}
     assert loader.check_master_build(None, {}) is None
 
 
 def test_with_no_add_on_no_add_on_code_is_imported():
-    """A fresh process that converts an actor and a weapon never imports the extensions package."""
+    """A fresh process that converts an actor, a weapon and an attribute effect never imports the extensions package."""
     code = ('import sys\n'
             'from core import extensions\n'
             'from tes5_import.record_types.npc import convert_NPC_\n'
             'from tes5_import.record_types.creature import convert_CREA\n'
             'from tes5_import.record_types.equipment import convert_WEAP\n'
-            'from tests.extension_records import CREA, NPC, weap\n'
+            'from tes5_import.record_types.magic_variants import build_av_variants\n'
+            'from tests.extension_records import CREA, NPC, VariantWriter, effect_entry, mgef, weap\n'
             'convert_NPC_(NPC), convert_CREA(CREA), convert_WEAP(weap(0, "Weapons\\\\Iron\\\\LongSword.NIF"))\n'
+            'assert build_av_variants([mgef("FOAT")], [effect_entry("FOAT", 4)], VariantWriter()) == 1\n'
             'extensions.create_records(None, None)\n'
             'print(sorted(m for m in sys.modules if m.split(".")[0] == extensions.PACKAGE))\n')
     env = {k: v for k, v in os.environ.items() if k != loader.EXTENSIONS_ENV_VAR}
@@ -619,6 +648,18 @@ BAD_HOOKS = [
     ('weapon_keywords', lambda rec, anim: [True], 'not a list of FormIDs'),
     ('weapon_keywords', lambda rec, anim: [-1], 'weapon_keywords returned [-1], not a list of FormIDs'),
     ('weapon_keywords', lambda rec, anim: [2 ** 32], 'not a list of FormIDs'),
+    ('attribute_effect', _raising, 'attribute_effect raised ZeroDivisionError: division by zero'),
+    ('attribute_effect', lambda code, attribute, rec: [34, 30],
+     'attribute_effect returned [34, 30], not None or a tuple (archetype, actor value) of two ints'),
+    ('attribute_effect', lambda code, attribute, rec: 34, 'not None or a tuple'),
+    ('attribute_effect', lambda code, attribute, rec: (34,), 'not None or a tuple'),
+    ('attribute_effect', lambda code, attribute, rec: (34, 30, 0), 'not None or a tuple'),
+    ('attribute_effect', lambda code, attribute, rec: ('34', 30), 'not None or a tuple'),
+    ('attribute_effect', lambda code, attribute, rec: (34, 30.0), 'not None or a tuple'),
+    ('attribute_effect', lambda code, attribute, rec: (True, 30), 'not None or a tuple'),
+    ('attribute_effect', lambda code, attribute, rec: False, 'attribute_effect returned False, not None or'),
+    ('attribute_effect', lambda code, attribute, rec: {34: 30}, 'not None or a tuple'),
+    ('attribute_effect', lambda code, attribute, rec: NAMED_PAIR(34, 30), 'not None or a tuple'),
     ('reset', _raising, 'reset raised ZeroDivisionError: division by zero'),
 ]
 
@@ -640,6 +681,7 @@ def test_a_hook_that_raises_or_returns_another_type_ends_the_run_naming_itself(m
     calls = {'create_records': lambda: loader.create_records(_Writer(), loader.RecordContext(True, {})),
              'actor_subrecords': lambda: convert_NPC_(NPC),
              'weapon_keywords': lambda: convert_WEAP(weap(0, 'Weapons\\Iron\\LongSword.NIF')),
+             'attribute_effect': _variants,
              'reset': loader.reset}
     with pytest.raises(loader.ExtensionError) as stop:
         calls[hook]()
@@ -794,3 +836,115 @@ def test_a_weapons_hook_keywords_follow_the_vendor_keyword_and_are_the_only_diff
         [pair for pair in off if pair[0] not in ('KSIZ', 'KWDA')]
     monkeypatch.delenv(loader.EXTENSIONS_ENV_VAR)
     assert subrecords(convert_WEAP(rec)) == off
+
+
+# ---------------------------------------------------------------------------
+# The attribute effect hook
+# ---------------------------------------------------------------------------
+
+def test_a_package_defining_the_attribute_hook_alone_is_an_add_on_and_a_build_names_it(monkeypatch, add_on_folder):
+    """The fourth hook makes a package an add-on by itself, and its name goes into the build's stamp."""
+    (add_on_folder / 'fake_effect').mkdir()
+    (add_on_folder / 'fake_effect' / '__init__.py').write_text(
+        'def attribute_effect(code, attribute, rec):\n    return (77, 99)\n', encoding='utf-8')
+    loader.set_extensions({'extensions': ['fake_effect']})
+    assert [module.__name__ for module in loader.enabled()] == ['extensions.fake_effect']
+    assert loader.attribute_effect('FOAT', 4, {}) == MARK_EFFECT
+    assert loader.build_stamp() == {'extensions': ['fake_effect']}
+    assert loader.create_records(_Writer(), loader.RecordContext(True, {})) == {}
+    assert loader.actor_subrecords('NPC_', NPC) == b'' and loader.weapon_keywords({}, 1) == []
+
+
+@pytest.mark.parametrize('held, beyond', FIELD_BOUNDS, ids=[str(beyond) for _held, beyond in FIELD_BOUNDS])
+def test_an_attribute_pair_must_fit_the_two_fields_it_is_packed_into(monkeypatch, held, beyond):
+    """A pair at a field's bound is written as it is; one beyond it ends the run naming the add-on and the value."""
+    answers = []
+    _install(monkeypatch, 'fake_wide', attribute_effect=lambda code, attribute, rec: answers[-1])
+    _enable(monkeypatch, 'fake_wide')
+    answers.append(held)
+    assert loader.attribute_effect('FOAT', 4, {}) == held
+    assert _variants() == [('TES4FOATSpeed', held)]
+    answers.append(beyond)
+    for ask in (lambda: loader.attribute_effect('FOAT', 4, {}), _variants):
+        with pytest.raises(loader.ExtensionError) as stop:
+            ask()
+        assert str(stop.value) == (
+            f'ERROR: add-ons: "fake_wide" attribute_effect returned {beyond!r}, not None or a tuple (archetype, '
+            f'actor value) of two ints that fit their fields (0 to 4294967295, -2147483648 to 2147483647)')
+
+
+def test_the_two_ranges_are_what_the_two_fields_pack():
+    """The loader's ranges are what the converter's pack of the pair takes: each bound fits, one beyond does not."""
+    for held, beyond in FIELD_BOUNDS:
+        struct.pack('<Ii', *held)
+        assert held[0] in loader.ARCHETYPE_RANGE and held[1] in loader.ACTOR_VALUE_RANGE
+        assert not (beyond[0] in loader.ARCHETYPE_RANGE and beyond[1] in loader.ACTOR_VALUE_RANGE)
+        with pytest.raises(struct.error):
+            struct.pack('<Ii', *beyond)
+
+
+def test_the_attribute_hook_is_asked_for_a_morrowind_attribute_effect_too(monkeypatch):
+    """A record with a Morrowind effect index of an attribute effect reaches the hook under its own EditorID;
+    one of a skill effect, like an Oblivion skill effect, does not."""
+    seen = []
+    _install(monkeypatch, 'fake_one', attribute_effect=lambda code, attribute, rec: seen.append(
+        (code, attribute, rec.get('MorrowindEffectIndex'))))
+    _enable(monkeypatch, 'fake_one')
+    fortify = dict(mgef('FOAT'), EditorID='MW079FortifyAttribute', MorrowindEffectIndex='79')
+    skill = dict(mgef('FOSK'), EditorID='MW083FortifySkill', MorrowindEffectIndex='83')
+    writer = VariantWriter()
+    magic_variants.reset()
+    magic_variants.build_av_variants(
+        [fortify, skill, mgef('DRAT'), mgef('FOSK')],
+        [effect_entry('MW079FortifyAttribute', 4), effect_entry('MW083FortifySkill', 14), effect_entry('DRAT', 0),
+         effect_entry('FOSK', 14)], writer)
+    magic_variants.reset()
+    assert seen == [('DRAT', 0, None), ('MW079FortifyAttribute', 4, '79')]
+    assert len(writer.records) == 4
+
+
+def test_the_attribute_hook_gives_the_one_answer_and_none_is_no_answer(monkeypatch):
+    """An add-on answering None is passed over; add-ons that agree give their one answer."""
+    _install(monkeypatch, 'fake_silent', attribute_effect=lambda code, attribute, rec: None)
+    _install(monkeypatch, 'fake_one', attribute_effect=lambda code, attribute, rec: (34, 30 + attribute))
+    _install(monkeypatch, 'fake_same', attribute_effect=lambda code, attribute, rec: (34, 30 + attribute))
+    _install(monkeypatch, 'fake_other', actor_subrecords=_quiet)
+    for names, answer in ((('fake_silent',), None), (('fake_other',), None), (('fake_one',), (34, 31)),
+                          (('fake_silent', 'fake_one'), (34, 31)), (('fake_one', 'fake_silent'), (34, 31)),
+                          (('fake_one', 'fake_other', 'fake_same'), (34, 31))):
+        _enable(monkeypatch, *names)
+        assert loader.attribute_effect('FOAT', 1, {}) == answer, names
+
+
+@pytest.mark.parametrize('names', [('fake_one', 'fake_two'), ('fake_two', 'fake_one'),
+                                   ('fake_one', 'fake_silent', 'fake_two')])
+def test_two_add_ons_giving_one_effect_different_forms_end_the_run(monkeypatch, names):
+    """The run-ending error names both add-ons, the effect and the two forms; neither answer is used."""
+    _install(monkeypatch, 'fake_one', attribute_effect=lambda code, attribute, rec: (34, 30))
+    _install(monkeypatch, 'fake_two', attribute_effect=lambda code, attribute, rec: (34, 26) if attribute == 4 else None)
+    _install(monkeypatch, 'fake_silent', attribute_effect=lambda code, attribute, rec: None)
+    _enable(monkeypatch, *names)
+    assert loader.attribute_effect('FOAT', 3, {}) == (34, 30)
+    with pytest.raises(loader.ExtensionError) as stop:
+        loader.attribute_effect('FOAT', 4, {})
+    assert str(stop.value) == ('ERROR: add-ons: the add-ons fake_one, fake_two give the effect FOAT of attribute 4 '
+                               'different forms: [(34, 26), (34, 30)]')
+    with pytest.raises(loader.ExtensionError, match='different forms'):
+        _variants()
+
+
+def test_an_attribute_effects_hook_value_is_its_archetype_and_actor_value_and_the_only_difference(monkeypatch):
+    """Off: no call, a Script effect on no actor value. On: the hook is asked for the attribute effects alone,
+    with the code, the attribute and the exported record, and its pair lands in the record's two fields."""
+    seen = []
+    _install(monkeypatch, 'fake_one', attribute_effect=lambda code, attribute, rec: seen.append(
+        (code, attribute, rec)) or (MARK_EFFECT if attribute == 4 else None))
+    entries = (('FOAT', 4), ('DRAT', 0)) + OTHER_ENTRIES
+    off = _variants(entries)
+    assert seen == [] and off == [('TES4DRATStrength', (1, -1)), ('TES4FOATSpeed', (1, -1)), ('TES4FOSKBlade', (34, 6))]
+    _enable(monkeypatch, 'fake_one')
+    assert _variants(entries) == [('TES4DRATStrength', (1, -1)), ('TES4FOATSpeed', MARK_EFFECT),
+                                  ('TES4FOSKBlade', (34, 6))]
+    assert seen == [('DRAT', 0, mgef('DRAT')), ('FOAT', 4, mgef('FOAT'))]
+    monkeypatch.delenv(loader.EXTENSIONS_ENV_VAR)
+    assert _variants(entries) == off

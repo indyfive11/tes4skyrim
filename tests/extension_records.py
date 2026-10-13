@@ -1,6 +1,7 @@
 """Invented exported records the add-on tests convert, and a subrecord splitter."""
 
 import struct
+import zlib
 
 NPC = {'Signature': 'NPC_', 'FormID': '00000500', 'RecordFlags': '0', 'EditorID': 'TestFencer',
        'ACBS.Flags': '0', 'ACBS.Level': '5', 'ACBS.CalcMin': '5', 'ACBS.CalcMax': '10',
@@ -26,6 +27,45 @@ WEAPONS = {
     'bow': (5, 'Weapons\\Iron\\Bow.NIF', 7),
     'staff': (4, 'Weapons\\Staff\\Staff.NIF', 8),
 }
+
+#: TES4 effect code -> (name, TES4 DATA.Flags) of an invented MGEF: five attribute families, a skill one, a fixed one.
+EFFECTS = {'FOAT': ('Fortify Attribute', 0x00100012), 'DRAT': ('Drain Attribute', 0x00100017),
+           'DGAT': ('Damage Attribute', 0x00100015), 'REAT': ('Restore Attribute', 0x00100010),
+           'ABAT': ('Absorb Attribute', 0x00100017), 'FOSK': ('Fortify Skill', 0x00080012),
+           'FOHE': ('Fortify Health', 0x00000012)}
+
+#: The TES4 actor value an entry of each code that is no attribute effect names: Blade, and none.
+OTHER_ENTRIES = (('FOSK', 14), ('FOHE', -1))
+
+
+def mgef(code: str, **fields) -> dict:
+    """An exported MGEF of TES4 effect code `code`, carrying a hit shader; `fields` are added."""
+    name, flags = EFFECTS[code]
+    return {'Signature': 'MGEF', 'FormID': f'{0x1000 + sorted(EFFECTS).index(code):08X}', 'EditorID': code,
+            'FULL': name, 'DESC': f'{name} of an invented plugin.', 'DATA.School': '5',
+            'DATA.Flags': str(flags), 'DATA.BaseCost': '0.6', 'DATA.EffectShader': '00012345', **fields}
+
+
+def effect_entry(code: str, actor_value: int) -> dict:
+    """An exported item with one entry of `code` on TES4 actor value `actor_value`."""
+    return {'Signature': 'SPEL', 'EffectCount': '1', 'Effect[0].EFID': code,
+            'Effect[0].ActorValue': str(actor_value)}
+
+
+class VariantWriter:
+    """The writer calls the effect-variant builder makes."""
+
+    def __init__(self):
+        """Start with nothing written."""
+        self.records = []
+
+    def derive_formid(self, site, key):
+        """A FormID of this plugin that is a function of (site, key) alone."""
+        return zlib.crc32(f'{site}|{key!r}'.encode()) & 0x00FFFFFF
+
+    def add_record(self, sig, data):
+        """Keep each written record."""
+        self.records.append((sig, data))
 
 
 def weap(tes4_type: int, model: str) -> dict:

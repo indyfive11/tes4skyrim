@@ -10,6 +10,7 @@ for.
 |---|---|
 | [`oblivion_weapon_rule`](oblivion_weapon_rule/README.md) | A weapon hit a converted actor deals or takes follows Oblivion's damage rule |
 | [`weapon_type_keywords`](weapon_type_keywords/README.md) | A converted weapon carries Skyrim's keyword for its weapon type |
+| [`direct_attribute_magic`](direct_attribute_magic/README.md) | Oblivion's attribute magic acts directly on a Skyrim value |
 
 ## Enabling one
 
@@ -26,7 +27,7 @@ that names the cause, when a listed name is not an add-on:
   available), or it is listed twice;
 - its folder holds no package, as a leftover folder with only `__pycache__`
   in it does;
-- its package defines none of the three hooks below.
+- its package defines none of the four hooks below.
 
 A name is taken as written; one with a stray space is not an add-on name. The
 run also stops on a slip of the key itself: `extensions` in another case, or
@@ -67,13 +68,14 @@ list in `TESCONV_EXTENSIONS`.
 
 With no add-on enabled every file the converter writes is byte for byte what
 it writes without the `extensions/` folder: each hook returns a neutral value
-(`{}`, `b''`, `[]`) without importing any add-on, the call sites only append
-that value, and the manifest gets no key. `tests/test_extensions.py` holds the
-proof for NPC_, CREA and WEAP records and for the manifest file; it uses
-stand-in add-ons only, so it runs without this folder. Each add-on's own tests
-show that switching it on changes nothing but what it documents.
+(`{}`, `b''`, `[]`, `None`) without importing any add-on, the call sites only
+append that value or keep their own, and the manifest gets no key.
+`tests/test_extensions.py` holds the proof for NPC_, CREA, WEAP and attribute
+MGEF records and for the manifest file; it uses stand-in add-ons only, so it
+runs without this folder. Each add-on's own tests show that switching it on
+changes nothing but what it documents.
 
-## The three hooks
+## The four hooks
 
 The loader, `core/extensions.py`, is the only add-on code in the converter.
 An add-on's package defines any of these functions:
@@ -83,17 +85,21 @@ An add-on's package defines any of these functions:
 | `create_records(writer, context)` | once per plugin, where the converter creates its own support records | `{EditorID: FormID}` of the records it wrote or adopted that a script or a later add-on may name |
 | `actor_subrecords(kind, rec)` | for every converted actor, right after its spell list; `kind` is `'NPC_'` or `'CREA'`, `rec` the exported record | packed subrecords, `b''` for none |
 | `weapon_keywords(rec, anim_type)` | for every converted WEAP; `anim_type` is the Skyrim animation type it was given | a list of keyword FormIDs written after the converter's own, `[]` for none |
+| `attribute_effect(code, attribute, rec)` | for every magic effect written for an attribute effect the runtime plugin acts on, an Oblivion one or a Morrowind one; `code` is the exported effect record's EditorID (Oblivion's four-letter effect code; `MW<index><name>` on a Morrowind record), `attribute` the attribute index (0 Strength to 7 Luck in both games), `rec` the exported effect record, which carries `MorrowindEffectIndex` when it is a Morrowind one | a tuple `(archetype, actor value)` the effect is written with, each an int that fits its 32-bit field (the archetype unsigned, the actor value signed, `-1` for none), `None` to leave the converter's form |
 | `reset()` | before the first `create_records` of each plugin | nothing; clears state kept per plugin |
 
-A hook that raises, or returns another type than this table names, ends the
+A hook that raises, or returns another type than this table names or an
+`attribute_effect` pair outside its fields' range, ends the
 run with an error naming the add-on and the hook. It is never turned into a
-skipped record. Two more rules on what a hook returns:
+skipped record. Three more rules on what a hook returns:
 
 - `create_records` may not return an EditorID the converter holds under
   another FormID, nor one an earlier add-on returned; either ends the run.
 - A keyword `weapon_keywords` returns twice, or two add-ons return, is written
   once. The converter's own keywords are not compared, so return none of
   those.
+- `attribute_effect` gives one effect one form: an add-on answering `None`
+  is not counted, and two add-ons answering differently end the run.
 
 `context` is a `core.extensions.RecordContext`:
 
@@ -114,7 +120,7 @@ skipped record. Two more rules on what a hook returns:
 
 1. Create `extensions/<name>/__init__.py`; `<name>` is lowercase letters,
    digits and underscores, and is what the settings list.
-2. Define the hooks it needs, at least one of the three, at package level
+2. Define the hooks it needs, at least one of the four, at package level
    (import them from a module beside it).
 3. Import nothing of the converter except what the loader's docstring lists:
    the packing helpers of `tes5_import.base.writer`, the record accessors of

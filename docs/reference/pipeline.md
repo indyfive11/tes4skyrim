@@ -237,7 +237,7 @@ that is not an add-on, on a slip of the key itself (`extension`,
 when a plugin is imported with another list than its master was built with: a
 build with add-ons records the list as `"extensions"` in its
 `<plugin>.manifest.json`, and a master's list and its dependent's must be
-equal, order included. The loader and its three hooks are
+equal, order included. The loader and its four hooks are
 `core/extensions.py`; what each add-on does and how to write one is in
 [extensions/README.md](../../extensions/README.md).
 

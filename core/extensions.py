@@ -8,7 +8,7 @@ environment inherits it; nothing more is promised of a pool worker. Absent or
 empty means no add-on. ``python -m tes5_import`` does not read the list and
 runs with none.
 
-This file is the only add-on code in the converter. It offers three hooks, each
+This file is the only add-on code in the converter. It offers four hooks, each
 calling the same-named function of every enabled add-on that defines it, in the
 listed order:
 
@@ -24,6 +24,17 @@ listed order:
     is the Skyrim animation type the weapon was given. A keyword two add-ons
     return, or one returns twice, is written once; the conversion's own are
     not compared, so an add-on returns none of those. Neutral value: ``[]``.
+``attribute_effect(code, attribute, rec) -> (archetype, actor value) | None``
+    The Skyrim archetype and actor value of the magic effect written for one
+    attribute effect the runtime plugin acts on, whichever game it is from:
+    an Oblivion one or a Morrowind one. ``code`` is the exported effect
+    record's EditorID (Oblivion's four-letter effect code; a Morrowind
+    record's is ``MW<index><name>``), ``attribute`` the attribute index, 0
+    Strength to 7 Luck in both games, and ``rec`` the exported effect record,
+    which carries ``MorrowindEffectIndex`` when it is a Morrowind one. None
+    leaves the conversion's own form, and two add-ons answering differently
+    end the run. The pair is packed as an unsigned and a signed 32-bit field.
+    Neutral value: ``None``.
 
 An add-on that keeps state per plugin defines ``reset()``, which runs for every
 enabled add-on before the first ``create_records`` of each plugin.
@@ -31,8 +42,9 @@ enabled add-on before the first ``create_records`` of each plugin.
 **These end the run**, with a SystemExit that no ``except Exception`` around a
 single record swallows (an `ExtensionError`; from `set_extensions`, one that
 names the config key): a name no real package answers to, a package defining
-none of the three hooks, a hook that raises or returns another type than
-listed above, a returned EditorID the converter or an earlier add-on already
+none of the four hooks, a hook that raises or returns another type than
+listed above, an ``attribute_effect`` pair that does not fit its two fields,
+a returned EditorID the converter or an earlier add-on already
 holds, and a master built with another add-on list than the plugin that
 depends on it. That list is recorded in the master's manifest, and its order
 counts. An error raised while an add-on's package is being imported is not
@@ -79,7 +91,7 @@ EXTENSIONS_ENV_VAR = "TESCONV_EXTENSIONS"
 PACKAGE = "extensions"
 
 #: The hooks; a package defining none of them is not an add-on.
-HOOKS = ("create_records", "actor_subrecords", "weapon_keywords")
+HOOKS = ("create_records", "actor_subrecords", "weapon_keywords", "attribute_effect")
 
 #: Key of a built plugin's manifest: the add-ons it was built with, in hook order; absent for none.
 MANIFEST_KEY = "extensions"
@@ -283,11 +295,25 @@ def _is_keywords(value) -> bool:
     return isinstance(value, (list, tuple)) and all(_is_formid(fid) for fid in value)
 
 
+#: What the two MGEF DATA fields of an attribute effect's pair hold: packed '<I' and '<i'.
+ARCHETYPE_RANGE, ACTOR_VALUE_RANGE = range(2 ** 32), range(-2 ** 31, 2 ** 31)
+
+
+def _is_effect(value) -> bool:
+    """Whether `value` is None or a tuple of two ints, each fitting its field."""
+    return value is None or (type(value) is tuple and len(value) == 2
+                             and all(type(part) is int for part in value)
+                             and value[0] in ARCHETYPE_RANGE and value[1] in ACTOR_VALUE_RANGE)
+
+
 #: Hook -> (the test its returned value must pass, that type in words).
 RETURNS = {
     "create_records": (_is_forms, "a dict {EditorID: FormID}"),
     "actor_subrecords": (lambda value: isinstance(value, bytes), "bytes"),
     "weapon_keywords": (_is_keywords, "a list of FormIDs"),
+    "attribute_effect": (_is_effect, "None or a tuple (archetype, actor value) of two ints that fit their "
+                                     f"fields ({ARCHETYPE_RANGE[0]} to {ARCHETYPE_RANGE[-1]}, "
+                                     f"{ACTOR_VALUE_RANGE[0]} to {ACTOR_VALUE_RANGE[-1]})"),
     "reset": (lambda value: True, "anything"),
 }
 
@@ -346,3 +372,19 @@ def weapon_keywords(rec: dict, anim_type: int) -> list:
     found = (fid for module in _defining("weapon_keywords")
              for fid in _call(module, "weapon_keywords", rec, anim_type) if fid)
     return list(dict.fromkeys(found))
+
+
+def attribute_effect(code: str, attribute: int, rec: dict):
+    """The add-ons' (archetype, actor value) for an attribute effect's magic effect; None for none.
+
+    An add-on answering None is not counted; two that answer differently end the run.
+    """
+    answers = {}
+    for module in _defining("attribute_effect"):
+        pair = _call(module, "attribute_effect", code, attribute, rec)
+        if pair is not None:
+            answers.setdefault(pair, _short(module))
+    if len(answers) > 1:
+        raise ExtensionError(f'the add-ons {", ".join(sorted(answers.values()))} give the effect {code} of '
+                             f'attribute {attribute} different forms: {sorted(answers)}')
+    return next(iter(answers), None)
