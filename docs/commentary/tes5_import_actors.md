@@ -793,7 +793,10 @@ Oblivion:NPCs#Health). So a faithful conversion solves for the offset:
 - **manual**: `offset = pool − 50`, Level untouched.
 - **auto-calc**: `offset = pool − 50 − (L−1)*5`. Converted classes write zero HMS
   weights, the same as creature classes, so no class share lands on top.
-- **PC Level Mult**: `offset = pool − 50`; the level term tracks the player.
+- **PC Level Mult** (NPCs): `offset = pool − 50`; the level term tracks the player.
+  A level-scaled CREATURE does not take this rule: Oblivion multiplies its stored
+  health, spell points and fatigue by its level, so it is written with manual
+  stats and [level pools](#level-pools).
 
 The old rule subtracted `(L−1)*5` from every NPC. A manual NPC got that much less
 health, and every one whose pool was below `50 + (L−1)*5` spawned dead: Oblivion
@@ -1069,18 +1072,205 @@ collapse the elephant bull/cow/calf to a single size.
 
 A creature's generated RACE is SHARED across every CREA with the same mesh
 folder, so it carries only a flat base and the per-record ACBS offsets carry
-the creature's whole TES4 pool (`creature_health_offset`).
+the creature's whole TES4 pool (`creature_health_offset`). A level-scaled
+creature has no single pool; its offsets carry the pools of a level-1 player
+and its [level pool](#level-pools) abilities the rest. The offset is per record,
+so creatures sharing a generated race still each get their own health.
+
+A TES4 pool of 0 is pinned dead (offset −32768): those are intentional corpse
+props (45 in Oblivion.esm) that ship dead in Oblivion too, including the
+PC-Level-Mult ones whose runtime level term would otherwise revive them.
 
 Magicka is the same split: the shared race's starting magicka is 0, so the
 actor's whole TES4 SpellPoints pool rides in `ACBS.MagickaOffset`. Without it a
 spell-knowing creature has 0 magicka, cannot pay any cast cost, and never casts
 — vanilla's atronach carries the same split (race base + MagickaOffset 50).
 
+Stamina is not split that way for a fixed-level creature: the shared race's
+Starting Stamina is its FOUNDING record's Fatigue (`_race_stamina`) and
+`ACBS.StaminaOffset` is 0, so every creature of a race starts from the
+founder's Fatigue. Only a level-scaled creature gets an offset of its own
+(`creature_stamina_offset`, see [level pools](#level-pools) and
+[the race's start](#stand-in-race-start)). The race's
+magicka regeneration is likewise the founder's (`fMagickaReturnBase +
+fMagickaReturnMult × Willpower`, RACE DATA offset 88); level pools leave it alone.
+
 TES4 flag 0x80 "PC Level Offset" makes Level an additive offset from the
 player's; TES5 reuses the bit as "PC Level Mult", where Level is a fixed-point
 multiplier (1000 = 1.0x). A raw TES4 offset (0..5) read as a multiplier is
 0.000x..0.005x, which the CK clamps to the 0.10 minimum, so a PC-levelled actor
-defaults to 1.0x instead.
+defaults to 1.0x instead. The offset itself is not lost for a creature's pools:
+the [level pool](#level-pools) conditions carry it.
+
+### <a id="level-pools"></a>Level pools: a level-scaled creature's health, magicka and stamina grow with the player
+
+**Code:** `tes5_import/actors/level_pools.py` (`Pool`, `pool_numbers`,
+`level_span`, `level_pool_offset`, `race_start`, `build_level_pools`),
+`creature_races.py` (`creature_health_offset`, `creature_stamina_offset`),
+`record_types/creature.py` (`crea_acbs`, `crea_dnam`, `crea_spell_subs`),
+`overrides/builder.py` (`_settle_level_pools`), audited by
+`tools/audit/actor_health_audit.py`.
+
+For a creature with PC Level Offset, Oblivion's health is not `DATA.Health` but
+`DATA.Health × creature level`, and the same holds for `ACBS.SpellPoints` and
+`ACBS.Fatigue` (Construction Set wiki, "Stats Tab - Creatures", of Health, Spell
+Points and Fatigue alike: "For PC level offset creatures the entered value is
+multiplied by the level of the creature"). The creature's level is the player's
+plus `ACBS.Level`, a signed offset, clamped to `CalcMin`/`CalcMax` (0 = no bound)
+and never below 1. The old conversion wrote the stored value as the whole pool
+on an auto-calc actor with PC Level Mult 1.0, so a level-scaled creature kept a
+fraction of its Oblivion health: stored health plus the engine's 5 per player
+level.
+
+Skyrim has no per-level multiplier on an actor record, but vanilla grows a pool
+with the player's level out of plain records. `CWMissionBoostAllyHealth`
+(Skyrim.esm `0010D96F`) is an Ability of three `AbFortifyHealth` effects,
+magnitude 100 each, the second and third under one condition:
+`GetLevel >= 20` / `>= 40`, run on Reference `PlayerRef`. The conversion writes
+the same thing, no script, once per pool:
+
+| Pool | TES4 field | Effect (Skyrim.esm) | Ability | FormID site |
+|---|---|---|---|---|
+| health | `DATA.Health` | `AbFortifyHealth` `000A1A3F` | `TES4LevelPoolH…` | `CREA_LEVEL_POOL` |
+| magicka | `ACBS.SpellPoints` | `AbFortifyMagickaHighElf` `000CDA4B` | `TES4LevelPoolM…` | `CREA_LEVEL_POOL_MAGICKA` |
+| stamina | `ACBS.Fatigue` | `AbFortifyStamina` `00091F77` | `TES4LevelPoolS…` | `CREA_LEVEL_POOL_STAMINA` |
+
+All three effects are archetype PeakValueModifier, constant effect, on self, on
+actor value 24 / 25 / 26 (read from Skyrim.esm MGEF DATA).
+
+- `L0 = max(1, clamp(1 + offset, CalcMin, CalcMax))` is the creature's level
+  beside a level-1 player. `top` is `PLAYER_LEVEL_CEILING + offset` (never below
+  `L0`), or `max(CalcMax, L0)` when that is lower. The three pools share them.
+- The creature has MANUAL stats (ACBS 0x10 clear), so the engine adds
+  [no level term](#health-offset) and no class share. PC Level Mult and Level
+  1000 stay.
+- The ACBS offsets carry the pools of a level-1 player, each relative to what
+  the creature's own race starts with: `offset = stored × L0 − the race's
+  starting value`, for health, magicka and stamina alike
+  ([the race's start](#stand-in-race-start)). A generated race starts at 50
+  health, 0 magicka and its founder's Fatigue. DNAM offsets 36 / 38 / 40 cache
+  `stored × L0` (u16, so at most 65,535).
+- One Ability per pool, `TES4LevelPool<H|M|S><stored>O<offset>N<CalcMin>X<CalcMax>`
+  (`m` before a negative offset), holds one effect of magnitude `stored` per
+  creature level `L` in `L0+1 … top`, each under `GetLevel >= L − offset` on
+  PlayerRef. The condition bytes are vanilla's but for the float. Beside a level
+  `P` player the active effects add `stored × (clamp(P + offset, L0, top) − L0)`,
+  so the pool is `stored × clamp(P + offset, L0, top)`.
+- A base pool the int16 offset cannot hold puts the remainder into one
+  unconditional first effect of that pool's ability. The split is taken over
+  a fixed base (`base_split`): 50 for health, the absolute pool for magicka and
+  stamina (32767 in the offset's share). So an ability never depends on which
+  race its creature has, and the offset alone takes up the difference between
+  that base and the race's real start.
+- The abilities are the last SPLO entries, health, magicka, stamina. Each
+  FormID is derived from its site and the four numbers, so creatures that scale
+  alike share one and a dependent plugin adopts its master's by EditorID. The
+  health ability's EditorID and key are what they were before magicka and
+  stamina were added, so its FormID did not move. `L0 = top` (CalcMin = CalcMax)
+  needs no ability, and neither does a stored value of 0: its pool is 0 at every
+  level.
+
+A fixed-level creature and a zero-health corpse prop are untouched, and so is
+any FO3/FNV or Morrowind actor: there bit 0x80 and Level mean something else.
+The gate is the run's source game, plus the record itself: an FO3/FNV actor's
+export carries `ACBS.TemplateFlags`, which the TES4 exporter never writes, so a
+Fallout plugin the detector reads as TES4 (none of its marker record types) is
+still left alone. Attack damage of a level-scaled creature is not scaled here.
+
+An override in a dependent plugin gets its ACBS from `crea_acbs` and the rest
+from `_settle_level_pools`, which runs after every other mechanism:
+
+- **SPLO.** It drops the abilities of the master's numbers and appends the ones
+  of the plugin's; every other entry stays. When the two conversions' spell
+  lists differ in pools alone (an override of only `DATA.Health`, `SpellPoints`
+  or `Fatigue`), the convert-and-diff does not substitute the SPLO run at all:
+  the plugin's standalone conversion lacks whatever the master's run added from
+  state this run does not have.
+- **ACBS magicka and stamina offsets, DNAM cache.** `ACBS.SpellPoints` and
+  `ACBS.Fatigue` are no change at all on any other override (the builder lists
+  them as dropped fields), and an authored level or bound reaches only ACBS,
+  through a rebuild spec. So these bytes are rewritten here, where the two fresh
+  conversions disagree on them.
+- A fixed-level override of a fixed-level master is not touched.
+
+Limits:
+
+- **The ceiling.** `PLAYER_LEVEL_CEILING` is 81, the player level Skyrim reaches
+  with every skill at 100 once. No pool grows past the level its creature has
+  beside that player, whatever its CalcMax; a player levelled past it with
+  Legendary skills meets the level-81 pool.
+- **The number of effects.** One per level between `L0` and `top`, so at most 80
+  rungs per ability, 81 with an int16 remainder. Vanilla's own abilities carry
+  at most 8 effects. From the exports, each plugin's own creatures run through
+  `build_level_pools` standalone (no master adoption):
+
+  | Export | Level-scaled, health > 0 | Abilities H / M / S | Effects H / M / S | Largest | SPEL bytes | int16 remainder |
+  |---|---|---|---|---|---|---|
+  | Oblivion.esm | 283 of 914 | 113 / 59 / 114 | 6,268 / 3,113 / 6,331 | 80 | 1,072,395 | 0 |
+  | Knights.esp | 21 of 51 | 13 / 11 / 12 | 726 / 568 / 648 | 80 | 132,628 | 0 |
+  | DLCFrostcrag.esp | 5 of 5 | 5 / 4 / 5 | 208 / 130 / 208 | 81 | 37,736 | 1 (magicka) |
+
+  In Oblivion.esm 278 creatures get a health ability, 128 a magicka ability and
+  278 a stamina ability; 153 store 0 spell points, and 5 (2 of the casters) have
+  a single level. The one remainder is a DLCFrostcrag.esp creature whose level-1
+  magicka is 120,000; its DNAM cache stops at 65,535.
+- **Manual stats.** Clearing auto-calc takes the class's per-level share off the
+  creature's magicka and stamina, and its skills come from DNAM instead of the
+  class. The pools replace the share with Oblivion's own rule.
+- **Unconfirmed in game.** The numbers are checked from the written records
+  (`tests/test_level_pool_health.py`, `actor_health_audit.py`), not in Skyrim.
+  That a manual actor's magicka and stamina are the race's start plus the ACBS
+  offset with no level term is inferred from the health case in
+  [the offset section](#health-offset); only health's getter was disassembled.
+
+### <a id="stand-in-race-start"></a>The race's start: what a level-scaled creature's offsets are solved against
+
+**Code:** `tes5_import/actors/level_pools.py` (`race_start`,
+`adopted_race_start`, `level_pool_offset`, `stand_in_census`),
+`tes5_import/base/equivalents.py` (`VANILLA_RACE_START`), `creature_races.py`
+(`_build_all_races`, `_report_stand_in_pools`).
+
+A manual actor's pool is its race's starting value plus the ACBS offset, so
+each offset has to cancel what the creature's OWN race starts with. There are
+three kinds of race:
+
+- **A race this run generates** starts at 50 health, 0 magicka and its
+  founding record's Fatigue, as this plugin sees that record.
+- **A race adopted from a master** ships as the master's record
+  ([only its text is ours](tes5_import_override.md#generated-records-reuse-the-masters)),
+  so it starts with what the master's run wrote, whatever this plugin's records
+  say. `adopted_race_start` reads the three floats out of the master's built
+  RACE (DATA offsets 36 / 40 / 44). A dependent that changes the founder's
+  Fatigue from 70 to 120 still solves its own creatures of that race against
+  70; solved against 120 they would start 50 stamina short.
+- **A Skyrim race standing in** for a creature with no generated race (no
+  converted creature project; `resolve_creature_race` picks it from the name).
+  The import does not read Skyrim.esm, so `VANILLA_RACE_START` holds the
+  starting values of the 22 races `CREA_RACE_PATTERNS` and its fallback can
+  name, each read from the real Skyrim.esm RACE DATA. They are not 50 / 0:
+  health runs from 12 (WolfRace) to 250, ten of the 22 start with magicka
+  (4 to 150), and stamina runs from 15 to 200.
+
+The offsets used to assume 50 health and 0 magicka for every race and left the
+stamina offset 0 off a generated race. In Oblivion.esm two level-scaled
+creatures sit on a stand-in race, both on WispRace (50 / 50 / 50): their
+magicka came out 50 too high at every player level and their stamina 30 and
+27 too high.
+
+- **A stand-in race with no row** cannot happen with today's patterns
+  (`tests/test_level_pool_health.py` holds the table to them). If it does, the
+  old assumption is kept (health over 50, magicka over 0, stamina offset 0) and
+  the race builder prints a `WARNING` line with the count per race.
+- **The int16 clamp.** `offset = stored × L0 − start` is clamped to an int16.
+  The ability's remainder is split over 50 for health, so a race starting
+  below 50 loses up to `50 − start` health, and only when the level-1 pool is
+  itself past 32,767.
+- **Fixed-level creatures are not re-solved.** Their health offset still
+  assumes a race that starts at 50, and their magicka offset one that starts
+  at 0, also on a stand-in race.
+- The audit reads a stand-in race when Skyrim.esm is among its `--masters`.
+  A creature whose race is in a file not read is undetermined; nothing is
+  assumed of it.
 
 ### <a id="creature-unarmed-damage"></a>Unarmed damage: race base plus a per-creature ability
 

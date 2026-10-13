@@ -85,6 +85,7 @@ from core.process_job import create_pool_job, describe_limit
 from core.heavy_lock import SUPERVISED_ENV_VAR, hold_heavy_lock
 from core.collision_options import WINDING_FIX_ENV_VAR, default_for_plugin
 from core.navmesh_options import set_navmesh_generator, set_navmesh_pins_dir
+from core.extensions import set_extensions
 
 # multiprocessing.Pool workers (nif/lod conversion) must also inherit a hidden
 # console — configure before any pool is created.
@@ -757,6 +758,7 @@ def phase_import(file_name: str, tes4_data: str, tes5_data: str,
         return False
 
     _install_navmesh_cache(file_name, config)
+    set_extensions(config)
 
     out_root = output_dir or str(SCRIPT_DIR / "output")
     os.makedirs(out_root, exist_ok=True)

@@ -47,6 +47,9 @@ from .creature_projects import (bodies_of, folder_of,
 from .creature_speakers import talking_creatures
 from .creature_unarmed import build_unarmed_abilities, race_unarmed_damage
 from .creature_unarmed import reset as reset_unarmed_abilities
+from .level_pools import (STAMINA, adopted_race_start, build_level_pools, level_pool_offset,
+                          race_start, set_race_start, stand_in_census)
+from .level_pools import reset as reset_level_pools
 
 # GMST fNPCHealthLevelBonus (Skyrim.esm) — health the engine grants per level
 # above 1. Defined here rather than imported from record_types.actors because
@@ -605,22 +608,40 @@ def creature_health_offset(rec: dict) -> int:
 
     Solved so the engine's own sum,
         RACE.StartingHealth + HealthOffset + (Level-1)*fNPCHealthLevelBonus,
-    lands exactly on TES4 DATA.Health. This is per-record, so creatures sharing a
-    generated race still each get their own health.
+    lands exactly on TES4 DATA.Health, per record. A TES4 pool of 0 is pinned
+    dead: an intentional corpse prop. A level-scaled TES4 creature has manual
+    stats and carries its level-1 pool here; its ability adds the rest.
 
-    A TES4 pool of 0 is pinned dead: those are intentional corpse props (52 in
-    Nehrim, 45 in Oblivion) that ship dead in Oblivion too, including the
-    PC-Level-Mult ones whose runtime level term would otherwise revive them.
+    See: docs/commentary/tes5_import_actors.md#creature-stat-offsets
+    See: docs/commentary/tes5_import_actors.md#level-pools
     """
     health = get_int(rec, 'DATA.Health', 50)
     if health <= 0:
         return -32768
     base = CREATURE_RACE_BASE_HEALTH
     if get_int(rec, 'ACBS.Flags') & 0x80:
+        pool_offset = level_pool_offset(rec, base)
+        if pool_offset is not None:
+            return pool_offset
         # PC Level Mult: the level term is a runtime multiplier, not authored.
         return max(-32768, min(int(health - base), 32767))
     level_term = (creature_capped_level(rec) - 1) * TES5_HEALTH_LEVEL_BONUS
     return max(-32768, min(int(health - base - level_term), 32767))
+
+
+def _race_stamina(rec: dict) -> float:
+    """Starting Stamina of the generated race `rec` founds: its own TES4 Fatigue."""
+    return float(get_int(rec, 'ACBS.Fatigue', 100))
+
+
+def creature_stamina_offset(rec: dict) -> int:
+    """Stamina offset of a level-scaled creature over its race's known start, else 0.
+
+    See: docs/commentary/tes5_import_actors.md#stand-in-race-start
+    """
+    if race_start(rec) is None:
+        return 0
+    return level_pool_offset(rec, 0.0, STAMINA) or 0
 
 
 def creature_capped_level(rec: dict) -> int:
@@ -839,7 +860,7 @@ def _race_data(rec: dict, race_recs: list = None, reach: int = None,
     # for the founder and misstate it for everyone else. An actor with zero
     # magicka can never pay a cast cost, so this pair is a casting gate.
     struct.pack_into('<f', data, 40, 0.0)
-    struct.pack_into('<f', data, 44, float(get_int(rec, 'ACBS.Fatigue', 100)))
+    struct.pack_into('<f', data, 44, _race_stamina(rec))
     struct.pack_into('<f', data, 88, _MAGICKA_RETURN['fMagickaReturnBase']
                      + _MAGICKA_RETURN['fMagickaReturnMult']
                      * get_int(rec, 'DATA.Willpower', 50))
@@ -1190,11 +1211,12 @@ def _index_crea_folders(by_type: dict) -> None:
 
 
 def _reset_tables() -> None:
-    """Forget the previous plugin's creature race, folder, ARMA and ability tables."""
+    """Forget the previous plugin's creature race, folder, ARMA, ability and level-pool tables."""
     _CREA_RACE_MAP.clear()
     _CREA_FOLDER_MAP.clear()
     _CREA_ARMA_FOLDER.clear()
     reset_unarmed_abilities()
+    reset_level_pools()
 
 
 def build_creature_races(by_type: dict, writer, export_dir: str,
@@ -1207,11 +1229,18 @@ def build_creature_races(by_type: dict, writer, export_dir: str,
     load_creature_item_index(by_type, master_export)
     _load_magicka_return(by_type, master_export)
     _index_crea_folders(by_type)
+    n_pools = build_level_pools(writer, by_type.get('CREA', []),
+                                values_of(master_export, 'CREA'),
+                                CREATURE_RACE_BASE_HEALTH)
+    if any(n_pools.values()):
+        made = ', '.join(f'{n} {pool.key.split(".")[1]}' for pool, n in n_pools.items())
+        print(f'  Creature level pools: abilities for level-scaled CREA: {made}')
 
     _PROJECTS, owner_slot = load_projects(export_dir)
     if not _PROJECTS:
         print('  Creature projects: none (creature_projects.json missing — '
               'run the creatures step); CREA falls back to race aliasing')
+        _report_stand_in_pools(by_type)
         return
 
     creatures = _shared_creatures(by_type, master_export)
@@ -1228,6 +1257,22 @@ def build_creature_races(by_type: dict, writer, export_dir: str,
           f'{len(talkers)} talking CREA, '
           f'{len(_CREA_RACE_MAP)} CREA records mapped, '
           f'{len(_PROJECTS)} converted projects)')
+    _report_stand_in_pools(by_type)
+
+
+def _report_stand_in_pools(by_type: dict) -> None:
+    """Count the level-scaled CREA on a stand-in Skyrim race; warn of any whose start is unknown.
+
+    See: docs/commentary/tes5_import_actors.md#stand-in-race-start
+    """
+    n_scaled, unknown = stand_in_census(by_type.get('CREA', []))
+    if n_scaled:
+        print(f'  Creature level pools: {n_scaled} level-scaled CREA on a stand-in Skyrim race')
+    if unknown:
+        races = ', '.join(f'{fid:08X} x{n}' for fid, n in sorted(unknown.items()))
+        print(f'  WARNING: Creature level pools: {sum(unknown.values())} level-scaled CREA on a '
+              f'stand-in race with no starting values ({races}): health 50, magicka 0 and '
+              f'stamina offset 0 assumed')
 
 
 def _build_all_races(writer, by_type: dict, race_recs: dict, talkers: set,
@@ -1260,6 +1305,8 @@ def _build_all_races(writer, by_type: dict, race_recs: dict, talkers: set,
                                           bodies, proj, key, race_recs,
                                           talkers)
         race_fid, variants, _vnam = made[key]
-        _CREA_RACE_MAP[fid] = (variants.get(_attack_reach(rec), race_fid),
-                               folder)
+        race_fid = variants.get(_attack_reach(rec), race_fid)
+        _CREA_RACE_MAP[fid] = (race_fid, folder)
+        set_race_start(fid, adopted_race_start(writer, race_fid) or (
+            CREATURE_RACE_BASE_HEALTH, 0.0, _race_stamina(race_recs[key][0])))
     return made

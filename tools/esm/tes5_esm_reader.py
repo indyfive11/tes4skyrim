@@ -283,7 +283,6 @@ def _dec_weap_data(data: bytes) -> list:
 _WEAP_ANIM = {0:'HandToHand', 1:'OneHandSword', 2:'OneHandDagger', 3:'OneHandAxe',
               4:'OneHandMace', 5:'TwoHandSword', 6:'TwoHandAxe', 7:'Bow',
               8:'Staff', 9:'Crossbow'}
-_WEAP_STAGGER = {0:'None',1:'Small',2:'Medium',3:'Large',4:'ExtraLarge',5:'Knockdown',6:'Ragdoll'}
 
 
 def _dec_weap_dnam(data: bytes) -> list:
@@ -305,9 +304,8 @@ def _dec_weap_dnam(data: bytes) -> list:
     lines.append(f'DNAM.RumbleLeft={struct.unpack_from("<f", data, 48)[0]:.4f}')
     crit_fid = struct.unpack_from('<I', data, 52)[0]
     lines.append(f'DNAM.CritEffectFID={crit_fid:08X}')
-    stagger = struct.unpack_from('<I', data, 76)[0]
-    lines.append(f'DNAM.Stagger={stagger} ({_WEAP_STAGGER.get(stagger, "?")})')
-    lines.append(f'DNAM.ColorRemapIdx={struct.unpack_from("<f", data, 96)[0]:.4f}')
+    lines.append(f'DNAM.Skill={struct.unpack_from("<i", data, 76)[0]}')
+    lines.append(f'DNAM.Stagger={struct.unpack_from("<f", data, 96)[0]:.4f}')
     return lines
 
 

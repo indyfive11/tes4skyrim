@@ -17,7 +17,7 @@ py-modules = ["convert", "gui", "output_layout", "preflight",
 
 [tool.setuptools.packages.find]
 include = ["tes4_export*", "tes5_import*", "asset_convert*",
-           "script_convert*", "tools*", "core*"]
+           "script_convert*", "tools*", "core*", "extensions*"]
 
 [tool.ruff]
 line-length = 120

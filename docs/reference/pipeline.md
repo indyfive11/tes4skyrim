@@ -225,6 +225,22 @@ absent file as `{}`, and each consumer falls back on its own constant
 An explicit `--config PATH` is the one exception: a named file that does not
 exist raises, because that is a typo rather than a fresh install.
 
+<a id="optional-add-ons"></a>
+**`extensions` lists the optional add-ons to load**, by name and in order, for
+example `"extensions": ["weapon_type_keywords"]`. An add-on is a package under
+`extensions/` that changes how the converted game plays, so none is loaded
+unless this key names it; absent or empty, every file the import writes is
+byte-identical to a build without add-ons. Only `convert.py` reads the key;
+`python -m tes5_import` runs with no add-on. The run stops on a listed name
+that is not an add-on, on a slip of the key itself (`extension`,
+`Extensions`), on an add-on hook that raises or returns the wrong type, and
+when a plugin is imported with another list than its master was built with: a
+build with add-ons records the list as `"extensions"` in its
+`<plugin>.manifest.json`, and a master's list and its dependent's must be
+equal, order included. The loader and its three hooks are
+`core/extensions.py`; what each add-on does and how to write one is in
+[extensions/README.md](../../extensions/README.md).
+
 **`outputDir` is saved relative to the install when it lies inside it**
 (`output_layout.output_setting`, so the default saves as `output`), and a
 relative value is read against the install, not the working directory

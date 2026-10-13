@@ -10,6 +10,7 @@ import struct
 from asset_convert.character.hair_plan import (mesh_name_family, output_model_path,
                                                output_tri_path, variant_edid,
                                                variant_tag)
+from core import extensions
 from ..base.master_export import values_of
 from ..actors import hair_variants
 from ..actors.combat_style import actor_combat_style
@@ -288,6 +289,7 @@ def _identity_subs(rec: dict, skyrim_race: int, gender: str, carried: list,
 
     subs += pack_formid_subrecord('RNAM', skyrim_race)
     subs += _spell_subs(rec)
+    subs += extensions.actor_subrecords('NPC_', rec)
     subs += _inventory_subs(carried,
                             get_int(rec, 'ACBS.BarterGold') if vendor_fid else 0)
     subs += pack_subrecord('AIDT', build_aidt(rec))

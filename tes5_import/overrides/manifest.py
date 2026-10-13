@@ -29,6 +29,7 @@ override's source id directly.
 import json
 import os
 
+from core import extensions
 from core.plugin_masters import master_export_dir, master_index_map
 from output_layout import paths
 
@@ -49,6 +50,7 @@ def write_manifest(plugin_output_path: str, source_name: str,
         'source': source_name,
         'records': {k: v for k, v in manifest.items() if v.get('fid')},
     }
+    payload.update(extensions.build_stamp())
     with open(path, 'w', encoding='utf-8') as f:
         json.dump(payload, f, separators=(',', ':'))
     return path
@@ -126,6 +128,7 @@ class MasterManifest:
                 f"{path} was written by a different converter version "
                 f"(found {payload.get('version')!r}, need {MANIFEST_VERSION}). "
                 f"Re-convert the master.")
+        extensions.check_master_build(path, payload)
         records = payload.get('records', {})
         if index_map is None:
             self._records.update(records)

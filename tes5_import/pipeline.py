@@ -34,6 +34,7 @@ import os
 import sys
 import time
 
+from core import extensions
 from core.plugin_masters import (master_dir, master_dirs,
                                  masters_from_export_header)
 from core.worldspace_names import set_worldspace_plugins
@@ -314,6 +315,8 @@ def _prescan_special_records(by_type: dict, ctx, writer, export_dir: str, _step_
     if tes4_source:
         WELL_KNOWN_PROPERTIES.update(create_misc_stat_globals(
             writer, getattr(ctx, 'master_index', None), by_type))
+    WELL_KNOWN_PROPERTIES.update(extensions.create_records(writer, extensions.RecordContext(
+        tes4_source, by_type, ctx, WELL_KNOWN_PROPERTIES)))
     create_combat_styles(writer, by_type, getattr(ctx, 'master_export', None),
                          getattr(ctx, 'master_index', None), wanted=tes4_source)
     WELL_KNOWN_PROPERTIES.update(create_combat_approach(writer, getattr(ctx, 'master_index', None)))
@@ -1341,6 +1344,7 @@ def main():
         print(f"Error: Export directory not found: {args.export_dir}", file=sys.stderr)
         sys.exit(1)
 
+    extensions.clear_extensions()
     import_plugin(
         export_dir=args.export_dir,
         output_path=args.output,

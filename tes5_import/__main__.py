@@ -4,6 +4,7 @@ import argparse
 import json
 import sys
 
+from core import extensions
 from .pipeline import import_plugin
 
 
@@ -31,6 +32,7 @@ def main():
     except (FileNotFoundError, json.JSONDecodeError):
         pass
 
+    extensions.clear_extensions()
     converted, errors = import_plugin(
         args.export_dir,
         args.output,

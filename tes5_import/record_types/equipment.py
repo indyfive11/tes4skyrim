@@ -4,6 +4,7 @@ from asset_convert.game_paths import current_namespace
 import re
 import struct
 
+from core import extensions
 from ..base.constants import ENCH_CAST_TYPE_MAP, ENCH_TYPE_MAP, WEAPON_TYPE_MAP, ARMA_BODY_COVERAGE_EXTRA
 from ..base.equivalents import (
     ARMA_ADDITIONAL_RACES,
@@ -27,8 +28,8 @@ from ..base.equivalents import (
     WEAPON_ANIM_MULT,
     WEAPON_ANIM_NAM8,
     WEAPON_ANIM_NAM9,
-    WEAPON_ANIM_STAGGER,
     WEAPON_ANIM_VNAM,
+    weapon_skill_stagger,
 )
 from .magic_variants import (DELIVERY_CONTACT, MGEF_CAST_FOR_OWNER, RANGE_DELIVERY,
                              UNCASTABLE_SPELL_TYPES, ability_variant,
@@ -383,6 +384,12 @@ def _weapon_anim_type(rec: dict, tes4_type: int, model: str) -> int:
     return refine_fallout_anim_type(rec, anim_type)
 
 
+def _weapon_keyword_subs(rec: dict, tes4_type: int, anim_type: int) -> bytes:
+    """KSIZ + KWDA: the vendor keyword (a staff's own), then any add-on's."""
+    return pack_keywords([VENDOR_KYWD['Staff' if tes4_type == 4 else 'Weapon']]
+                         + extensions.weapon_keywords(rec, anim_type))
+
+
 def _weapon_model_and_sounds(rec: dict, writer, anim_type: int,
                              model: str) -> bytes:
     """WNAM and the sound links, in TES5 order, before DATA.
@@ -456,8 +463,7 @@ def convert_WEAP(rec: dict, writer=None) -> bytes:
     # BAMT — Block Material
     subs += pack_formid_subrecord('BAMT', WEAPON_ANIM_BAMT.get(anim_type, 0x000774C2))
 
-    # KSIZ/KWDA — vendor keyword (TES4 type 4 = Staff)
-    subs += pack_keywords([VENDOR_KYWD['Staff' if tes4_type == 4 else 'Weapon']])
+    subs += _weapon_keyword_subs(rec, tes4_type, anim_type)
 
     subs += pack_formid_subrecord(
         'INAM', get_formid(rec, 'INAM')
@@ -480,7 +486,9 @@ def convert_WEAP(rec: dict, writer=None) -> bytes:
     struct.pack_into('<I', dnam, 12, WEAPON_ANIM_FLAGS.get(anim_type, 0))
     struct.pack_into('<B', dnam, 26, max(1, get_int(rec, 'DNAM.ProjectileCount', 1)))
     struct.pack_into('<f', dnam, 44, speed)
-    struct.pack_into('<B', dnam, 76, WEAPON_ANIM_STAGGER.get(anim_type, 0)) # Stagger
+    skill, stagger = weapon_skill_stagger(anim_type)
+    struct.pack_into('<i', dnam, 76, skill)
+    struct.pack_into('<f', dnam, 96, stagger)
     subs += pack_subrecord('DNAM', bytes(dnam))
 
     # CRDT — Critical data (24 bytes for SSE, form version 44)

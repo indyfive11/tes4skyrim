@@ -220,6 +220,34 @@ def resolve_creature_race(edid: str, full_name: str) -> tuple:
             None)
 
 
+#: Skyrim.esm RACE DATA starting (health, magicka, stamina), floats at 36 / 40 / 44, of each race a CREA can be given.
+# See: docs/commentary/tes5_import_actors.md#stand-in-race-start
+VANILLA_RACE_START: dict[int, tuple] = {
+    0x00000D53: (50.0, 0.0, 80.0),      # DraugrRace
+    0x000131E7: (200.0, 0.0, 150.0),    # BearBrownRace
+    0x000131EB: (125.0, 4.0, 100.0),    # ChaurusRace
+    0x000131ED: (50.0, 0.0, 25.0),      # ElkRace
+    0x000131F0: (50.0, 50.0, 50.0),     # DremoraRace
+    0x000131F4: (100.0, 100.0, 150.0),  # FalmerRace
+    0x000131F5: (75.0, 100.0, 50.0),    # AtronachFlameRace
+    0x000131F6: (250.0, 0.0, 200.0),    # AtronachFrostRace
+    0x000131F7: (200.0, 100.0, 100.0),  # AtronachStormRace
+    0x000131F8: (15.0, 4.0, 25.0),      # FrostbiteSpiderRace
+    0x000131F9: (250.0, 0.0, 100.0),    # GiantRace
+    0x000131FA: (25.0, 0.0, 25.0),      # GoatRace
+    0x000131FD: (250.0, 0.0, 100.0),    # HorseRace
+    0x000131FE: (100.0, 50.0, 200.0),   # IceWraithRace
+    0x00013200: (100.0, 0.0, 100.0),    # SabreCatRace
+    0x00013201: (15.0, 0.0, 15.0),      # SkeeverRace
+    0x00013204: (125.0, 150.0, 50.0),   # SprigganRace
+    0x00013205: (150.0, 0.0, 100.0),    # TrollRace
+    0x00013208: (50.0, 50.0, 50.0),     # WispRace
+    0x0001320A: (12.0, 0.0, 200.0),     # WolfRace
+    0x000B7998: (20.0, 0.0, 80.0),      # SkeletonRace
+    0x000BA545: (25.0, 4.0, 25.0),      # MudcrabRace
+}
+
+
 # ---------------------------------------------------------------------------
 # TES4 race FormID → EditorID mapping (from Oblivion.esm RACE export)
 # ---------------------------------------------------------------------------
@@ -884,18 +912,38 @@ WEAPON_ANIM_MULT: dict[int, float] = {
     8: 1.0,   # Staff
 }
 
-# DNAM stagger (U8 at offset 76) by anim type
-WEAPON_ANIM_STAGGER: dict[int, int] = {
-    1: 6,   # Sword     — Ragdoll
-    2: 5,   # Dagger    — Normal
-    3: 6,   # WarAxe    — Ragdoll
-    4: 6,   # Mace      — Ragdoll
-    5: 7,   # GreatSword — Large Ragdoll
-    6: 7,   # Battleaxe  — Large Ragdoll
-    7: 0,   # Bow       — None
-    9: 0,   # Crossbow (as Bow)
-    8: 0,   # Staff     — None
+#: WEAP DNAM skill (int32 actor value at offset 76) by anim type: 6 OneHanded, 7 TwoHanded, 8 Marksman, -1 none.
+# See: docs/commentary/tes5_import_magic.md#weapon-skill-and-stagger
+WEAPON_ANIM_SKILL: dict[int, int] = {
+    1: 6,    # Sword
+    2: 6,    # Dagger
+    3: 6,    # WarAxe
+    4: 6,    # Mace
+    5: 7,    # GreatSword
+    6: 7,    # Battleaxe
+    7: 8,    # Bow
+    9: 8,    # Crossbow (as Bow)
+    8: -1,   # Staff
 }
+
+#: WEAP DNAM stagger (float at offset 96) by anim type: the commonest value of that type among Skyrim.esm's 2,484 WEAP.
+# See: docs/commentary/tes5_import_magic.md#weapon-skill-and-stagger
+WEAPON_ANIM_STAGGER: dict[int, float] = {
+    1: 0.75,   # Sword
+    2: 0.0,    # Dagger
+    3: 0.85,   # WarAxe
+    4: 1.0,    # Mace
+    5: 1.1,    # GreatSword
+    6: 1.15,   # Battleaxe
+    7: 0.0,    # Bow
+    9: 0.0,    # Crossbow (as Bow)
+    8: 0.0,    # Staff
+}
+
+def weapon_skill_stagger(anim_type: int) -> tuple:
+    """(DNAM skill, stagger) of a weapon animation type; (-1, 0.0) with no row."""
+    return WEAPON_ANIM_SKILL.get(anim_type, -1), WEAPON_ANIM_STAGGER.get(anim_type, 0.0)
+
 
 # DNAM flags (U32 at offset 12) by anim type
 # 0x40 = PlayerOnly (set for slower weapons: mace, greatsword, battleaxe)

@@ -8,11 +8,15 @@ See: docs/commentary/tes5_import_actors.md
 import struct
 
 from ..base.constants import TES5_SKILL_ORDER
-from ..actors.creature_races import creature_capped_level, creature_health_offset
+from ..actors.creature_races import (creature_capped_level, creature_health_offset,
+                                     creature_stamina_offset)
 from ..actors.combat_style import actor_combat_style
 from ..actors.confidence import flee_memberships, flee_spells
 from ..actors.stat_factions import stat_memberships
+from core import extensions
 from ..actors.creature_unarmed import creature_unarmed_ability
+from ..actors.level_pools import (HEALTH, MAGICKA, STAMINA, level_pool_abilities,
+                                  level_pool_base, level_pool_offset)
 from ..actors.outfits import split_inventory
 from ..packages.actor_wiring import (CLAS_CREATURE_CASTER, CLAS_CREATURE_PREDATOR,
                         CSTY_ANIMAL, CSTY_DEFAULT, DPLT_CREATURE_LIST,
@@ -239,14 +243,17 @@ def _flatten_cscr(records: list) -> int:
 # ---------------------------------------------------------------------------
 
 
-def _crea_flags(tes4_flags: int) -> int:
+def _crea_flags(tes4_flags: int, manual_stats: bool = False) -> int:
     """TES4 CREA ACBS flags → TES5 NPC_ ACBS flags, translated by MEANING.
 
-    Only bits whose meaning genuinely carries over are set. Autocalc is always
-    set: a creature has no TES4 attribute block, so Skyrim derives its stats
-    from race, level and the crea_acbs offsets.
+    Only bits whose meaning genuinely carries over are set. Autocalc is set
+    unless `manual_stats`: a creature has no TES4 attribute block, so Skyrim
+    derives its stats from race, level and the crea_acbs offsets. A
+    level-scaled creature with a level pool is manual, so the engine adds no
+    level term of its own to the pool.
 
     See: docs/commentary/tes5_import_actors.md#acbs-flag-collision
+    See: docs/commentary/tes5_import_actors.md#level-pools
     """
     out = 0
     if tes4_flags & T4C_ESSENTIAL:
@@ -257,7 +264,8 @@ def _crea_flags(tes4_flags: int) -> int:
         out |= T5_PC_LEVEL_MULT
     if tes4_flags & T4C_NO_BLOOD_SPRAY and tes4_flags & T4C_NO_BLOOD_DECAL:
         out |= T5_DOESNT_BLEED
-    out |= T5_AUTOCALC
+    if not manual_stats:
+        out |= T5_AUTOCALC
     return out
 
 
@@ -277,19 +285,24 @@ def crea_acbs(rec: dict) -> bytes:
 
     Shared by convert_CREA and the override path. Creatures auto-calc their
     stats (flag 0x10), so attributes stay zero, and the per-record health and
-    magicka offsets carry the whole TES4 pool.
+    magicka offsets carry the whole TES4 pool. A level-scaled creature is
+    manual instead and its health, magicka and stamina offsets carry the
+    level-1 pools.
 
     See: docs/commentary/tes5_import_actors.md#creature-stat-offsets
+    See: docs/commentary/tes5_import_actors.md#level-pools
     """
     tes4_flags = get_int(rec, 'ACBS.Flags')
     calc_min = get_int(rec, 'ACBS.CalcMin', 1)
     calc_max = get_int(rec, 'ACBS.CalcMax', 100)
-    tes5_flags = _crea_flags(tes4_flags)
+    tes5_flags = _crea_flags(tes4_flags, level_pool_base(rec) is not None)
     tes5_level = creature_capped_level(rec)
     health_offset = creature_health_offset(rec)
-    magicka_offset = min(get_int(rec, 'ACBS.SpellPoints', 0), 32767)
+    magicka_offset = level_pool_offset(rec, 0.0, MAGICKA)
+    if magicka_offset is None:
+        magicka_offset = min(get_int(rec, 'ACBS.SpellPoints', 0), 32767)
     return struct.pack('<IhhHHHHhHhH',
-                       tes5_flags, magicka_offset, 0, tes5_level,
+                       tes5_flags, magicka_offset, creature_stamina_offset(rec), tes5_level,
                        min(calc_min, 65535), min(calc_max, 65535),
                        100, 0, 0, health_offset, 0)
 def _crea_vmad(rec: dict, packed: bytes) -> bytes:
@@ -356,20 +369,23 @@ def _crea_voice(rec: dict) -> int:
             or VOICE_TYPE_MAP.get(('Imperial', gender), 0))
 
 
-def _crea_spell_subs(rec: dict) -> bytes:
+def crea_spell_subs(rec: dict) -> bytes:
     """SPCT + SPLO for a creature's spells.
 
     The target may be a SPEL, SHOU or LVSP -- xEdit types SPLO as all three --
     so a TES4 leveled spell is referenced directly rather than unrolled.  The
     creature's unarmed-damage ability, when its race's base is lower, follows
-    them, then the confidence flee ability.
+    them, then the confidence flee ability, then a level-scaled creature's
+    level-pool abilities.
 
     See: docs/commentary/tes5_import_actors.md#crea-spells
+    See: docs/commentary/tes5_import_actors.md#level-pools
     """
     fids = [get_formid(rec, f'Spell[{i}]')
             for i in range(get_int(rec, 'SpellCount'))]
     fids.append(creature_unarmed_ability(get_formid(rec, 'FormID') & 0x00FFFFFF))
     fids += flee_spells(rec)
+    fids += level_pool_abilities(rec)
     fids = [f for f in fids if f]
     if not fids:
         return b''
@@ -419,13 +435,15 @@ def _crea_combat_style(rec: dict) -> int:
         CSTY_ANIMAL if get_int(rec, 'DATA.Type') in _ANIMAL_CREA_TYPES else CSTY_DEFAULT)
 
 
-def _crea_dnam(rec: dict) -> bytes:
+def crea_dnam(rec: dict) -> bytes:
     """52-byte DNAM: skills spread from the three TES4 aggregate skills.
 
     Offsets 36/38/40 are the engine's Health/Magicka/Stamina cache, whose real
-    TES4 pools are DATA.Health, ACBS.SpellPoints and ACBS.Fatigue.
+    TES4 pools are DATA.Health, ACBS.SpellPoints and ACBS.Fatigue. A
+    level-scaled creature's caches hold its level-1 pools.
 
     See: docs/commentary/tes5_import_actors.md#health-offset
+    See: docs/commentary/tes5_import_actors.md#level-pools
     """
     dnam = bytearray(52)
     combat = get_int(rec, 'DATA.CombatSkill', 30)
@@ -446,6 +464,9 @@ def _crea_dnam(rec: dict) -> bytes:
                                  (40, 'ACBS.Fatigue', 100)):
         struct.pack_into('<H', dnam, offset,
                          max(0, min(get_int(rec, key, default), 65535)))
+    if level_pool_base(rec) is not None:
+        for offset, pool in ((36, HEALTH), (38, MAGICKA), (40, STAMINA)):
+            struct.pack_into('<H', dnam, offset, min(level_pool_base(rec, pool), 65535))
     return bytes(dnam)
 
 
@@ -516,7 +537,7 @@ def convert_CREA(rec: dict, writer=None) -> bytes:
     subs += pack_formid_subrecord('VTCK', _crea_voice(rec))
     subs += pack_formid_subrecord('RNAM', crea_race_fid)
 
-    subs += _crea_spell_subs(rec)
+    subs += crea_spell_subs(rec) + extensions.actor_subrecords('CREA', rec)
 
     full = get_str(rec, 'FULL')
     outfit_fids, carried = split_inventory(read_items(rec))
@@ -532,7 +553,7 @@ def convert_CREA(rec: dict, writer=None) -> bytes:
     if full:
         subs += pack_string_subrecord('FULL', full)
     subs += pack_subrecord('DATA', b'')
-    subs += pack_subrecord('DNAM', _crea_dnam(rec))
+    subs += pack_subrecord('DNAM', crea_dnam(rec))
     subs += pack_formid_subrecord('ZNAM', _crea_combat_style(rec))
 
     subs += _crea_nam_subs(rec)

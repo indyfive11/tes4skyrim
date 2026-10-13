@@ -46,6 +46,7 @@ from ..base.text_reader import get_float, get_formid, get_int
 from ..base.tes5_reader import subrecords
 from ..dialogue.quest import quest_objectives, quest_targets
 from ..actors.combat_style import actor_combat_style
+from ..actors.level_pools import level_pool_abilities, pool_numbers
 from ..actors.outfits import split_inventory
 from ..packages.actor_wiring import CSTY_DEFAULT
 from .vmad_swap import SCRIPT_SWAP_KEY, SCRIPTED_TYPES, swap_vmad_script
@@ -798,6 +799,96 @@ def _rebuild_spells(plugin_rec, master_rec, old_subs):
             + [(b'SPLO', p) for p in entries])
 
 
+def _spell_run_fids(packed: bytes) -> list:
+    """The SPLO FormIDs of packed SPCT + SPLO subrecords."""
+    return [struct.unpack_from('<I', p)[0] for s, p in split_subrecords(bytes(RECORD_HEADER_SIZE) + packed)
+            if s == b'SPLO']
+
+
+def _pool_only_spell_change(plugin_rec: dict, master_rec: dict) -> bool:
+    """True when the two creatures' converted spell lists differ in level pools alone.
+
+    The convert-and-diff then must not substitute the SPLO run: the plugin's
+    standalone conversion lacks whatever the master's run added from state
+    this run does not have, and `_settle_level_pools` swaps the pools itself.
+    See: docs/commentary/tes5_import_actors.md#level-pools
+    """
+    if plugin_rec.get('Signature') != 'CREA':
+        return False
+    from ..record_types.creature import crea_spell_subs
+
+    def rest(rec):
+        """The converted spell list without the creature's level pools."""
+        pools = set(level_pool_abilities(rec))
+        return [f for f in _spell_run_fids(crea_spell_subs(rec)) if f not in pools]
+
+    return (level_pool_abilities(plugin_rec) != level_pool_abilities(master_rec)
+            and rest(plugin_rec) == rest(master_rec))
+
+
+def _level_scaled_side(plugin_rec: dict, master_rec: dict) -> bool:
+    """True for a creature override whose plugin or master record is level-scaled."""
+    return plugin_rec.get('Signature') == 'CREA' and (
+        pool_numbers(plugin_rec) is not None or pool_numbers(master_rec) is not None)
+
+
+#: (subrecord, first byte, end byte): ACBS magicka and stamina offsets, DNAM Health/Magicka/Stamina cache.
+_POOL_FIELDS = ((b'ACBS', 4, 8), (b'DNAM', 36, 42))
+
+
+def _settle_pool_fields(out: list, plugin_rec: dict, master_rec: dict) -> list:
+    """`out` with the pools' ACBS offsets and DNAM cache made the plugin's.
+
+    Each span is rewritten only where the two fresh conversions disagree on
+    it; every other byte is the master's or what another mechanism wrote.
+    An authored SpellPoints or Fatigue is no change at all on a fixed-level
+    creature's override, so nothing else carries these for a level-scaled one.
+    """
+    from ..record_types.creature import crea_acbs, crea_dnam
+    for (sig, start, end), build in zip(_POOL_FIELDS, (crea_acbs, crea_dnam)):
+        fresh = build(plugin_rec)[start:end]
+        if fresh == build(master_rec)[start:end]:
+            continue
+        out = [(s, p[:start] + fresh + p[end:]) if s == sig and len(p) >= end else (s, p)
+               for s, p in out]
+    return out
+
+
+def _settle_level_pools(out: list, plugin_rec: dict, master_rec: dict) -> list:
+    """`out` with a creature's level-pool abilities, offsets and cache made the plugin's.
+
+    Runs last, over whatever the other mechanisms left in the SPLO run: the
+    master's pool abilities are dropped and the plugin's appended, when the
+    two differ; every other entry stays. A rebuild spec regenerates no spell
+    list and no DNAM, so neither can ride on the convert-and-diff alone. A
+    fixed-level override of a fixed-level master is left as it is.
+    See: docs/commentary/tes5_import_actors.md#level-pools
+    """
+    if not _level_scaled_side(plugin_rec, master_rec):
+        return out
+    out = _settle_pool_fields(out, plugin_rec, master_rec)
+    stale = level_pool_abilities(master_rec)
+    fresh = level_pool_abilities(plugin_rec)
+    if stale == fresh:
+        return out
+    gone = set(stale) | set(fresh)
+    entries = [p for s, p in out if s == b'SPLO']
+    swapped = [p for p in entries if struct.unpack_from('<I', p)[0] not in gone]
+    swapped += [struct.pack('<I', fid) for fid in fresh]
+    if swapped == entries:
+        return out
+    family = _RUN_SPELLS.family
+    idx = next((i for i, (s, _p) in enumerate(out) if s in family), None)
+    out = [(s, p) for s, p in out if s not in family]
+    run = [(b'SPCT', struct.pack('<I', len(swapped)))] if swapped else []
+    run += [(b'SPLO', p) for p in swapped]
+    if idx is not None:
+        out[idx:idx] = run
+    elif run:
+        _insert_at_anchor(out, _RUN_SPELLS.anchors, run)
+    return out
+
+
 def _rebuild_packages(plugin_rec, master_rec, old_subs):
     """New PKID run for an authored AIPackage[] change.
 
@@ -1316,8 +1407,12 @@ def apply_changes(master_record: bytes, changes: dict,
             substitutions = {}
         else:
             applied |= buckets.generic
+            if _pool_only_spell_change(plugin_export, master_export):
+                for sig in _RUN_SPELLS.family:
+                    substitutions.pop(sig, None)
 
-    if not (buckets.any_edit() or substitutions):
+    settle = _level_scaled_side(plugin_export, master_export)
+    if not (buckets.any_edit() or substitutions or settle):
         return master_record, applied, unmapped
 
     subs = split_subrecords(master_record)
@@ -1331,6 +1426,7 @@ def apply_changes(master_record: bytes, changes: dict,
 
     if substitutions:
         out = _apply_generic(out, substitutions, buckets.claimed())
+    out = _settle_level_pools(out, plugin_export, master_export)
 
     return join_subrecords(master_record[:RECORD_HEADER_SIZE], out), applied, unmapped
 
