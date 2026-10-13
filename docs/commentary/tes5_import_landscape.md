@@ -131,6 +131,74 @@ the first place.
 `LTMP` is not part of this. It is the lighting template, and 5 vanilla Has
 Water interiors leave it null, so a null `LTMP` does not suppress water.
 
+### <a id="interior-water-planes"></a>Interior water is placed, not stated
+
+**Code:** `tes5_import/actors/water_placement.py`, called from
+`_build_cell_groups` in `tes5_import/pipeline_records.py`
+
+Skyrim makes no water out of an interior cell's own settings. CommonLibSSE's
+`TESObjectCELL::GetExteriorWaterHeight` (`src/RE/T/TESObjectCELL.cpp`) returns
+minus infinity for every interior, and the masters agree: every wet interior
+that states a height states `0`, with actors standing far below it, while the
+water a player meets indoors is a PLACED reference of an activator that
+carries a water type (`ACTI` with `WNAM`). The five masters place 802 of them
+in interiors, every one persistent and none in a cell without Has Water.
+Oblivion needs no such reference, so a converted interior kept its flag,
+height and type and was dry.
+
+The rule, for an interior with Has Water whose source is not FO3/FNV:
+
+- **Height:** `XCLW` as stated. An ABSENT `XCLW` is `0.0` (UESP, Oblivion mod
+  file format, CELL: "Water height (if not 0.00)"). The no-height sentinel
+  and a value that is no number place nothing.
+- **Activator:** one per water type per plugin, in the shape of Skyrim.esm's
+  `Water1024` — `EDID OBND MODL PNAM WNAM FNAM`, model `Water\Water1024.nif`
+  from the game's own archive. `WNAM` is the cell's `XCWT`, or Skyrim's
+  DefaultWater when the cell names none. A child plugin reuses its master's
+  activator of the same EditorID when that one carries the same water.
+- **Planes:** persistent references at scale 10, the largest the masters use
+  (one Dragonborn interior tiles 27 such planes), 10,240 apart, centred on the
+  extent of the cell's references and actors at the positions the built cell
+  gives them. They ship in the cell's persistent children group.
+- **Extent:** what is placed, not where its origin is. A room piece reaches
+  beyond its own origin, so a cover fitted to origins can end before the far
+  wall. Each reference spans `origin ± reach` on X and on Y, where reach is
+  the bound radius its base record states (`MODB`) times the reference's
+  scale. The radius is authored data and is read from the plugin's own bases
+  and its masters' through `navmesh.pool.build_base_radius_index`, which
+  indexes the base types that hold room pieces and fixtures; a base that
+  states none, and every actor, marker and light, reaches 0 and counts as its
+  origin. The extent runs from the lowest low end to the highest high end.
+- **Range:** the extent is then clipped to the
+  [30,000-unit interior range](tes5_import_world.md#interior-range-census). A
+  span that straddles the limit keeps the part inside it; a cell whose spans
+  all lie beyond it on one side gets no plane, and an empty cell gets one
+  plane at the origin.
+- **Ids:** the activator's is keyed on the water's source FormID, a plane's on
+  its cell's source FormID and its place in the tiling.
+
+The cell record and the lava overlay are untouched: a lava interior gets the
+planes and the overlay, as `DLC1Bthalft01` has both.
+
+A failure of the planner costs a cell its planes and nothing else:
+`_cell_water_planes` prints one `ERROR placing water planes for <cell>` line
+and the cell's other children are packed as before.
+
+Morrowind sources are not excluded. Only FO3/FNV sources are skipped, so the
+rule applies wherever an export carries the flag and the height; it has not
+been run on a Morrowind export.
+
+Deferred, each with a tripwire in the module's header:
+
+- an override of a master's wet interior that changes its water is not
+  followed; the master's planes stay,
+- tiles beyond the interior range: the cover is clipped to it, so in an
+  install that lifts the range rule at run time the parts of a level beyond
+  it get no water,
+- a Morrowind source, on which the rule has not been run,
+- FO3/FNV sources, whose water the source places itself,
+- which cells get the lava overlay, which does not ask for Has Water.
+
 ### <a id="cell-xclr-regions"></a>`XCLR` — how region weather reaches the sky
 
 The engine activates a region's `RDWT` list **only** in cells whose `XCLR`

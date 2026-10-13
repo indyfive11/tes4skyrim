@@ -58,6 +58,7 @@ from .navmesh.navi import NAVI_SINGLETON_FID, build_navi_record
 from .navmesh import pool as navm_pool
 from .navmesh.lattice.build import set_activators
 from .actors.lava_placement import LavaPlanner
+from .actors.water_placement import WaterPlanner
 from .base.locations import build_marker_locations
 from .base.master_export import records_of, values_of
 from .record_types.world import (
@@ -516,8 +517,10 @@ def _build_groups(st, by_type: dict, land_cache: dict, phase_done, label: str,
     `lod_bases` goes to `_build_world_groups`.
     """
     children = _children_by_cell(by_type)
+    water = WaterPlanner(st.by_type, st.writer,
+                         st.ctx.master_export if st.ctx else None)
     _build_cell_groups(by_type, st.writer, st.navm_metas, st.base_model_by_fid,
-                       st.door_fids, st.navm_cache, land_cache, children)
+                       st.door_fids, st.navm_cache, land_cache, children, water)
     phase_done(f'{label}CELL groups')
     _build_world_groups(by_type, st.writer, st.navm_metas, st.base_model_by_fid,
                         st.door_fids, st.navm_cache, land_cache, ctx=st.ctx,
@@ -581,11 +584,12 @@ def _children_by_cell(by_type: dict) -> tuple:
 
 
 def _pack_cell_children(cell_fid, refr_by_cell, achr_by_cell,
-                        leading=(), trailing=(), full_lod=frozenset()):
+                        leading=(), trailing=(), full_lod=frozenset(),
+                        generated=()):
     """Pack one cell's children as (group 6 payload, records converted).
 
-    Persistent REFR/ACHR (and the `full_lod` REFR FormIDs) go in a type-8
-    group, everything else in a type-9 group.  The type-9 order is fixed and
+    Persistent REFR/ACHR (and the `full_lod` REFR FormIDs), then `generated`
+    (water planes), go in a type-8 group, everything else in a type-9 group.  The type-9 order is fixed and
     load-bearing: `leading` (LAND) comes first, then the non-persistent refs,
     then `trailing` (lava, navmeshes).
 
@@ -602,6 +606,8 @@ def _pack_cell_children(cell_fid, refr_by_cell, achr_by_cell,
         if _is_persistent(achr_rec):
             persistent.append(convert_ACHR(achr_rec))
             converted += 1
+    persistent.extend(generated)
+    converted += len(generated)
     if persistent:
         children_parts.append(pack_group(
             8, struct.pack('<I', cell_fid), b''.join(persistent)))
@@ -657,13 +663,85 @@ def _cell_temporaries(cell_rec, cell_fid, lava, land_cache, land_by_cell,
     return leading, trailing
 
 
+def _cell_water_planes(cell_rec, cell_fid, ctx) -> list:
+    """One interior cell's water planes; [] when the planner fails.
+
+    A failure is reported and costs the cell its planes alone: the caller
+    packs the cell's other children as before.
+
+    See: docs/commentary/tes5_import_landscape.md#interior-water-planes
+    """
+    try:
+        return ctx['water'].planes_for(
+            cell_rec, ctx['refr_by_cell'].get(cell_fid, ()),
+            ctx['achr_by_cell'].get(cell_fid, ()))
+    except Exception as e:
+        print(f"  ERROR placing water planes for {get_str(cell_rec, 'EditorID', '?')}: {e}")
+        return []
+
+
+def _pack_interior_cell(cell_rec, sub_parts, ctx) -> int:
+    """Append one interior CELL and its children to `sub_parts`.
+
+    The children include the cell's water planes.  Returns the number of
+    records converted.
+
+    See: docs/commentary/tes5_import_landscape.md#interior-water-planes
+    """
+    cell_fid = get_formid(cell_rec, 'FormID')
+    sub_parts.append(convert_CELL(cell_rec))
+    leading, trailing = _cell_temporaries(
+        cell_rec, cell_fid, ctx['lava'], ctx['land_cache'],
+        ctx['land_by_cell'], ctx['pgrd_by_cell'], ctx['navm_cache'],
+        ctx['navm_metas'])
+    planes = _cell_water_planes(cell_rec, cell_fid, ctx)
+    child_bytes, converted = _pack_cell_children(
+        cell_fid, ctx['refr_by_cell'], ctx['achr_by_cell'],
+        leading, trailing, generated=planes)
+    if child_bytes:
+        sub_parts.append(child_bytes)
+    return converted + 1
+
+
+def _pack_interior_blocks(interior_cells, ctx):
+    """Pack the interior cells into type-2/3 block groups.
+
+    Blocks are the last digit of a cell's object id and sub-blocks the digit
+    before it.  A cell that fails is reported and keeps what it had appended.
+    Returns (list of type-2 group payloads, records converted).
+    """
+    blocks = defaultdict(lambda: defaultdict(list))
+    for cell in interior_cells:
+        object_id = get_formid(cell, 'FormID') & 0xFFFFFF
+        blocks[object_id % 10][(object_id // 10) % 10].append(cell)
+
+    out = []
+    converted = 0
+    for block_num in sorted(blocks.keys()):
+        block_parts = []
+        for sub_block_num in sorted(blocks[block_num].keys()):
+            sub_block_parts = []
+            for cell_rec in blocks[block_num][sub_block_num]:
+                try:
+                    converted += _pack_interior_cell(cell_rec, sub_block_parts, ctx)
+                except Exception as e:
+                    print(f"  ERROR building CELL group for {get_str(cell_rec, 'EditorID', '?')}: {e}")
+            if sub_block_parts:
+                block_parts.append(pack_group(3, struct.pack('<i', sub_block_num), b''.join(sub_block_parts)))
+        if block_parts:
+            out.append(pack_group(2, struct.pack('<i', block_num), b''.join(block_parts)))
+    return out, converted
+
+
 def _build_cell_groups(by_type: dict, writer: PluginWriter,
                        navm_metas: list = None, base_model_by_fid: dict = None,
                        door_fids: set = None, navm_cache: dict = None,
-                       land_cache: dict = None, children: tuple = None):
+                       land_cache: dict = None, children: tuple = None,
+                       water: WaterPlanner = None):
     """Build CELL group hierarchy (interior cells only — exterior in WRLD).
 
-    `children` is `_children_by_cell(by_type)` when the caller already has it.
+    `children` is `_children_by_cell(by_type)` when the caller already has it;
+    `water` places the interiors' water planes, a fresh planner when None.
     """
     if navm_metas is None:
         navm_metas = []
@@ -672,6 +750,7 @@ def _build_cell_groups(by_type: dict, writer: PluginWriter,
     if navm_cache is None:
         navm_cache = {}
     lava = LavaPlanner(by_type, writer)
+    water = water or WaterPlanner(by_type, writer)
     cells = by_type.get('CELL', [])
     refr_by_cell, achr_by_cell, land_by_cell, pgrd_by_cell = (
         children or _children_by_cell(by_type))
@@ -683,44 +762,11 @@ def _build_cell_groups(by_type: dict, writer: PluginWriter,
 
     print(f"  Building CELL hierarchy ({len(interior_cells)} interior cells)...")
 
-    blocks = defaultdict(lambda: defaultdict(list))
-    for cell in interior_cells:
-        object_id = get_formid(cell, 'FormID') & 0xFFFFFF
-        block_num = object_id % 10
-        sub_block_num = (object_id // 10) % 10
-        blocks[block_num][sub_block_num].append(cell)
-
-    all_cell_parts = []
-    converted = 0
-
-    for block_num in sorted(blocks.keys()):
-        block_parts = []
-        for sub_block_num in sorted(blocks[block_num].keys()):
-            sub_block_parts = []
-            for cell_rec in blocks[block_num][sub_block_num]:
-                cell_fid = get_formid(cell_rec, 'FormID')
-                try:
-                    cell_bytes = convert_CELL(cell_rec)
-                    sub_block_parts.append(cell_bytes)
-
-                    leading, trailing = _cell_temporaries(
-                        cell_rec, cell_fid, lava, land_cache, land_by_cell,
-                        pgrd_by_cell, navm_cache, navm_metas)
-                    child_bytes, n = _pack_cell_children(
-                        cell_fid, refr_by_cell, achr_by_cell,
-                        leading, trailing)
-                    converted += n
-                    if child_bytes:
-                        sub_block_parts.append(child_bytes)
-
-                    converted += 1
-                except Exception as e:
-                    print(f"  ERROR building CELL group for {get_str(cell_rec, 'EditorID', '?')}: {e}")
-
-            if sub_block_parts:
-                block_parts.append(pack_group(3, struct.pack('<i', sub_block_num), b''.join(sub_block_parts)))
-        if block_parts:
-            all_cell_parts.append(pack_group(2, struct.pack('<i', block_num), b''.join(block_parts)))
+    all_cell_parts, converted = _pack_interior_blocks(interior_cells, {
+        'lava': lava, 'water': water, 'land_cache': land_cache,
+        'navm_cache': navm_cache, 'navm_metas': navm_metas,
+        'refr_by_cell': refr_by_cell, 'achr_by_cell': achr_by_cell,
+        'land_by_cell': land_by_cell, 'pgrd_by_cell': pgrd_by_cell})
 
     if lava.placed:
         lava.emit_stat()
@@ -731,6 +777,7 @@ def _build_cell_groups(by_type: dict, writer: PluginWriter,
     print(f"    Interior cells: {len(interior_cells)}, children: {converted}")
     if lava.placed:
         print(f"    Lava surfaces placed (interior): {lava.placed}")
+    water.report()
 
 
 def _anchor_worldspaces(worlds, cells, ctx) -> dict:
