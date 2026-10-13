@@ -1106,6 +1106,121 @@ Two coupling notes:
 - Changing navmesh output invalidates the shared cache tag (a SHA-1 over
   `tes5_import/navmesh/*.py`), so the cache needs republishing.
 
+### <a id="root-transform-controller"></a>A transform controller on the root moves to an inner node
+
+**Code:** `move_root_controller` in `asset_convert/nif/nif_passes.py`
+
+Part of the mechanism behind this rule is a reading, not a confirmed engine
+fact, so the three kinds of evidence are kept apart.
+
+**Seen in game** (a converted build, before this rule; a player's report read
+against the cell's records). A floor ring that a cell builds from several
+copies of one mesh, each turned by its placement, showed as a single slowly
+turning piece, and the player could stand where the other copies are placed:
+the collision of each copy stood where that copy was placed. That mesh's root
+carries an ACTIVE `NiTransformController`. A neighbouring ring built the same
+way from a sister mesh, which differs in its keys and in an INACTIVE root
+controller, showed complete.
+
+With this rule's output for that build's 14 affected meshes loaded over the
+same build, and nothing else changed, the same player reported the ring
+complete, and the placed copies of a second affected mesh looked right to
+him. No report of that second mesh from before the rule exists. This shows
+the rule's effect on the first mesh; it does not show what the engine does
+with the controller.
+
+**Shown by the meshes.** In the converted test corpus 22 meshes carry a
+transform controller on the root outside a controller manager, 14 active and 8
+inactive; each chain is exactly one `NiTransformController`. Of 22,047 vanilla
+meshes, 657 carry an active transform controller no manager drives whose keys
+move; 575 hold it on inner nodes only and 82 on the root. The 82 are 74 camera
+paths, 2 anim objects, 2 files in the actor folders (a skeleton and a
+camera-shake rig), 2 sky meshes and 2 statics. One of those statics is placed
+scenery (7 placed copies, all tilted, collision on the root); the other has
+no placed copy. Without the keys-move test (any active root transform controller
+no manager drives) the count is 108 roots: 83 camera paths, 11 anim objects,
+the same 2 actor files and 2 sky meshes, 1 LOD mesh and 9 others. Placements
+were looked up for the 25 that are not camera paths; 4 have some: the static
+above, a second static (10 placed, 7 turned, no key data), an activator
+(1 placed, at scale 0.8, no key data) and a weapon (2 placed, constant keys).
+So vanilla mostly keeps the root of placed scenery free, not always, and how
+the game draws those four was not looked at. The always-turning vanilla
+statics are a `BSFadeNode` root with no controller, a child `NiNode` with the
+bare controller and the collision on the root.
+
+**The reading.** That a root's own rotation does not survive placement is the
+established part: see [the root transform wrapper](#root-rotation-wrapper).
+The rest is read from the look above, not confirmed by an engine source or a
+controlled test: an active `NiTransformController` / `NiKeyframeController`
+that targets the root is taken to write the root every frame and so to write
+over the placement, each copy then being drawn at the controller's rotation
+(and position or scale, where those channels are keyed) instead of its own:
+the copies of the ring would lie on top of each other, which fits the single
+turning piece. An inactive controller is read as never writing the root, which
+fits the sister mesh. What Oblivion does with a controller on the root is not determined; its
+cells place these meshes as parts of a whole, which is read as Oblivion
+keeping the placement.
+
+So when the root's own controller chain holds an ACTIVE transform controller
+(flag bit 3 set) no manager drives (flag bit 5 clear) and no
+`NiControllerManager`, the root's own transform controllers move, in their
+order, to an inner `NiNode` that also takes the root's children, and each
+one's target becomes that node. Every other controller of the chain (a
+visibility controller, an extra-data controller whose extra data is the
+root's, a transform controller a manager drives) stays on the root in its old
+order with its target unchanged.
+
+A root whose own transform controllers are all inactive is left exactly as it
+was: under the reading above those meshes are already drawn at each copy's own
+placement, and moving the controller could only change a mesh that shows no
+fault. The bit is read as the source wrote it; the converter only adds bit 6
+to it (`fix_controller_flags`). An inactive transform controller in a chain
+that does move rides along and stays inactive.
+
+- **Which node.** A root the [wrapper](#root-rotation-wrapper) already split
+  reuses the wrapper's node, which holds the root's own transform, the one the
+  controller targets in the source file. Otherwise a new identity node named
+  `<root> Anim` is added. The name differs from the root's on purpose:
+  `_node_is_animated` matches by name, and a mover sharing it would mark the
+  root's body as animated. With the new node a root body that was keyframed in
+  the source (Oblivion motion system 6) takes the static branch, like any
+  keyframed body on a node nothing moves. The wrapper's node keeps the root's
+  name (`source_children_owner` finds it by that), so on a wrapped root such a
+  body is still read as animated and stays keyframed, as before this rule.
+  This is a known difference between the two cases and is not fixed.
+- **Order.** It runs after `_hoist_root_collision`, so a child's collision is
+  already on the root and does not ride the mover, and before
+  `convert_root_collision`, so the body is converted knowing the root is still.
+  The hoist skips a wrapped root, so there a child's collision stays below the
+  wrapper's node and rides the mover.
+- **Where it runs.** On every root `_convert_one_root` walks: a root that
+  stays a plain `NiNode` (a sky mesh), creature meshes, and each root of a
+  file with several. A `NiNode` root with no children is moved too and gets an
+  empty new node; only a root with no child list at all is skipped.
+- **Exempt**, as in the wrapper: skinned meshes and rig roots. A root with a
+  controller manager is the [accum-root](#accum-root-classification) class and
+  is not touched.
+- **Other classes that write a transform.** A `NiPathController` or
+  `NiLookAtController` on a root survives the conversion as it is (no pass in
+  `asset_convert` names either class) and is not moved; a root that keeps an
+  active one no manager drives is counted in
+  `stats['root_path_lookat_controllers_kept']`. None is in the test corpus.
+- **Grass.** `_flatten_grass_root` in `asset_convert/nif/grass_profile.py`
+  does not flatten a node that carries a controller, so a grass model this
+  rule moved keeps its geometry nested, the shape that function exists to
+  remove. `apply_grass_profile` prints one `WARNING` line per such model and
+  leaves the mesh as before. None is in the test corpus.
+
+**Deferred: collision that turns with the picture.** The collision stays static
+on the root. For a mover whose keys really move, the picture then leaves its
+body behind. Letting the body ride the mover (vanilla's moving-collision
+pattern: body under the mover, keyframed) is not built; it touches the base
+record's type as well as the mesh. `stats['root_movers_over_static_collision']`
+counts the roots this can matter for: moved, an ACTIVE moved controller's keys
+move, and the mesh has collision anywhere. It does not ask where the collision
+sits, so it also counts a wrapped root whose collision rides the mover.
+`stats['root_controllers_moved']` counts every moved root.
+
 ### <a id="root-named-controlled-blocks"></a>Root-named controlled blocks are stripped
 
 A NiControllerManager on the BSFadeNode root may hold controlled blocks

@@ -204,6 +204,22 @@ def _flatten_grass_root(data):
     return changed
 
 
+def animated_wrappers(data):
+    """How many of the root's child nodes carry a controller above geometry.
+
+    The flattening leaves such a node, so its geometry stays nested.
+    See: docs/commentary/asset_convert_nif.md#root-transform-controller
+    """
+    NifFormat = _nif_format()
+    root = _grass_root(data)
+    if root is None:
+        return 0
+    shapes = (NifFormat.NiTriShape, NifFormat.NiTriStrips)
+    return sum(1 for node in root.children
+               if isinstance(node, NifFormat.NiNode) and node.controller is not None
+               and any(isinstance(b, shapes) for b in node.tree()))
+
+
 def _bake_shape_transforms(data):
     """Bake every root-level shape's own transform into its vertices.
 
@@ -264,6 +280,10 @@ def apply_grass_profile(nif_path):
         data.read(f)
 
     changed = _flatten_grass_root(data)
+    nested = animated_wrappers(data)
+    if nested:
+        print(f"  WARNING: grass model {Path(nif_path).name} keeps geometry under "
+              f"{nested} animated node(s); the grass renderer wants it on the root")
     changed = _bake_shape_transforms(data) or changed
     changed = _strip_collision(data) or changed
     changed = add_wind_weights(data, NifFormat) or changed

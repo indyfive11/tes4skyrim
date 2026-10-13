@@ -69,7 +69,7 @@ def _values_vary(values) -> bool:
                for v in values[1:])
 
 
-def _interp_moves(interp) -> bool:
+def interp_moves(interp) -> bool:
     """True when a transform interpolator's keys change the transform over time."""
     data = getattr(interp, 'data', None)
     if not isinstance(interp, NifFormat.NiTransformInterpolator) or data is None:
@@ -97,7 +97,7 @@ def clip_moves_node(root, node) -> bool:
     does not move the node, only pins it.
     """
     want = _text(getattr(node, 'name', b''))
-    return any(_controls_node(cb, want) and _interp_moves(cb.interpolator)
+    return any(_controls_node(cb, want) and interp_moves(cb.interpolator)
                for seq in _root_sequences(root)
                for cb in (getattr(seq, 'controlled_blocks', None) or []))
 
