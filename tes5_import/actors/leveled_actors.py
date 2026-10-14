@@ -45,6 +45,9 @@ from ..base.writer import (pack_formid_subrecord, pack_obnd, pack_record,
 # it should own nothing.  40 vanilla shells use exactly this value.
 _TEMPLATE_FLAGS = 0x1FFF
 
+#: The key under which a rewritten placement keeps the FormID of the list it places.
+PLACED_LIST = 'PlacedList'
+
 # Bit 9 = 'Script' (wbTemplateFlags, wbDefinitionsCommon.pas:7715).  Set, the
 # engine inherits the script list from the template.  A shell that carries the
 # LVLC's own script must therefore CLEAR it -- see _shell_acbs(own_script).
@@ -232,7 +235,8 @@ def build_leveled_actor_shells(by_type: dict, writer) -> int:
         # convert_ACHR reads NAME through get_formid(), which re-applies the
         # load-order index offset, so store the pre-offset form here.
         high = ((shell_fid >> 24) - offset) & 0xFF
-        refr['NAME'] = f'{high:02X}{shell_fid & 0x00FFFFFF:06X}'
+        refr[PLACED_LIST], refr['NAME'] = (
+            refr['NAME'], f'{high:02X}{shell_fid & 0x00FFFFFF:06X}')
         refr['Signature'] = 'ACHR'
         new_achrs.append(refr)
 

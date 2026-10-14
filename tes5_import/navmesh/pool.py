@@ -22,8 +22,9 @@ from concurrent.futures import ProcessPoolExecutor
 
 from core.navmesh_options import CORRIDOR, navmesh_generator
 from core.worker_budget import worker_count
-from . import cache_audit as navm_verify, worker as navm_worker
-from .world import base_fid
+from . import cache_audit as navm_verify, water_sheet, worker as navm_worker
+from .world import base_fid, gather_cell_geometry, land_field
+from ..actors.leveled_actors import PLACED_LIST
 from ..overrides.nested import DELETED_FLAG
 from ..record_types.navm_falloutnv import precompute_fallout_navmeshes
 from ..record_types.items import tree_nif_stem
@@ -532,7 +533,7 @@ def gather_navm_jobs(by_type: dict, door_fids: set = None,
 #: Cannot reach the cached payload; see #the-tag-hashes-geometry-only.
 _TAG_EXCLUDE = frozenset({
     'edge_links.py', 'navi.py', 'split.py', 'cache_audit.py', 'pool.py',
-    'worker.py', '__init__.py', 'lookup_grid.py',
+    'worker.py', '__init__.py', 'lookup_grid.py', 'water_sheet.py',
 })
 
 #: Native SOURCES deciding cell geometry; hashed with the Python, never the .pyd.
@@ -769,6 +770,159 @@ def _adopt_master_navm_fids(jobs: list, master_index) -> int:
             job['navm_fid'] = fid
             adopted += 1
     return adopted
+
+
+def _own_cells(by_type: dict, own_index: int) -> tuple:
+    """({cell FormID: cell}, {(wrld, gx, gy): cell}) of the cells this plugin owns."""
+    by_fid, by_grid = {}, {}
+    for cell in by_type.get('CELL', []):
+        fid = get_formid(cell, 'FormID')
+        flags = get_int(cell, 'RecordFlags')
+        if fid >> 24 != own_index or flags & DELETED_FLAG:
+            continue
+        by_fid[fid] = cell
+        wrld = get_formid(cell, 'ParentWRLD')
+        if wrld and not flags & _PERSISTENT_FLAG:
+            by_grid[(wrld, get_int(cell, 'XCLC.X'), get_int(cell, 'XCLC.Y'))] = cell
+    return by_fid, by_grid
+
+
+def _swimmer_cell(ref: dict, parents: dict, by_fid: dict, by_grid: dict):
+    """The own cell a placed creature stands in, else None; an exterior one by position."""
+    parent = parents.get(get_formid(ref, 'ParentCELL'))
+    if parent is None:
+        return None
+    wrld = get_formid(parent, 'ParentWRLD')
+    if not wrld:
+        return by_fid.get(get_formid(parent, 'FormID'))
+    square = (wrld, int(get_float(ref, 'PosX') // _CELL_SIZE),
+              int(get_float(ref, 'PosY') // _CELL_SIZE))
+    return by_grid.get(square)
+
+
+def _swimmers_by_cell(by_type: dict, master_export: dict, by_fid: dict,
+                      by_grid: dict) -> dict:
+    """{own cell FormID: [(x, y, z, walks)]} of the placed creatures that swim.
+
+    A creature is placed by an ACRE, a leveled creature list by a REFR, which
+    `build_leveled_actor_shells` has by now rewritten into an ACHR that keeps
+    the list's id under PLACED_LIST.
+    See: docs/commentary/tes5_import_navmesh.md#water-sheets
+    """
+    creatures = dict(_records_of(by_type, master_export, ('CREA',)))
+    lists = dict(_records_of(by_type, master_export, ('LVLC',)))
+    parents = dict(_records_of(by_type, master_export, ('CELL',)))
+    out = defaultdict(list)
+    placements = list(by_type.get('ACRE', []))
+    placements += [ref for ref in by_type.get('REFR', [])
+                   if get_formid(ref, 'NAME') in lists]
+    placements += [ref for ref in by_type.get('ACHR', []) if PLACED_LIST in ref]
+    for ref in placements:
+        if get_int(ref, 'RecordFlags') & DELETED_FLAG:
+            continue
+        base = get_formid(ref, PLACED_LIST if PLACED_LIST in ref else 'NAME')
+        kind = water_sheet.swim_kind(base, creatures, lists)
+        cell = _swimmer_cell(ref, parents, by_fid, by_grid) if kind and kind[0] else None
+        if cell is not None:
+            out[get_formid(cell, 'FormID')].append(
+                (get_float(ref, 'PosX'), get_float(ref, 'PosY'),
+                 get_float(ref, 'PosZ'), kind[1]))
+    return out
+
+
+def _navmesh_parts(navm_cache: dict) -> dict:
+    """{cell FormID: [(verts, tris)]} of the navmeshes the precompute built."""
+    out = defaultdict(list)
+    for key in sorted(navm_cache):
+        navm_bytes, meta = navm_cache[key] or (None, None)
+        if navm_bytes and meta and meta.get('geometry'):
+            out[key[0]].append(tuple(meta['geometry'][:2]))
+    return out
+
+
+def _cell_sheet(cell: dict, wrld_rec, placed: list, parts: list, land_at,
+                collision_of):
+    """(verts, tris) of one cell's water sheet, or None when it gets none.
+
+    See: docs/commentary/tes5_import_navmesh.md#water-sheets
+    """
+    water_z = water_sheet.water_height(cell, wrld_rec)
+    if water_z is None:
+        return None
+    soup = water_sheet.soup_of(parts)
+    lost = water_sheet.stranded([s for s in placed if s[2] < water_z], soup,
+                                water_sheet.flag_height(cell))
+    if not lost:
+        return None
+    wrld = get_formid(cell, 'ParentWRLD')
+    if not wrld:
+        verts, tris = water_sheet.open_water_sheet(
+            lost, water_z, water_sheet.soup_of(collision_of(cell)), soup)
+        return (verts, tris) if tris else None
+    gx, gy = get_int(cell, 'XCLC.X'), get_int(cell, 'XCLC.Y')
+    field = land_field(land_at((wrld, gx, gy)), gx * _CELL_SIZE, gy * _CELL_SIZE)
+    if field is None:
+        return None
+    verts, tris = water_sheet.terrain_sheet(field.grid, field.ox, field.oy,
+                                            water_z, soup, lost)
+    return (verts, tris) if tris else None
+
+
+def _collision_reader(by_type: dict, master_export: dict, base_model_by_fid: dict):
+    """A function giving a cell's (walkable, blocking) collision, merged once on first use."""
+    from asset_convert.collision.collision_extract import get_collision
+    refs = {}
+
+    def collision_of(cell):
+        """(walkable, blocking) triangle arrays of the cell's placed objects."""
+        if not refs:
+            refs.update(_by_parent_cell(_merged(by_type, master_export, 'REFR')))
+        return gather_cell_geometry(refs.get(get_formid(cell, 'FormID'), []),
+                                    base_model_by_fid, get_collision)
+
+    return collision_of
+
+
+def add_water_sheets(navm_cache: dict, by_type: dict, writer,
+                     base_model_by_fid: dict, master_export: dict = None) -> int:
+    """Give each own cell that holds a stranded swimmer an all-water navmesh.
+
+    Runs after the path-grid navmeshes exist and before the edge links, so the
+    sheets of neighbouring cells are linked like any other mesh.  A source
+    with authored navmesh is left alone.  Returns the number of sheets added.
+    See: docs/commentary/tes5_import_navmesh.md#water-sheets
+    """
+    if by_type.get('NAVM'):
+        return 0
+    by_fid, by_grid = _own_cells(by_type, writer.own_index)
+    swimmers = _swimmers_by_cell(by_type, master_export, by_fid, by_grid)
+    parts = _navmesh_parts(navm_cache) if swimmers else {}
+    land_at = navmesh_land_at(by_type, master_export) if swimmers else None
+    collision_of = _collision_reader(by_type, master_export, base_model_by_fid)
+    worlds = dict(_records_of(by_type, master_export, ('WRLD',)))
+    made = 0
+    for cell_fid in sorted(swimmers):
+        cell = by_fid[cell_fid]
+        wrld = get_formid(cell, 'ParentWRLD')
+        sheet = _cell_sheet(cell, worlds.get(wrld, {}) if wrld else None,
+                            swimmers[cell_fid], parts.get(cell_fid, []),
+                            land_at, collision_of)
+        if sheet is None:
+            continue
+        if max(len(sheet[0]), len(sheet[1])) > water_sheet.MAX_INDEX:
+            print(f"  Water navmesh: cell {cell_fid:08X} gets no sheet, "
+                  f"{len(sheet[1])} triangles do not fit one navmesh")
+            continue
+        frame = (cell_fid, wrld, get_int(cell, 'XCLC.X') if wrld else 0,
+                 get_int(cell, 'XCLC.Y') if wrld else 0)
+        navm_fid = writer.derive_formid('NAVM', (cell_fid, 'water'))
+        navm_cache[(cell_fid, water_sheet.SHEET_KEY)] = water_sheet.pack_sheet(
+            sheet[0], sheet[1], frame, navm_fid)
+        made += 1
+    if made:
+        print(f"  Water navmesh: {made} cells holding a stranded swimmer "
+              f"got an all-water sheet")
+    return made
 
 
 def precompute_navmeshes(by_type: dict, writer, base_model_by_fid: dict,

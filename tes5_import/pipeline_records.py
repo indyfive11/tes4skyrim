@@ -55,6 +55,7 @@ from .base.owned_records import (
     WELL_KNOWN_PROPERTIES,
 )
 from .navmesh.navi import NAVI_SINGLETON_FID, build_navi_record
+from .navmesh.water_sheet import SHEET_KEY
 from .navmesh import pool as navm_pool
 from .navmesh.lattice.build import set_activators
 from .actors.lava_placement import LavaPlanner
@@ -418,6 +419,9 @@ def _phase4a_navmesh(st, export_dir: str, phase_done, skip_types) -> None:
         print(f"  [debug] navm_cache dumped to {_dump_to} "
               f"({len(st.navm_cache)} entries)")
 
+    navm_pool.add_water_sheets(st.navm_cache, st.by_type, st.writer,
+                               st.base_model_by_fid, _navm_master_export)
+
     from .navmesh.edge_links import build_edge_links
     _t_el = time.time()
     _mi = getattr(st.ctx, 'master_index', None) if st.ctx else None
@@ -660,6 +664,10 @@ def _cell_temporaries(cell_rec, cell_fid, lava, land_cache, land_by_cell,
         for xb, xm in meta.get('extra_navms', ()):
             trailing.append(xb)
             navm_metas.append(xm)
+    sheet_bytes, sheet_meta = navm_cache.get((cell_fid, SHEET_KEY), (None, None))
+    if sheet_bytes:
+        trailing.append(sheet_bytes)
+        navm_metas.append(sheet_meta)
     return leading, trailing
 
 
