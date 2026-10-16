@@ -80,6 +80,8 @@ class ScriptContext:
     #: (so a held instance has no bound world Self). Narrows the carried-item poll
     #: so it never arms/gates on an unbound Self -- see assemble._true_carried.
     carriable_only: bool = False
+    #: A record the script is attached to can be used up (ALCH, INGR, SLGM, SGST, AMMO): no held loop.
+    consumable: bool = False
     #: A non-actor record carries the script, so its bare Actor-only calls do nothing (assemble._self_type).
     inert_actor_calls: bool = False
 
@@ -87,6 +89,8 @@ class ScriptContext:
     #: Quest -> latch variable, for stage timers.  Per-script: a latch
     #: registered while converting one script must not declare into the next.
     stage_latches: dict = field(default_factory=dict)
+    #: A held carriable item keeps polling from its own events (assemble._held_pass_loop).
+    held_passes: bool = False
     #: The arm a TES4 `return` must emit before `Return` inside a poll body.
     poll_return_prefix: str = ''
     #: Glide duration expression while a moving poll body is emitted; SetPos/SetAngle there glide over it.

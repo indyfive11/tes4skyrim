@@ -941,7 +941,7 @@ def _track_holder(conv, tree, merged: dict, order: list) -> list:
     # solely from OnLoad/OnCellAttach, where Self is a bound world ref.
     arm = [] if _true_carried(conv) else _arm(
         conv, conv._get_update_interval(), True)
-    passes = [f'  {_MENU_PASSES}()'] if _menu_passes(conv, tree) else []
+    passes = ([f'  {_MENU_PASSES}()'] if _menu_passes(conv, tree) else []) + _held_call(conv, '  ')
     for header, holder in _HOLDER_EVENTS:
         if header not in merged:
             merged[header] = []
@@ -949,6 +949,11 @@ def _track_holder(conv, tree, merged: dict, order: list) -> list:
         merged[header][:0] = list(holder) + arm
         merged[header] += passes
     return [f'ObjectReference {_HOLDER_VAR}', '']
+
+
+def _held_call(conv, indent: str) -> list:
+    """The call that keeps a held item polling, for a script that has the loop."""
+    return [f'{indent}{_HELD_PASSES}()'] if conv.sc.held_passes else []
 
 
 def helpers(conv) -> list:
@@ -1033,16 +1038,7 @@ def poll(conv, tree, extends: str) -> list:
         # undeclared variable and the script would fail to compile.
         out += ['Bool TES4_WasInDialogue = False', '']
     out.append('Event OnUpdate()')
-
-    # Body-entry guard for a true-carried item: if it is now held, bail before the
-    # body touches its own (unbound) Self.  The arms already refuse to schedule
-    # while held, but ONE update queued before a world->inventory pickup can still
-    # deliver and enter the body, whose IsInContainer(Self)/GetDisabled(Self)/
-    # Disable() would then throw.  Books are exempt: _carried_read calls OnUpdate()
-    # directly with the holder set to the player to run the one read pass, and a
-    # book body reads quest state, not Self.
-    if _true_carried(conv) and not conv.sc.on_book:
-        out += [f'  If {_HOLDER_VAR} != None', '    Return', '  EndIf']
+    guard_at = len(out)
 
     # Arm the poll TWICE: an insurance arm at the TOP and the real re-arm at
     # the BOTTOM.
@@ -1070,12 +1066,130 @@ def poll(conv, tree, extends: str) -> list:
     body = _poll_body(conv, tree, extends, interval, load_gated, pacing)
     sc.poll_return_prefix = ''
     sc.glide_secs = ''
+    sc.held_passes = _keeps_polling_held(conv, tree, body)
+    out[guard_at:guard_at] = _entry_guard(conv)
     out = _walk_guard(sc, out)
     arm = _bottom_arm(conv, interval, extends, load_gated, pacing)
+    held = _held_pass_loop(interval) if sc.held_passes else []
     if not passes:
-        return out + body + arm + ['EndEvent', '']
+        return out + body + arm + ['EndEvent', ''] + held
     return (out + [f'  {_POLL_PASS}()'] + arm + ['EndEvent', '', f'Function {_POLL_PASS}()']
-            + body + ['EndFunction', ''] + _menu_pass_loop(interval))
+            + body + ['EndFunction', ''] + _menu_pass_loop(interval) + held)
+
+
+def _entry_guard(conv) -> list:
+    """Bail at poll entry while held, unless the body is safe to run held."""
+    if _true_carried(conv) and not conv.sc.on_book and not conv.sc.held_passes:
+        return [f'  If {_HOLDER_VAR} != None', '    Return', '  EndIf']
+    return []
+
+
+#: A Papyrus string literal, a comment from `;` to the end of the line, and a call with no receiver.
+_STRING_RE = re.compile(r'"(?:[^"\\]|\\.)*"')
+_COMMENT_RE = re.compile(r';.*')
+_BARE_CALL_RE = re.compile(r'(?<![\w.])([A-Za-z_]\w*)\s*\(')
+_RECEIVER_RE = re.compile(r'(?<![\w.])([A-Za-z_]\w*)\s*\.')
+
+#: Keywords a `(` may follow in a converted body.
+_CALL_LIKE_KEYWORDS = frozenset({'if', 'elseif', 'while', 'return'})
+
+
+def _keeps_polling_held(conv, tree, body: list) -> bool:
+    """Does this held item get `_held_pass_loop`? (docs: held-items-keep-polling)"""
+    return (_true_carried(conv) and not conv.sc.consumable
+            and not _holder_block_returns(tree)
+            and _calls_nothing_on_self(body, _gate(conv), _self_holders(conv, tree)))
+
+
+#: TES4 blocks whose events start the held loop (`_HOLDER_EVENTS`).
+_HOLDER_BLOCKS = frozenset({'onadd', 'onequip'})
+
+
+def _holder_block_returns(tree) -> bool:
+    """Can a holder event end with a `return` before it reaches the loop call?"""
+    return any(isinstance(st, N.Return)
+               for block in (tree.blocks if tree else ()) if block.btype.lower() in _HOLDER_BLOCKS
+               for st in N.walk_stmts(block.body))
+
+
+def _self_holders(conv, tree) -> frozenset:
+    """Lower-case names that may hold the script's own reference: set to getSelf, or typed as this script."""
+    own = papyrus_script_name(conv.sc.edid).lower()
+    names = {name.lower() for name, ptype in conv.sc.property_refs.items()
+             if (ptype or '').lower() == own}
+    names |= {name for name, ptype in conv.sc.var_types.items() if (ptype or '').lower() == own}
+    for block in (tree.blocks if tree else ()):
+        names |= {safe_property_name(st.target.name).lower() for st in N.walk_stmts(block.body)
+                  if isinstance(st, N.Assign) and isinstance(st.target, N.Ident)
+                  and _is_get_self(st.value)}
+    return frozenset(names)
+
+
+def _is_get_self(value) -> bool:
+    """Is this TES4 expression a bare `getSelf`?"""
+    return ((isinstance(value, N.Ident) and value.name.lower() == 'getself')
+            or (isinstance(value, N.Call) and value.name.lower() == 'getself'
+                and value.receiver is None))
+
+
+def _calls_nothing_on_self(body: list, gate: str, holders: frozenset = frozenset()) -> bool:
+    """Does no line of a poll `body` act on Self, the re-arms behind the poll's own `gate` aside?
+
+    A converted `return` re-arms as `If (gate)` / `RegisterForSingleUpdate(n)`
+    / `EndIf`; while the item is held the gate is false, so that call never runs.
+    A call on one of `holders` (names that may hold Self) acts on Self.
+    """
+    lines = [line.strip() for line in body]
+    i = 0
+    while i < len(lines):
+        arm = lines[i:i + 3]
+        if (len(arm) == 3 and arm[0] == f'If ({gate})'
+                and arm[1].startswith('RegisterForSingleUpdate(') and arm[2] == 'EndIf'):
+            i += 3
+            continue
+        if _acts_on_self(lines[i], gate, holders):
+            return False
+        i += 1
+    return True
+
+
+def _acts_on_self(line: str, gate: str, holders: frozenset = frozenset()) -> bool:
+    """Does this emitted line name `Self`, call a function with no receiver, or call one on a `holders` name?
+
+    The poll's own `gate` is not a call on Self while held: it tests the
+    holder first.
+    """
+    code = _COMMENT_RE.sub('', _STRING_RE.sub('""', line.replace(gate, '')))
+    return (bool(re.search(r'\bSelf\b', code))
+            or any(m.group(1).lower() not in _CALL_LIKE_KEYWORDS for m in _BARE_CALL_RE.finditer(code))
+            or any(m.group(1).lower() in holders for m in _RECEIVER_RE.finditer(code)))
+
+
+#: Runs the poll while a carriable item is held; a newer run ends an older one.
+_HELD_PASSES = 'TES4_HeldPasses'
+
+
+def _held_pass_loop(interval: str) -> list:
+    """TES4_HeldPasses: one `OnUpdate` pass per `interval` seconds while the item's holder is loaded.
+
+    TES4 ran a carried item's GameMode block from its holder's inventory.  A
+    held carriable item has no native object, so it cannot register for
+    updates, but `Utility.Wait` needs none.  Only a body that calls nothing on
+    Self gets the loop (`_acts_on_self`).  The holder events call it; a newer
+    run ends an older one through a counter, and a drop (no holder) ends it.
+
+    See: docs/commentary/script_convert.md#held-items-keep-polling
+    """
+    return ['Int TES4_HeldPassRun', '',
+            f'Function {_HELD_PASSES}()',
+            '  TES4_HeldPassRun += 1',
+            '  Int TES4_mine = TES4_HeldPassRun',
+            f'  Utility.Wait({interval})',
+            f'  While TES4_mine == TES4_HeldPassRun && TES4Polyfill.SafeGameModeGate({_HOLDER_VAR})',
+            '    OnUpdate()',
+            f'    Utility.Wait({interval})',
+            '  EndWhile',
+            'EndFunction', '']
 
 
 def _bottom_arm(conv, interval: str, extends: str, load_gated: bool,
@@ -1219,15 +1333,6 @@ def _gate(conv) -> str:
     if not _carried(conv):
         return conv._GAMEMODE_GATE
     if _true_carried(conv):
-        # A carriable item has NO bound native Self while held, so even the gate's
-        # holder-first short-circuit is not enough: RegisterForSingleUpdate still
-        # ACTS on the unbound Self and throws.  So this gate NEVER passes while
-        # held (`{_HOLDER_VAR} != None`), and arms only as a bound world ref.  All
-        # three arm sites (top insurance, bottom re-arm, poll_return_prefix) use
-        # this gate, so none of them can schedule on an unbound Self; the held
-        # poll simply stops (a worn item cannot run OnUpdate anyway).  OnInit's arm
-        # is dropped and a body-entry guard added for the same reason -- see
-        # lifecycle and poll().
         return f'{_HOLDER_VAR} == None && {conv._GAMEMODE_GATE}'
     return (f'TES4Polyfill.SafeGameModeGate({_HOLDER_VAR}) || '
             f'({_HOLDER_VAR} == None && {conv._GAMEMODE_GATE})')

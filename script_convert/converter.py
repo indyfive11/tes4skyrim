@@ -550,6 +550,7 @@ class ScriptConverter:
                                 scro_aliases=dict(prev.scro_aliases),
                                 quest_delay=prev.quest_delay,
                                 on_book=prev.on_book,
+                                consumable=prev.consumable,
                                 carriable_only=prev.carriable_only)
         self.turn_span = set()
         return _assemble.build(self, name, source, extends, editor_id)

@@ -749,6 +749,62 @@ Net effect on Translation.esp: 551/981 compiled → **981/981**. FormIDs need no
 special handling: `remap_formid` already gives an override its master's shifted
 index, so `SetGewitter` binds to `01020A0F` (Nehrim's `00020A0F` at index 01).
 
+### <a id="edited-master-script-rebinds"></a>A master record running a script the plugin edits takes the plugin's properties (2026-10-15)
+
+**Code:** `overrides/script_rebind.py`, `pipeline_records._emit_override`, `pipeline_records._emit_master_rebinds`, `object_scripts.edited_script_entry`.
+
+When a plugin edits a master's SCPT, the compiled script that runs is the
+plugin's, but the records it is attached to are the master's. An override
+copies the master's bytes, so they bound the MASTER's property list, and a
+record the plugin never overrides was not touched at all. Every object
+property the edit added was None at runtime. A third-party plugin edits
+DLCFrostcrag's journal script to pull a lever and start a quest. The journal
+(a DLCFrostcrag BOOK it does not override) kept DLCFrostcrag's two properties,
+and the game's log read "Cannot call Start() on a None object". The same shape
+sits on Knights.esp's edits of Oblivion's shrine and altar scripts (`NDPilgrim`,
+`PCInfamy`, `TGGrayFoxCowl`, `HasGrace`, ...).
+
+Each record attaching an edited master script (`CrossRefGraph.attached_records`,
+re-keyed into this plugin's id space) now carries this run's entry for that
+script, from the same property resolution the plugin's own records use. Only
+that entry is replaced (`rebind_entry`). Every other script in the record's
+VMAD stays as the master bound it, such as a creature's `TES4_GhostDissolve`.
+
+- An object the plugin overrides: phase 1's `_emit_override` rebinds the
+  override, and an `unchanged` override still ships, because the script differs.
+- An object the plugin leaves alone: `_emit_master_rebinds` writes the
+  master's restated bytes with only the entry replaced, as an override.
+- Not rebound, and counted in the run's `Edited master scripts:` line: a quest
+  the plugin does not override (a quest it does override has its own path,
+  `_rebind_edited_script`), and a VMAD that `rebind_entry` cannot read or that
+  holds no entry for the script (the player's base, whose script is rehosted).
+  Placed actors carrying a relocated copy of a base's VMAD are not rebound.
+- An entry that comes out the same as the master's (the edit kept the property
+  list) writes nothing: an override identical to its master would only revert
+  another plugin's edit of the record. 9 of the third-party plugin's 13 first
+  rebinds were such copies.
+- A script whose properties failed to resolve (`_memo_props` caught an error)
+  is not rebound: an empty entry would unbind what the master bound.
+
+### <a id="master-bases-keep-their-script-flags"></a>A placement of a master's base converts as the master's own did (2026-10-15)
+
+**Code:** `object_scripts._note_master_bases`.
+
+A placement's linked ref (`base_uses_parent_ref`: the base's script reads its
+enable parent) and a door's consumed activation are decided by the BASE's
+script. The flags were noted only for this plugin's own bases. So a new
+placement of a master's base got no XLKR, and an override that moved a master
+placement to another enable parent kept the master's old XLKR. The generic
+substitution compares two conversions that both left it out.
+
+A third-party plugin rewires DLCFrostcrag's chain of teleport pads: it adds a
+pad and takes four out of the chain. Its converted plugin still linked the
+pads in DLCFrostcrag's order, and the new pad had no link at all. The master's
+scripted bases are now flagged too, from the effective script (the plugin's
+edit wins). The new pad's conversion then mirrors its enable parent, and a
+re-parented pad's two conversions differ in XLKR as well as XESP, so both are
+substituted.
+
 ## One TES4 field can feed TWO output subrecord runs
 <a id="one-tes4-field-can-feed"></a>
 

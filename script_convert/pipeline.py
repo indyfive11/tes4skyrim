@@ -28,7 +28,7 @@ from script_convert.conversation_sequence import (
     stepped_gate,
 )
 from core.plugin_masters import masters_from_export_header
-from script_convert.cross_ref import CrossRefGraph
+from script_convert.cross_ref import CONSUMABLE_SIGS, CrossRefGraph
 from script_convert.converter import ScriptConverter
 from script_convert.context_setup import (
     build_xref, chargen_menu_plan, deploy_static_scripts, load_bounds_cache,
@@ -607,6 +607,7 @@ def primed_converter(rec: dict, xref: CrossRefGraph, source: str) -> ScriptConve
         formid.upper(), 0.0)
     conv.sc.on_book = xref.attached_signatures(formid) == {'BOOK'}
     conv.sc.carriable_only = xref.carriable_only(formid)
+    conv.sc.consumable = bool(xref.attached_signatures(formid) & CONSUMABLE_SIGS)
     return conv
 
 

@@ -2742,6 +2742,72 @@ inventory category and opens an empty page on every click.
 The two log errors from the holder re-arm at the top of `OnEquipped` remain;
 they are harmless.
 
+### <a id="held-items-keep-polling"></a>A held item keeps polling when its poll calls nothing on Self (2026-10-15)
+
+**Code:** `assemble._held_pass_loop`, `assemble._calls_nothing_on_self`, `assemble._entry_guard`, `assemble._track_holder`.
+
+A script on carriable bases only (`carriable_only`) has no native object
+while held, so its poll gate refused to arm and the poll stopped at pickup.
+TES4 kept running the GameMode block from the holder's inventory, and real
+bodies depend on it. A third-party plugin's journal starts a four-second
+countdown when it is taken, then pulls a lever, triggers a chain of teleport
+pads and advances its quest. Its saved script variables read `timer=3.708` in
+two saves an hour apart: one pass ran before the book menu opened, then
+nothing. Dawnfang and Duskfang re-equip their forms from the poll, the Gray
+Cowl swaps the player's crime gold, and the Eye of Nocturnal sets the quest
+stage while the player carries it.
+
+Such a script now gets `TES4_HeldPasses()`, called last in `OnContainerChanged`
+and `OnEquipped`. It runs `OnUpdate()` once per update interval through `Utility.Wait`, which
+needs no native object, while `SafeGameModeGate(TES4_Holder)` holds. It stops
+when the item is dropped, because the holder is then None. A newer run ends an
+older one through a counter, like `TES4_MenuPasses`. `OnUpdate`'s own arms keep
+the true-carried gate, so no pass schedules an update on the held item.
+
+**The true-carried gate and the entry guard** (`_gate`, `_entry_guard`). A
+held carriable item has no native Self, so even the broad gate's holder-first
+short-circuit is not enough: `RegisterForSingleUpdate` still acts on the
+unbound Self and throws. The true-carried gate therefore never passes while
+held (`TES4_Holder != None`) and arms only as a bound world ref, at all three
+arm sites (top insurance, bottom re-arm, a converted `return`'s). OnInit's arm
+is dropped for the same reason (`lifecycle`). One update queued before a
+pickup can still deliver, so a body that acts on Self bails at entry while
+held, before an `IsInContainer(Self)` or `Disable()` throws. A book is exempt,
+because `_carried_read` runs its one read pass with the holder set to the
+player and a book body reads quest state. So is a body that gets the loop: it
+calls nothing on Self.
+
+**Only a body that calls nothing on Self gets it.** Every call on a held item's
+Self fails ("no native object bound"), and the Blades equipment's storm of them
+is why the gate exists. `_calls_nothing_on_self` reads the emitted body. A line
+that names `Self`, or that calls a function with no receiver (a bare
+`Disable()`, `GetDistance(...)`), keeps the old behaviour: the body-entry guard
+and no loop. So does a call on a name that may hold the item itself: a
+variable the script sets to `getSelf`, or a property typed as the script's own
+type (Mother's Head reads `MothersHeadRef.GetDistance(...)`, and that ref is
+the head). Strings, comments and the poll's own gated re-arm (a converted
+`return`) are skipped.
+
+Three more cases keep the old behaviour. One is an item the game uses up
+(`CONSUMABLE_SIGS`: eaten, drunk, spent, fired), which raises no holder event
+after, so a loop would run for the rest of the game. Another is a script whose
+`OnAdd` or `OnEquip` block can `return`, because the converted `Return` would
+end the event before it starts the loop. The third is a read from the
+inventory: `OnRead` sets the holder to the player even for a book read
+straight from a chest, so it does not start the loop either.
+
+Measured on the four plugins' 34 held scripts with a poll body: before the
+holder-name rule, 19 got the loop (Oblivion.esm 16, DLCFrostcrag 1, a
+third-party plugin 2). The others test `IsInContainer(Self)`, move or delete
+themselves, play shaders on themselves, or measure their own distance.
+
+Known gaps: an item that starts in a container never raises a holder event,
+so it does not poll until it is moved. A read from the inventory still runs
+the book's `OnActivate` body, and a `GetParentRef` there reads the held item's
+own links and finds none. A holder name is found only when the script sets it
+with `getSelf` or its property is typed as the script itself; a ref of
+another type that is the item would be missed.
+
 ### <a id="message-rewrites-one-line"></a>`Message` rewrites one HUD line (2026-09-27)
 
 **Code:** `commands._message_function`, `assemble.notify_helper`.

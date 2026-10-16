@@ -997,9 +997,9 @@ End
         (58 "no native object bound" errors + 89 stacks). So: every arm gate drops
         the holder term (arm only as a bound world ref), the holder events track
         the holder but do NOT arm, there is no synthesized OnInit arm, and a
-        body-entry guard bails if the item is held."""
+        body-entry guard bails if the item is held: its body acts on Self."""
         converter.sc.carriable_only = True
-        source = ("ScriptName ItemScript\nBegin GameMode\n  set x to 1\nEnd\n")
+        source = ("ScriptName ItemScript\nBegin GameMode\n  disable\nEnd\n")
         result = converter.convert_standalone('ItemScript', source,
                                               'ObjectReference', 'ItemScript')
         # Gate drops the holder term at EVERY arm site (top insurance + re-arm).

@@ -40,6 +40,7 @@ from concurrent.futures import ProcessPoolExecutor
 
 from .registry import IMPORT_DISPATCH, TYPE_MAP
 from .overrides.builder import replace_vmad, split_subrecords
+from .overrides.script_rebind import edited_scripts, master_rebinds, rebound_override
 from .overrides.nested import (build_nested_overrides)
 from .overrides.ref_state import (full_lod_bases, full_lod_flags,
                                   is_full_lod_ref, record_flags,
@@ -100,7 +101,8 @@ WORLD_EXTENT_CACHE = 'world_extents.json'
 
 def _emit_override(st, ov, rec: dict) -> None:
     """Write an override's record and the master outfit it changes; queue its renamed copies."""
-    for record_bytes in (ov.record_bytes, st.ctx.build_outfit_companion(rec)):
+    rebound = rebound_override(ov, rec, _edited_scripts(st), st.ctx.master_index)
+    for record_bytes in (rebound or ov.record_bytes, st.ctx.build_outfit_companion(rec)):
         if record_bytes:
             st.writer.add_record(record_bytes[:4].decode('ascii', 'replace'),
                                  record_bytes)
@@ -117,6 +119,30 @@ _SEPARATE_TYPES = frozenset({'CELL', 'WRLD', 'DIAL', 'INFO', 'REFR', 'ACHR', 'AC
 _WRITER_TYPES = frozenset({'ARMO', 'CLOT', 'WEAP', 'AMMO', 'NPC_', 'CREA', 'BOOK',
                            'ENCH', 'SPEL', 'SGST', 'ALCH', 'INGR', 'HAIR', 'PROJ', 'IPCT',
                            'IPDS', 'EXPL', 'ADDN', 'MUSC'})
+
+
+def _edited_scripts(st) -> dict:
+    """The master scripts this plugin edits, with their VMAD entries, computed once."""
+    if st.edited_scripts is None:
+        st.edited_scripts = edited_scripts(st.by_type, st.ctx)
+    return st.edited_scripts
+
+
+def _emit_master_rebinds(st) -> None:
+    """Override each master record this plugin leaves alone that runs a master script it edits.
+
+    See: docs/commentary/tes5_import_override.md#edited-master-script-rebinds
+    """
+    if not st.ctx or not _edited_scripts(st):
+        return
+    records, kept = master_rebinds(st.by_type, st.ctx, st.xref, _edited_scripts(st),
+                                   get_formid_index_offset())
+    for record_bytes in records:
+        st.writer.add_record(record_bytes[:4].decode('ascii', 'replace'), record_bytes)
+    st.converted += len(records)
+    print(f"  Edited master scripts: {len(_edited_scripts(st))}; master records rebound to "
+          f"them: {len(records)}" + ''.join(f"; {sig} kept the master's: {n}"
+                                         for sig, n in sorted(kept.items())))
 
 
 def _record_climates(st) -> None:
@@ -187,6 +213,7 @@ def _phase1_simple_records(st, export_dir: str, phase_done, skip_types) -> None:
             edid = get_str(rec, 'EditorID', '?')
             print(f"  ERROR converting {sig} '{edid}': {e}")
             st.errors += 1
+    _emit_master_rebinds(st)
     _stage_runtime_sidecars(st, export_dir)
     phase_done(f'simple records ({len(work_items)})')
 

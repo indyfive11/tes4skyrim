@@ -254,6 +254,9 @@ _CARRIABLE_SIGS = frozenset({
     'ARMO', 'WEAP', 'AMMO', 'CLOT', 'BOOK', 'INGR', 'ALCH',
     'APPA', 'SGST', 'SLGM', 'MISC', 'KEYM'})
 
+#: Carriable bases the game uses up (eaten, drunk, spent on an enchantment, fired), with no holder event after.
+CONSUMABLE_SIGS = frozenset({'ALCH', 'INGR', 'SLGM', 'SGST', 'AMMO'})
+
 #: LIGH DATA.Flags bit 0x02 = "Can be Carried" (a torch/stone), vs a world light.
 _LIGH_CAN_CARRY = 0x02
 

@@ -180,6 +180,24 @@ def attach_scripts_to_record(record_fid: int, scris) -> int:
     return n
 
 
+def edited_script_entry(scri: str) -> tuple:
+    """(Papyrus name, VMAD script entry) binding THIS run's properties of SCPT `scri`, or ('', b'').
+
+    The entry is what `build_vmad_object_script` writes after its header, so
+    it can stand in for the same script's entry in a master's VMAD.  A script
+    whose properties failed to resolve gets none: the master's binding stays.
+    See: docs/commentary/tes5_import_override.md#edited-master-script-rebinds
+    """
+    entry = _PLAN_CTX.get('scpt_by_fid', {}).get(scri)
+    if entry is None:
+        return '', b''
+    props = _memo_props(scri)
+    if scri in _PLAN_CTX.get('props_failed', ()):
+        return '', b''
+    name = papyrus_script_name(entry[0] or f'Script_{scri}')
+    return name, build_vmad_object_script(name, props)[6:]
+
+
 def get_quest_script(record_fid: int):
     """(script_name, props) for a QUST's converted TES4 quest script, or None."""
     return _QUEST_SCRIPT.get(record_fid)
@@ -366,6 +384,7 @@ def build_object_script_plan(by_type: dict, xref, fid_to_edid: dict,
 
     count = sum(_plan_record(sig, rec) for sig in _vmad_signatures()
                 for rec in by_type.get(sig, []))
+    _note_master_bases(xref, master_export)
 
     n_player = build_player_alias_plan(by_type, xref, fid_to_edid, master_export)
     if n_player:
@@ -421,6 +440,23 @@ def _note_base_flags(sig: str, fid_str: str, sctx: str) -> None:
         _CONSUME_DOOR_BASES.add(fid_str)
 
 
+def _note_master_bases(xref, master_export) -> None:
+    """Flag the masters' scripted bases too, so this plugin's placements of them convert as the master's did.
+
+    A placement's linked ref and a door's consumed activation follow its
+    BASE's script.  With only this plugin's bases flagged, a new placement of a
+    master's base got no linked ref, and a re-parented one kept the master's.
+    The script is the effective one: this plugin's edit of it wins.
+
+    See: docs/commentary/tes5_import_override.md#master-bases-keep-their-script-flags
+    """
+    scpts = _PLAN_CTX['scpt_by_fid']
+    for key, rec in records_of(master_export, *_vmad_signatures()):
+        entry = scpts.get(xref.record_scri.get(key, ''))
+        if entry is not None:
+            _note_base_flags(rec.get('Signature', ''), key, entry[1])
+
+
 def _memo_props(scri: str) -> dict:
     """Indexed SCPT `scri`'s bound properties, resolved once per script (each is a converter pass)."""
     memo = _PLAN_CTX['props_memo']
@@ -430,6 +466,7 @@ def _memo_props(scri: str) -> dict:
                                         _PLAN_CTX['xref'], _PLAN_CTX['offset'])
         except Exception:
             memo[scri] = {}
+            _PLAN_CTX.setdefault('props_failed', set()).add(scri)
     return memo[scri]
 
 
