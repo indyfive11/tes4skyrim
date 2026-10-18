@@ -118,7 +118,9 @@ def _patch_sounds(st, export_dir: str = '') -> None:
                          ('DOOR', 'doors'), ('LIGH', 'lights')):
         _n = patch_sound_descriptor_slots(
             st.writer, _sig, _own_souns,
-            lambda soun: master_sound_descriptor(master_index, soun))
+            lambda soun: master_sound_descriptor(master_index, soun),
+            lambda fid: (master_index.record(fid)[:4] == b'SNDR'
+                         if master_index else True))
         if _n:
             bound.append(f"{_n} {_label}")
     if bound:

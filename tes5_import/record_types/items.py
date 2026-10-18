@@ -9,6 +9,7 @@ from output_layout import assets_for
 
 from ..base.constants import LOD_SIZE_THRESHOLD
 from ..base.mesh_bounds import get_mesh_physics_flags
+from ..base.text_reader import remap_formid
 from .common import (
     VENDOR_KYWD,
     _common_header_subs,
@@ -112,14 +113,19 @@ def _wanted_door_models(doors) -> set:
 def _soun_by_edid(by_type, master_export) -> tuple:
     """({lowercase EditorID: SOUN id}, EditorIDs only a master defines).
 
-    A master's SOUN is keyed by its `master_export` key (this plugin's index
-    space); this plugin's own SOUN of the same name wins.
+    A master's SOUN is keyed by its `master_export` key, which is the TES4 id
+    THIS plugin uses, and is shifted into the output's index space exactly as
+    get_formid shifts a SNAM read off the record.  Unshifted, an Oblivion.esm
+    sound keeps index 00 = Skyrim.esm: the slot lands on a Skyrim REFR or on
+    nothing, the master lookup in patch_sound_descriptor_slots misses, and
+    DynDOLOD aborts on the unresolved id.  This plugin's own SOUN of the same
+    name wins.
     """
     table = {}
     for key, rec in (master_export or {}).items():
         edid = rec.get('Signature') == 'SOUN' and get_str(rec, 'EditorID')
         if edid:
-            table[edid.lower()] = int(key, 16)
+            table[edid.lower()] = remap_formid(int(key, 16))
     master_only = set(table)
     for rec in by_type.get('SOUN', []):
         edid = get_str(rec, 'EditorID').lower()
@@ -219,7 +225,7 @@ _SNDR_SLOTS = {
 
 
 def patch_sound_descriptor_slots(writer, rectype, own_soun_ids=None,
-                                 master_sndr=None) -> int:
+                                 master_sndr=None, master_is_sndr=None) -> int:
     """Rewrite one record type's sound slots from TES4 SOUN ids to SNDRs.
 
     These records are written in Phase 1/2, long before Phase 3 mints the
@@ -243,14 +249,19 @@ def patch_sound_descriptor_slots(writer, rectype, own_soun_ids=None,
 
     A slot that IS one of this run's placeholders but whose SOUN produced no
     descriptor is DROPPED, rather than left pointing at a record of the wrong
-    type.
+    type.  A left-alone slot that *master_is_sndr* says is not a master's SNDR
+    either is counted and warned about, so a placeholder that escaped every
+    resolver is loud in the log rather than shipped silently.
     """
     from .sound import sndr_map
     mapping = sndr_map()
+    if master_is_sndr is None:
+        master_is_sndr = lambda fid: True
     own = own_soun_ids if own_soun_ids is not None else set(mapping)
     slots = _SNDR_SLOTS[rectype]
     records = writer._top_groups.get(rectype) or []
     patched = 0
+    unresolved = []
     for i, blob in enumerate(records):
         if not any(sig in blob for sig in slots):
             continue
@@ -269,6 +280,8 @@ def patch_sound_descriptor_slots(writer, rectype, own_soun_ids=None,
                 else:
                     sndr = master_sndr(soun) if master_sndr else 0
                     if not sndr:
+                        if master_sndr and not master_is_sndr(soun):
+                            unresolved.append(soun)
                         out += chunk      # not ours to resolve — leave alone
                         continue
                 if sndr != soun:
@@ -282,6 +295,10 @@ def patch_sound_descriptor_slots(writer, rectype, own_soun_ids=None,
         struct.pack_into('<I', out, 4, len(out) - 24)   # data size
         records[i] = bytes(out)
         patched += 1
+    if unresolved:
+        # Left as-is, these name no SNDR: silent in game, fatal to DynDOLOD.
+        print(f"  WARNING: {len(unresolved)} {rectype} sound slot(s) name no SNDR "
+              f"(e.g. {', '.join('%08X' % f for f in sorted(set(unresolved))[:5])})")
     return patched
 
 
