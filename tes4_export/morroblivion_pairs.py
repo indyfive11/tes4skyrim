@@ -23,7 +23,7 @@ from .morrowind_cell import parse_cell
 from .morrowind_ids import remap_form_id
 from .morrowind_world import cell_grid
 from .record_types.common import escape_value
-from .tes3_reader import get_string, get_subrecord, read_file, read_masters
+from .tes3_reader import get_string, get_subrecord, read_file, read_masters, text
 
 #: A lone `l` between separators, or a trailing one (`bm_ice_gauntletl`).
 _SIDE_LETTER = re.compile(r'(?<![a-z])l(?![a-z])|l$')
@@ -180,7 +180,7 @@ def _vanilla_holders(esms, lefts: set) -> dict:
         for rec in read_file(path)[1]:
             if rec.type in _HOLDER_TYPES and not rec.deleted:
                 items = {get_string(sub).lower() if sub.type == 'INAM'
-                         else sub.data[4:36].split(bytes(1))[0].decode('cp1252').lower()
+                         else text(sub, sub.data[4:36].split(bytes(1))[0]).lower()
                          for sub in rec.subrecords if sub.type in ('NPCO', 'INAM')}
                 held[(_HOLDER_TYPES[rec.type], rec.record_id.lower())] = items & lefts
     return {key: lefts for key, lefts in held.items() if lefts}

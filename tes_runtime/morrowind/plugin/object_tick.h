@@ -53,6 +53,18 @@ void AdvanceGameSeconds(double seconds);
 std::size_t LastTickCount();
 std::size_t TicksRun();
 
+// `GetPCSleep`, held from the engine's sleep-start event until one tick has
+// run after its sleep-stop event; `WakeUpPC` lets go at once.
+//
+// 🛑 Never read off the engine at the moment a script asks. The Sleep/Wait
+// menu pauses the game for the whole sleep, so the tick sees none of it, and
+// `Actor.GetSleepState` is the BED-furniture state, which the player never
+// enters: the Sleep/Wait menu starts the sleep without one.
+void NoteSleepStarted();
+void NoteSleepStopped();
+void WakePlayer();
+bool PlayerSleeping();
+
 // Forgets the discovery sweep's position, the last cell and the accumulator,
 // so one case cannot inherit the sweep's rest from the case before it.
 void ResetTickState();

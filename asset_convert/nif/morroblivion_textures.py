@@ -13,7 +13,7 @@ See: docs/commentary/asset_convert_texture.md#morroblivion-texture-substitution
 
 import os
 
-from asset_convert.nif.tex_paths import texture_rel_path
+from asset_convert.nif.tex_paths import path_bytes, texture_rel_path
 from asset_convert.texture.texture_prune import read_manifest, write_manifest
 from core.plugin_masters import export_root, master_chain, master_export_dir
 
@@ -77,4 +77,4 @@ def texture_key(authored_tex) -> str:
 def substitute(authored_tex):
     """Morroblivion's path for a vanilla diffuse the active map clears, or None."""
     twin = _table().get(texture_key(authored_tex)) if authored_tex else None
-    return None if twin is None else twin.encode('utf-8')
+    return None if twin is None else path_bytes(twin)

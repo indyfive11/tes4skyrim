@@ -778,6 +778,37 @@ middle and ring: 14/14/12 vertices) plus one smoothing pass looked worse
 than the plain closest-point weights. The glove itself sits 0.2-0.6 units
 off the Skyrim hand, so the fit is not what mangles the fingers.
 
+## <a id="morrowind-arm-segments"></a>Morrowind sleeves sit on Skyrim's arm segments
+
+**Code:** `asset_convert/character/morrowind_arm_fit.py`, called from
+`retarget_skin_to_skyrim` after Phase B; `SLOT_RESERVED_PARTS` in
+`morrowind_coverage.py`.
+
+The Morrowind pose cache turns the arm into Skyrim's rest pose but keeps
+Morrowind's joints and bone lengths: posed, the right shoulder sits 6.4 units
+off Skyrim's, the elbow 8.9, the wrist 5.4, and the upper arm is 18.1 long
+against Skyrim's 22.8. A robe sleeve (radius ~5.5) therefore hung beside the
+Skyrim arm and swung about a joint 9 units away (mangled in game), and the
+wrap's correction crumpled it further (52% of `0commonurobeu02` sleeve edges
+off by >15% vs the T-pose source). Each vertex's upper-arm and forearm share
+is now carried from its posed bone onto the Skyrim segment: pivot onto
+Skyrim's, bone direction turned onto Skyrim's, stretched to Skyrim's length
+(`stretch_along`, shared with `RestSkeleton.stretch`). Morrowind joins torso
+and sleeve with a hard seam (100% `Spine2` beside 100% `UpperArm`), so the
+move is scaled by the arm share smoothed over bind space (`SEAM_SIGMA` 3.0);
+a torso vertex near the seam borrows its arm neighbours' move. Measured
+against Morrowind's own posed robe: sleeve edges >15% fell 42.7% -> 26.7%,
+worst seam edge 86% -> 76% (sigma 1/2/4 gave 170/96/67% worst, 22/24/28%
+over). Magic robe 40.1% -> 25.6%; cuirass and glove unchanged within 0.6
+points. Confirmed in game.
+
+Robes and skirts also cover their equip slot's fixed parts (OpenMW
+`npcanimation.cpp`: a robe reserves groin, skirt, legs, knees, upper arms,
+forearms and cuirass; a skirt groin and legs), so no skin fill is baked under
+the sleeves; the record's part list alone left Skyrim arm skin poking through.
+The weight copy in `morrowind_weights.py` now covers the upper arm too, so a
+sleeve spreads over Skyrim's upper-arm twist bones as vanilla robes do.
+
 ## <a id="morrowind-pose-cache"></a>Morrowind rest skeleton and pose cache
 
 **Code:** `tools/generators/kf_morrowind.py`,

@@ -31,6 +31,69 @@ RACE_FORMIDS = {
 #: Imperial: what the importer itself falls back to.
 _DEFAULT_RACE = 0x00000907
 
+#: BODY BYDT part ids of a head and of hair, and the part type of skin (not clothing or armor).
+_FACE_PARTS = (0, 1)
+_SKIN = 0
+
+
+def _text(rec: Tes3Record, sig: str) -> str:
+    """A string subrecord, stripped and lower case; '' when absent."""
+    sub = get_subrecord(rec, sig)
+    return get_string(sub).strip().lower() if sub is not None else ''
+
+
+class RaceTable:
+    """Every RACE's display name and the head and hair meshes its BODY parts use, over a plugin and its masters.
+
+    See: docs/commentary/tes4_export_morrowind.md#custom-races
+    """
+
+    def __init__(self):
+        """Empty; fill with `add`, in load order."""
+        self.names = {}
+        self.parts = {}
+
+    def add(self, records) -> None:
+        """Add a plugin's RACE names and head/hair BODY meshes, later plugins overriding."""
+        for rec in records:
+            if rec.deleted:
+                continue
+            if rec.type == 'RACE':
+                self.names[rec.record_id.lower()] = _text(rec, 'FNAM')
+            elif rec.type == 'BODY':
+                bydt = get_subrecord(rec, 'BYDT')
+                if bydt and len(bydt.data) >= 4 and bydt.data[0] in _FACE_PARTS and not bydt.data[1] \
+                        and bydt.data[3] == _SKIN:
+                    self.parts[rec.record_id.lower()] = (_text(rec, 'FNAM'), _text(rec, 'MODL'))
+
+    def _meshes(self) -> dict:
+        """{race: set of head/hair meshes}."""
+        out = {}
+        for race, mesh in self.parts.values():
+            if race and mesh:
+                out.setdefault(race, set()).add(mesh)
+        return out
+
+    def formids(self) -> dict:
+        """RACE_FORMIDS plus each custom race, by its vanilla display name, else its most-shared vanilla meshes."""
+        vanilla = {race: race for race in RACE_FORMIDS}
+        vanilla.update((n, r) for r, n in self.names.items() if r in RACE_FORMIDS and n)
+        meshes = self._meshes()
+        out = dict(RACE_FORMIDS)
+        for race, name in self.names.items():
+            stand_in = vanilla.get(name) or _most_shared(meshes.get(race, set()), meshes)
+            if race not in out and stand_in:
+                out[race] = RACE_FORMIDS[stand_in]
+        return out
+
+
+def _most_shared(own: set, meshes: dict):
+    """The one vanilla race sharing the most of `own` meshes, or None on no share or a tie."""
+    shared = {race: len(own & meshes.get(race, set())) for race in RACE_FORMIDS}
+    best = max(shared.values())
+    winners = [race for race, n in shared.items() if n == best]
+    return winners[0] if best and len(winners) == 1 else None
+
 #: Attribute order, identical in both games.
 _ATTRIBUTES = ('Strength', 'Intelligence', 'Willpower', 'Agility', 'Speed',
                'Endurance', 'Personality', 'Luck')
@@ -199,6 +262,22 @@ def _emit_authored_identity(lines: list, rec: Tes3Record, rank: int) -> None:
     lines.append(f'MorrowindRank={rank}')
 
 
+def _emit_head_parts(lines: list, rec: Tes3Record, ctx) -> None:
+    """The NPC's authored head and hair BODY ids, each with the mesh it names.
+
+    See: docs/commentary/tes5_import_actors.md#morrowind-faces
+    """
+    for sig, key in (('BNAM', 'MorrowindHead'), ('KNAM', 'MorrowindHair')):
+        sub = get_subrecord(rec, sig)
+        part = get_string(sub) if sub is not None else ''
+        if not part:
+            continue
+        lines.append(f'{key}={escape_value(part)}')
+        model = getattr(ctx, 'body_models', {}).get(part.lower())
+        if model:
+            lines.append(f'{key}Model={escape_value(model)}')
+
+
 def export_NPC_(rec: Tes3Record, ctx) -> list:
     """An NPC in TES4's actor vocabulary, raced by Oblivion FormID.
 
@@ -206,6 +285,7 @@ def export_NPC_(rec: Tes3Record, ctx) -> list:
     """
     lines = [f'EditorID={escape_value(rec.record_id)}']
     emit_str(lines, 'FULL', rec, 'FNAM')
+    emit_str(lines, 'MorrowindAnim', rec, 'MODL')
     flags = unpack(rec, 'FLAG', '<I')
     lines.append(f'ACBS.Flags={_map_flags(flags[0] if flags else 0, _NPC_FLAGS)}')
     npdt = get_subrecord(rec, 'NPDT')
@@ -216,8 +296,9 @@ def export_NPC_(rec: Tes3Record, ctx) -> list:
         rank = _emit_npc_autocalc_stats(lines, npdt.data)
     race = get_subrecord(rec, 'RNAM')
     race_id = get_string(race).lower() if race else ''
-    lines.append(f'RNAM.Race={RACE_FORMIDS.get(race_id, _DEFAULT_RACE):08X}')
+    lines.append(f'RNAM.Race={ctx.race_formids.get(race_id, _DEFAULT_RACE):08X}')
     _emit_authored_identity(lines, rec, rank)
+    _emit_head_parts(lines, rec, ctx)
     _emit_faction(lines, rec, ctx, rank)
     emit_inventory(lines, rec, ctx)
     _emit_spells(lines, rec, ctx)

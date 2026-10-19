@@ -604,7 +604,7 @@ def _topic_voice_types(child_infos: list, npc_to_vtyp: dict, offset: int) -> set
     return vtyps
 
 
-def _service_gate(service_kind: str) -> bytes:
+def service_gate(service_kind: str) -> bytes:
     """The CTDAs gating a Barter/Training menu topic, or b''.
 
     Two ANDed conditions: WHO offers the service (merchant marker faction for
@@ -798,7 +798,7 @@ def _build_one_topic(dial_rec, info_by_dial, writer, offset,
     service_kind, service_prompt = service_menu_entry(dial_rec)
     service_gate_bytes = b''
     if service_kind:
-        service_gate_bytes = _service_gate(service_kind)
+        service_gate_bytes = service_gate(service_kind)
         if not service_gate_bytes:
             return b'', b'', 0, 0, 0
         dial_rec['FULL'] = service_prompt

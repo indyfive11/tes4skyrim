@@ -460,6 +460,13 @@ template <class R, bool Enabled>
 class OpSetEnabled : public Interpreter::Opcode0 {
     void execute(Interpreter::Runtime& runtime) override {
         const std::string ref = R::Target(runtime);
+        // 🛑 Only a CHANGE reaches the engine. A TES3 script states what it
+        // wants every frame (`if ( Storyvar < 2 ) Disable else Enable`), and
+        // OpenMW's enable/disable do nothing when the state already holds;
+        // the Skyrim natives do not, and thirty a second per script starved
+        // the cell's own 3D loads.
+        // See: docs/commentary/morrowind_runtime.md#a-disabled-reference-is-still-in-the-world
+        if (Hooks().isDisabled && Hooks().isDisabled(ref) == !Enabled) return;
         Log("world: %s %s", ref.c_str(), Enabled ? "enabled" : "disabled");
         if (Hooks().setEnabled) Hooks().setEnabled(ref, Enabled);
     }

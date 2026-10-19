@@ -1,10 +1,10 @@
 """
-Skyrim skin weights for the hands and forearms of a Morrowind wearable.
+Skyrim skin weights for the hands and arms of a Morrowind wearable.
 
-Morrowind binds a glove to three finger chains rooted inside the palm and to a
-forearm with no twist bones. Renamed onto Skyrim's five-finger hand and
-twisting forearm, the palm follows the fingers and the cuff stays still while
-the wrist turns. Every vertex's share on those bones is replaced by the
+Morrowind binds a glove to three finger chains rooted inside the palm, and an
+arm with no twist bones. Renamed onto Skyrim's five-finger hand and twisting
+arm, the palm follows the fingers, the cuff stays still while the wrist turns,
+and a sleeve rolls whole with the upper arm. Every vertex's share on those bones is replaced by the
 weights at the closest point of the Skyrim skin (body and hands), so the
 piece moves as the skin it covers.
 
@@ -23,8 +23,8 @@ from asset_convert.nif.pyffi_monkey_patch import apply_patches
 apply_patches()
 from pyffi.formats.nif import NifFormat
 
-#: Bone-name words of the hand and forearm chains, in every skeleton's naming.
-_ARM_WORDS = ('Hand', 'Finger', 'Forearm')
+#: Bone-name words of the hand and arm chains, in every skeleton's naming.
+_ARM_WORDS = ('Hand', 'Finger', 'Forearm', 'UpperArm', 'Upperarm')
 
 #: Skyrim skin triangles, nearest by centroid, searched per armor vertex.
 _CANDIDATES = 8
@@ -37,7 +37,7 @@ _SOURCE_NAME = {sk: src for src, sk in OBLIVION_TO_SKYRIM_BONE_MAP.items()}
 
 
 def _is_arm(name: str) -> bool:
-    """Whether a bone belongs to the hand or forearm chain."""
+    """Whether a bone belongs to the hand or arm chain."""
     return any(word in name for word in _ARM_WORDS)
 
 
@@ -165,7 +165,7 @@ def _reweight(block, ref, tree, nodes: dict, place) -> bool:
 
 
 def reweight_arms(skinned_geoms, skel_root, sk_skel: dict, female: bool, weight: int) -> int:
-    """Give every skinned shape's hand and forearm share the Skyrim skin's weights; shapes changed.
+    """Give every skinned shape's hand and arm share the Skyrim skin's weights; shapes changed.
 
     Runs on skeleton-space vertices at the Skyrim rest, after the bones are
     placed and before the bind data is rebuilt; bones the Skyrim skin needs

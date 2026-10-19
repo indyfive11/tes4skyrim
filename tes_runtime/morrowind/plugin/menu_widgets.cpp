@@ -2,6 +2,9 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <iterator>
+
+#include <components/misc/utf8stream.hpp>
 
 #include "menu_layout.h"
 
@@ -63,18 +66,25 @@ double ThumbDrag::Fraction(double y) const {
     return std::clamp((y - grab - bar->y - layout::kScrollTrackTop) / track, 0.0, 1.0);
 }
 
-double CharWidth(char c) {
-    const int index = static_cast<unsigned char>(c) - layout::kFirstCode;
-    constexpr int count = sizeof(layout::kAdvance) / sizeof(layout::kAdvance[0]);
-    const int units = (index >= 0 && index < count)
-                          ? layout::kAdvance[index]
-                          : layout::kAdvance['?' - layout::kFirstCode];
-    return units * static_cast<double>(layout::kFontPx) / layout::kFontEm;
+char32_t NextChar(const std::string& text, std::size_t& i) {
+    const auto* start = reinterpret_cast<Utf8Stream::Point>(text.data());
+    const auto [code, next] = Utf8Stream::decode(start + i, start + text.size());
+    i = static_cast<std::size_t>(next - start);
+    return code;
+}
+
+double CharWidth(char32_t c) {
+    const auto* first = std::begin(layout::kGlyphCode);
+    const auto* last = std::end(layout::kGlyphCode);
+    const auto* found = std::lower_bound(first, last, c);
+    if (found == last || *found != c) found = std::lower_bound(first, last, U'?');
+    return layout::kAdvance[found - first] * static_cast<double>(layout::kFontPx) /
+           layout::kFontEm;
 }
 
 double TextWidth(const std::string& text) {
     double width = 0;
-    for (char c : text) width += CharWidth(c);
+    for (std::size_t i = 0; i < text.size();) width += CharWidth(NextChar(text, i));
     return width;
 }
 

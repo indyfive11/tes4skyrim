@@ -27,8 +27,6 @@ DPLT_CREATURE_LIST = 0x0010F2A6     # FLST DefaultMasterPackageListCreature
 PKID_NPC_SANDBOX = 0x000BFB6B       # PACK DefaultSandboxCurrentLocation1024
 DPLT_NPC_LIST = 0x00021E81          # FLST DefaultMasterPackageList
 
-#: Skyrim.esm FLST DefaultHoldPositionCurrentLoc64List: DefaultHoldPositionCurrentLoc64 alone.
-DPLT_HOLD_LIST = 0x000A6853
 CSTY_DEFAULT = 0x0000003D           # CSTY DefaultCombatstyle
 CSTY_ANIMAL = 0x00057BE8            # CSTY csWolf (vanilla wolf/dog ZNAM)
 CLAS_CREATURE_PREDATOR = 0x000131E6  # CLAS EncClassAnimalPredator (wolf...)
@@ -40,6 +38,19 @@ _PACK_TYPES = {}
 # Packages that belong to a quest and therefore live on a QUST alias (ALPC)
 # instead of the actor's PKID list.  Populated from the PackagePlan.
 _QUEST_PACKAGES = set()
+
+#: This run's stand-still FLST (stand_still.create_stand_still); [0] until set.
+_STAND_STILL = [0]
+
+
+def set_stand_still_list(fid: int) -> None:
+    """Register this run's stand-still FLST."""
+    _STAND_STILL[0] = fid
+
+
+def stand_still_list() -> int:
+    """The DPLT that leaves an actor standing where it is."""
+    return _STAND_STILL[0]
 
 
 def load_package_types(by_type: dict, master_export: dict = None) -> None:
@@ -118,7 +129,7 @@ def default_package_list(pack_fids, standing_list: int) -> int:
     """
     fids = [f for f in pack_fids if f]
     if fids and all(f in _QUEST_PACKAGES for f in fids):
-        return DPLT_HOLD_LIST
+        return stand_still_list()
     return standing_list
 
 

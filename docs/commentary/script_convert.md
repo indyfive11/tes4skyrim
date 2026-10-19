@@ -529,6 +529,18 @@ the base gate stripped cross-script variables off unique activators and
 Inventory types (ARMO/WEAP/…) stay excluded even with a lone world placement:
 their properties mean the BASE (AddItem/RemoveItem), never that placement.
 
+Three places may give a property its record's script class: the body resolver
+(`resolve_name._record`), `converter._record_property_type`, and the SCRO table
+(`scro_refs.add_scro_ref`), which declares every record a script's SCRO list
+names before the body is converted, and again before each quest stage. All three
+ask this function. While the table did not, a scripted key, book, armour, weapon
+or ingredient was declared with its script class unless a command of the body
+re-typed it afterwards, and in a quest's fragment script a later stage's list
+declared it again after one had. Oblivion.esm had 42 such properties in 20
+generated scripts (18 armour, 13 books, 7 keys, 3 weapons, 1 ingredient), 17 of
+them named by a statement such as `JulienneFanisVendorChest.AddItem(MS37FrostSalts, 5)`
+in `TES4_QF_MS37.psc`; Knights.esp had 10 in one script.
+
 ### <a id="generated-script-types"></a>🔴 A generated script type is recognized by PREFIX, and the prefix is per-game
 
 **`is_generated_script_type()` in `script_convert/constants.py` is the ONLY way
@@ -6668,6 +6680,19 @@ build's leftovers once. A name two plugins both write is reported; the one
 converted last wins, as `Data\Scripts` would resolve it.
 (`script_convert/ownership.py`)
 
+<a id="departed-owners"></a>**A departed member's list is dropped.** A list
+outlives its plugin: after a patch was deleted from an imported mod folder its
+list kept protecting the scripts it once wrote, among them an old
+`TES4Polyfill`, whose two-argument `LineBegan` then broke thousands of fragment
+compiles against the master's new three-argument calls (issue #84). Before a
+plugin's scripts are cleared, every list in its folder whose owner is no longer
+a live member of the same registered mod is deleted, with the scripts only it
+claimed. A member is gone when it is unregistered, or when it was imported from
+a folder that is still on disk and no longer holds it
+(`source_registry.removed_from_folder`). An archive import or an unreachable
+folder keeps every member, because nothing then says the plugin was removed.
+A plugin from a game Data folder belongs to no registered mod and is never judged.
+
 A directory another process holds open (an Explorer window or a shell sitting
 in `scripts/source`) empties but cannot be removed: Windows refuses the final
 `rmdir` with WinError 32. The wipe keeps that empty directory rather than
@@ -6809,6 +6834,18 @@ attached Actor script's type — so every spawn logged "cannot be bound" and
 `Cannot place a None object`. A spawned actor also needs the script on its
 BASE record; see
 [tes5_import_quest.md](tes5_import_quest.md#actor-script-relocation).
+
+<a id="owner-is-a-base"></a>`SetOwnership` and `IsOwner` are a third: TES4
+names the owning NPC by its BASE, and `SetActorOwner` / `GetActorOwner` work in
+`ActorBase`. An NPC_/CREA operand is typed `ActorBase` and passed as it is
+(`commands._owner_is_base`); a placed actor is still read through
+`GetActorBase()`. Typed as a reference, the owner bound its one placed
+reference and `X.GetActorBase()` compiled, until the same script also named it
+in `SetEssential`: the property is then `ActorBase`, which has no
+`GetActorBase`, and the script did not compile. A base placed nowhere, or
+several times, had no reference to bind at all.
+The player is left out: `Player` is an NPC_ record too, but every other command
+passes that name as a reference, so its property must stay one.
 
 ### <a id="unlock-globals-declared-once"></a>Unlock globals are declared once
 

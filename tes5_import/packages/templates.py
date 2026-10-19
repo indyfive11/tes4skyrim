@@ -325,6 +325,14 @@ USE_IDLE_MARKER = Template(
     slots={'target': 0},
 )
 
+#: DoNothing (000654E2): a lone Wait, no Travel; ActualSeconds 0, StopMovement 1 as vanilla MQ105DoNothing.
+DO_NOTHING = Template(
+    formid=0x000654E2, edid='DoNothing', xnam=5, version=0,
+    index_list=(3, 4),
+    inputs=(T_FLOAT, T_BOOL),
+    defaults={0: 0.0, 1: 1},
+)
+
 # --- FleeTo (000C7039) — flee to a location ------------------------------
 FLEE_TO = Template(
     formid=0x000C7039, edid='FleeTo', xnam=17, version=8,

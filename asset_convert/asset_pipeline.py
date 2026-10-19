@@ -21,9 +21,10 @@ from pathlib import Path
 
 from asset_convert import case_paths
 from core.plugin_masters import masters_from_export_header
-from asset_convert.game_paths import (namespace_for, owns_namespace,
+from asset_convert.game_paths import (ascii_dest, namespace_for,
+                                       owns_namespace, remove_non_ascii,
                                        set_namespace)
-from asset_convert.sources import bsa_extract
+from asset_convert.sources import bsa_extract, source_registry
 from asset_convert.nif import grass_profile
 from asset_convert.nif import morroblivion_textures
 from asset_convert.character import hair_pipeline
@@ -164,6 +165,46 @@ def _persist_mesh_manifests(mesh_stats, manifest_dir, partial: bool) -> None:
         texture_prune.write_manifest(manifest_dir, refs, name)
 
 
+def _exported_members(export_root, plugin) -> list:
+    """The exported plugins of `plugin`'s mod, which share one mesh tree.
+
+    See: docs/commentary/asset_convert_nif.md#one-plan-per-mod
+    """
+    members = [m for m in source_registry.group_members(export_root, plugin)
+               if (record_dir(export_root, m) / '_HEADER.txt').is_file()]
+    return members or [plugin]
+
+
+def _mesh_plan(rec_dirs: list) -> dict:
+    """The per-mesh conversion plan the records in `rec_dirs` call for, together."""
+    plan = {}
+    for d in rec_dirs:
+        wearable_plan.merge_sibling(plan, wearable_plan.build_plan(d))
+    print(f"  Wearable variant plan: {len(plan)} meshes referenced by ARMO/CLOT")
+    masses = {}
+    for d in rec_dirs:
+        for path, kg in clutter_plan.build_clutter_masses(d).items():
+            masses[path] = max(masses.get(path, kg), kg)
+    plan[clutter_plan.CLUTTER_KEY] = masses
+    print(f"  Dynamic clutter plan: {len(masses)} item models")
+    plan[door_plan.DOOR_KEY] = set().union(*map(door_plan.build_door_models, rec_dirs))
+    plan[door_plan.REACH_KEY] = any(map(door_plan.places_morrowind_doors, rec_dirs))
+    print(f"  Door animation plan: {len(plan[door_plan.DOOR_KEY])} door models"
+          f"{', Morrowind-placed' if plan[door_plan.REACH_KEY] else ''}")
+    plan[fixture_plan.FIXTURE_KEY] = set().union(
+        *map(fixture_plan.build_fixture_models, rec_dirs))
+    plan[fixture_plan.ANIMATED_KEY] = set().union(
+        *map(fixture_plan.build_animated_models, rec_dirs))
+    print(f"  Placed fixture plan: {len(plan[fixture_plan.FIXTURE_KEY])} scenery models")
+    travels = {}
+    for d in rec_dirs:
+        for marker, travel in furniture_travel.sit_travels(d).items():
+            travels.setdefault(marker, travel)
+    plan[furniture_travel.SIT_TRAVEL_KEY] = travels
+    print(f"  Sit travel plan: {len(travels)} marker ids with an authored enter animation")
+    return plan
+
+
 def _convert_mesh_tree(mesh_src, mesh_dst, asset_dir, export_root, plugin,
                        mesh_subdirs, parallax, textures_only):
     """Run the NIF batch over `mesh_src`; return its stats dict.
@@ -176,26 +217,11 @@ def _convert_mesh_tree(mesh_src, mesh_dst, asset_dir, export_root, plugin,
     cleared first.
     See: docs/commentary/tes5_import_pipeline.md#producer-emitted-mesh-entries
     """
-    rec_dir = record_dir(export_root, plugin)
-    plan = wearable_plan.build_plan(rec_dir)
-    print(f"  Wearable variant plan: {len(plan)} meshes referenced by "
-          f"ARMO/CLOT")
-    masses = clutter_plan.build_clutter_masses(rec_dir)
-    plan[clutter_plan.CLUTTER_KEY] = masses
-    print(f"  Dynamic clutter plan: {len(masses)} item models")
-    doors = door_plan.build_door_models(rec_dir)
-    plan[door_plan.DOOR_KEY] = doors
-    plan[door_plan.REACH_KEY] = door_plan.places_morrowind_doors(rec_dir)
-    print(f"  Door animation plan: {len(doors)} door models"
-          f"{', Morrowind-placed' if plan[door_plan.REACH_KEY] else ''}")
-    fixtures = fixture_plan.build_fixture_models(rec_dir)
-    plan[fixture_plan.FIXTURE_KEY] = fixtures
-    plan[fixture_plan.ANIMATED_KEY] = fixture_plan.build_animated_models(rec_dir)
-    print(f"  Placed fixture plan: {len(fixtures)} scenery models")
-    plan[furniture_travel.SIT_TRAVEL_KEY] = furniture_travel.sit_travels(rec_dir)
-    print(f"  Sit travel plan: {len(plan[furniture_travel.SIT_TRAVEL_KEY])} "
-          f"marker ids with an authored enter animation")
-    resting, stocked = resting_items_plan.write_index(export_root, plugin)
+    members = _exported_members(export_root, plugin)
+    if len(members) > 1:
+        print(f"  Mesh plan from every member of the mod: {', '.join(members)}")
+    plan = _mesh_plan([record_dir(export_root, m) for m in members])
+    resting, stocked = resting_items_plan.write_index(export_root, members)
     plan[resting_items_plan.RESTING_KEY] = resting
     print(f"  Resting items plan: {stocked} fixture models share a cell "
           f"with an item")
@@ -274,13 +300,21 @@ def convert_meshes(source_file, extract_dir='export', output_dir='output',
     print("=" * 60)
 
     _copy_and_fix_textures(asset_dir, plugin_dir, ns, stats, rec_dir)
+    _finish_output(rec_dir, plugin_dir, output_dir, ns, stats)
+    return stats
+
+
+def _finish_output(rec_dir, plugin_dir, output_dir, ns, stats):
+    """Write the missing LTEX normals, drop files an older build named non-ASCII, report case paths."""
     checked, written = landscape_normals.ensure_ltex_normals(
         rec_dir, plugin_dir / 'textures', output_dir)
     stats['ltex_normals_written'] = written
     print(f"  LTEX normals: {checked} land textures, {written} flat normals "
           f"written for textures shipping none")
+    stale = sum(remove_non_ascii(plugin_dir / sub / ns)
+                for sub in ('meshes', 'textures'))
+    print(f"  Non-ASCII names from an older build removed: {stale}")
     _report_case_paths(plugin_dir)
-    return stats
 
 
 def _report_case_paths(plugin_dir) -> None:
@@ -455,8 +489,7 @@ def _copy_tree(src, dst):
     for root, _dirs, files in os.walk(src):
         for fname in files:
             src_file = Path(root) / fname
-            rel = src_file.relative_to(src)
-            dst_file = dst / rel
+            dst_file = ascii_dest(dst, src_file.relative_to(src))
             os.makedirs(dst_file.parent, exist_ok=True)
             shutil.copy2(str(src_file), str(dst_file))
             count += 1

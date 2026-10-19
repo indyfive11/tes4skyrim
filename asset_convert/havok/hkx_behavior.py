@@ -33,7 +33,7 @@ import ntpath
 import os
 import ntpath
 
-from asset_convert.game_paths import current_namespace
+from asset_convert.game_paths import current_namespace, find_nocase
 
 from asset_convert.havok.behavior_clips import (
     CAST_PHASES,
@@ -943,6 +943,13 @@ def _manifest(name: str, namespace: str, layout: dict, cs: _ClipSet,
     }
 
 
+def _skeleton_nif(creature_dir: str) -> str:
+    """The folder's `skeleton.nif`, in whatever case it is spelled there."""
+    exact = os.path.join(creature_dir, 'skeleton.nif')
+    return exact if os.path.isfile(exact) else str(
+        find_nocase(creature_dir, 'skeleton.nif') or exact)
+
+
 def generate_creature_project(creature_dir: str, name: str, out_root: str,
                               fps: float = 30.0, sound_slots: dict = None,
                               sound_chances: dict = None,
@@ -963,11 +970,7 @@ def generate_creature_project(creature_dir: str, name: str, out_root: str,
     layout = project_layout(name, namespace)
     proj_dir = os.path.join(out_root, layout['fs_dir'])
     clips = classify_clips(creature_dir)
-    # Match 'skeleton.nif' case-insensitively: a mod's loose files keep their
-    # author's casing ('Skeleton.nif'), which a case-sensitive filesystem honours.
-    skeleton_nif = next((os.path.join(creature_dir, f) for f in os.listdir(creature_dir)
-                         if f.lower() == 'skeleton.nif'),
-                        os.path.join(creature_dir, 'skeleton.nif'))
+    skeleton_nif = _skeleton_nif(creature_dir)
     bones = generate_skeleton_hkx(
         skeleton_nif, os.path.join(proj_dir, 'character assets',
                                    'skeleton.hkx'))

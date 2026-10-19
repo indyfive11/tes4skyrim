@@ -45,6 +45,7 @@ import math
 import numpy as np
 
 from . import corridor_grow, params, world
+from .spawn_nodes import drop_covered_discs, standing_spawns
 
 # Trim node-disc rays at stair nodes so the FLAT disc never rides out over a
 # descending flight (see the disc loop in _build_corridor_strips).  Module
@@ -746,10 +747,11 @@ def _steep_strips(strips):
 def _build_corridor_strips(nodes, edges, node_z, wall_hit=None,
                            walk_probe=None, field=None,
                            blocking=None, walkable=None, sample=None,
-                           land_from=None, land=None):
+                           land_from=None, land=None, lone=()):
     """One corridor ribbon per pathgrid edge, plus a disc at every node.
 
-    Each strip carries its centerline ends (after dead-end extension), the
+    `lone` names nodes with no edge that still get a disc.  Each strip
+    carries its centerline ends (after dead-end extension), the
     along/perpendicular units, a MAX half-width for level lookups, and in
     Phase 2 an explicit grown outline.  They are NOT yet a shared mesh --
     corridor_union takes their boolean union and retriangulates it.
@@ -757,6 +759,7 @@ def _build_corridor_strips(nodes, edges, node_z, wall_hit=None,
     """
     grow = params.RIBBON_GROW and blocking is not None
     degree = _node_degrees(edges)
+    degree.update((i, 0) for i in lone if i not in degree)
     flat = {e for e in edges if _stands_on_land(land, nodes, node_z, *e)}
     steep_count = _steep_counts(nodes, edges, node_z, flat)
     profiles = _steep_profiles(nodes, edges, node_z, degree, sample, flat)
@@ -1114,6 +1117,17 @@ def _centerline_samples(nodes, edges, node_z):
     return out
 
 
+def _spawn_samples(strips, standing, kept, nodes, node_z):
+    """Walked samples for spawn nodes: each standing node, and each kept disc's rim.
+
+    A lone disc has no centerline and its vertices all sit on the rim.
+    """
+    rims = [(px, py, node_z[s['edge'][0]])
+            for s in strips if s['edge'][0] == s['edge'][1] and s['edge'][0] in kept
+            for (px, py) in s['poly']]
+    return rims + [(nodes[i][0], nodes[i][1], node_z[i]) for i in sorted(standing)]
+
+
 def _tri_carries_door(verts, tri, door_xy):
     """Does a door threshold stand on this triangle, within a storey?"""
     a, b, c = (verts[i] for i in tri)
@@ -1281,11 +1295,12 @@ LIP_MARCH_STEP = 4.0
 
 def build_corridors(refr_recs, base_model_by_fid, get_collision, nodes, edges,
                     land_rec=None, origin_x=0.0, origin_y=0.0, doors=None,
-                    door_bases=None):
+                    door_bases=None, lone=()):
     """Phase-1 corridor navmesh for one cell: (verts, tris, ledges) lists.
 
     doors: [(x, y, z, rot_z, is_teleport, width), ...] pivot-corrected door
     centers.  door_bases: low-24 DOOR base FormIDs contributing no collision.
+    lone: edgeless nodes that still get a disc (spawn_nodes).
     ledges: [(upper_tri, lower_tri, drop), ...] for NVNM Ledge Up/Down links.
     See: docs/commentary/tes5_import_navmesh.md#ribbon-construction
     """
@@ -1299,20 +1314,21 @@ def build_corridors(refr_recs, base_model_by_fid, get_collision, nodes, edges,
     sample = _surface_sampler(walkable)
     node_z = [_snap_node_z(sample, nodes[i][0], nodes[i][1], nodes[i][2])
               for i in range(len(nodes))]
+    wall_hit = _lazy_wall_hit(blocking)
+    standing = standing_spawns(lone, nodes, node_z, sample, wall_hit)
 
-    corridors = _build_corridor_strips(nodes, edges, node_z,
-                                       blocking=blocking, walkable=walkable,
-                                       sample=sample, land_from=land_from,
-                                       land=world.land_field(
-                                           land_rec, origin_x, origin_y))
+    corridors = _build_corridor_strips(
+        nodes, edges, node_z, blocking=blocking, walkable=walkable,
+        sample=sample, land_from=land_from,
+        land=world.land_field(land_rec, origin_x, origin_y), lone=standing)
+    corridors, kept = drop_covered_discs(corridors, lone)
     cell_clip = None
     if land_rec is not None:
         cell_clip = (origin_x, origin_y, origin_x + 4096.0, origin_y + 4096.0)
 
     door_list = list(doors or ())
     door_strips, door_edges, door_pins = _door_geometry(
-        corridors, door_list, nodes, edges, _lazy_wall_hit(blocking),
-        cell_clip)
+        corridors, door_list, nodes, edges, wall_hit, cell_clip)
 
     verts, tris = corridor_union.build_union_mesh(
         corridors, extra_strips=door_strips, door_edges=door_edges,
@@ -1324,13 +1340,15 @@ def build_corridors(refr_recs, base_model_by_fid, get_collision, nodes, edges,
 
     door_xy = [(x, y, z) for (x, y, z, r, tp, w) in door_list]
     pin_xy = (list(door_xy) + door_pins
-              + _centerline_samples(nodes, edges, node_z))
+              + _centerline_samples(nodes, edges, node_z)
+              + _spawn_samples(corridors, standing, kept, nodes, node_z))
     verts, tris, ledge_marks = corridor_clean.finalize(
         verts, tris, cs=(params.CS_EXTERIOR if land_rec is not None
                          else params.CS),
         doors=door_xy, cell_bounds=cell_clip, pin_xy=pin_xy,
         door_pins=door_pins,
-        node_pins=[(nodes[i][0], nodes[i][1]) for i in range(len(nodes))],
+        node_pins=[(nodes[i][0], nodes[i][1]) for i in range(len(nodes))
+                   if i not in lone or i in standing],
         ground_ok=_outline_ground_ok(blocking, walkable),
         ledge_reach=_ledge_reach(blocking, walkable), surface=sample)
 

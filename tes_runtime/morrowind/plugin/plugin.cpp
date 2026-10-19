@@ -20,6 +20,7 @@
 #include "log.h"
 #include "main_thread.h"
 #include "menu.h"
+#include "npc_anim.h"
 #include "object_tick.h"
 #include "paths.h"
 #include "script_tables.h"
@@ -56,6 +57,7 @@ void OnSKSEMessage(SKSEMessagingInterface::Message* msg) {
     }
     const std::size_t actors = LoadActorIndex();
     Log("activation: %zu actor(s) indexed", actors);
+    LoadNpcAnims(SidecarDir());
     // After the actor index, which is what resolves each plugin's live slot.
     BindInstances();
     // The MenuManager singleton only exists once the game is up, so the menu

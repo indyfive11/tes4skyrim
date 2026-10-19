@@ -42,7 +42,7 @@ DEFAULT_HEADERS = tuple(sorted(str(p) for p in Path('tes_runtime').rglob('*ids.h
 #: The sources whose `Native<>` calls pair a Papyrus name with an id.
 DEFAULT_SOURCES = tuple(
     'tes_runtime/morrowind/plugin/game_calls%s.cpp' % part
-    for part in ('', '_move', '_ai', '_query'))
+    for part in ('', '_move', '_ai', '_query', '_message'))
 
 #: The unpacked build the ids were found in, and its version.
 IDENTITY_EXE = ('C:/Program Files (x86)/Steam/steamapps/content/app_489830'

@@ -106,19 +106,25 @@ def _verify_against_cache(job: dict, result: tuple) -> tuple:
     return fresh_bytes, fresh_meta
 
 
-def _convert(job: dict, geom_cache):
-    """(navm_bytes, meta) for one job, built against `geom_cache` (None: no cache)."""
+def convert_job(job: dict, base_model_by_fid: dict, door_fids, geom_cache=None):
+    """(navm_bytes, meta) for one gathered job (pool.gather_navm_jobs)."""
     return convert_PGRD(
         job['pgrd_rec'],
         land_rec=job['land_rec'],
         cell_rec=job['cell_rec'],
         refr_recs=job['refr_recs'],
-        base_model_by_fid=_BASE_MODEL_BY_FID,
-        door_fids=_DOOR_FIDS,
+        base_model_by_fid=base_model_by_fid,
+        door_fids=door_fids,
         navm_fid=job['navm_fid'],
         geom_cache=geom_cache,
         extra_door_refrs=job.get('extra_door_refrs'),
+        spawns=job.get('spawns'),
     )
+
+
+def _convert(job: dict, geom_cache):
+    """(navm_bytes, meta) for one job, built against `geom_cache` (None: no cache)."""
+    return convert_job(job, _BASE_MODEL_BY_FID, _DOOR_FIDS, geom_cache)
 
 
 def _attempt(job: dict, geom_cache) -> tuple:

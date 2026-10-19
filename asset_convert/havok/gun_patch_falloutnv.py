@@ -15,9 +15,7 @@ See: docs/commentary/asset_convert_falloutnv.md#gun-graph
 
 import os
 
-from asset_convert.havok.animation_data import (clip_block_lines,
-                                                crc_triple_lines,
-                                                motion_entry_lines)
+from asset_convert.havok.animation_data import crc_triple_lines
 from asset_convert.havok.gun_graph_falloutnv import (
     BASH_EVENTS, CROSSBOW_ATTACK, ENGINE_RELOAD, FIRE_EVENT, GUN_EVENTS, GUN_HAND_TYPE,
     GUN_VARIABLES,
@@ -28,11 +26,10 @@ from asset_convert.havok.gun_moves_falloutnv import (SPRINT_SELECTORS,
                                                      jump_replacements,
                                                      sprint_selector)
 from asset_convert.havok.humanoid_graph import (LAST_VANILLA_TYPE,
-                                                CharacterFile, HumanoidGraph,
-                                                param_text)
-from asset_convert.sources.skyrim_assets import get_asset_bytes
+                                                THIRD_PERSON, HumanoidGraph,
+                                                load_vanilla, param_text)
+from asset_convert.havok.humanoid_graph import register_clips as register_animations
 
-CHARACTER = 'meshes\\actors\\character\\'
 #: The five graphs that get real gun nodes.
 PATCHED = ('0_master', '1hm_behavior', 'weapequip', '1hm_locomotion',
            'sprintbehavior')
@@ -43,9 +40,7 @@ CLONED = ('mt_behavior', 'bashbehavior', 'blockbehavior',
           'crossbow_direction_behavior', 'magicmountedbehavior',
           'shoutmounted_behavior', 'magic_readied_direction_behavior')
 #: Per view: graph subfolder, work-dir stem prefix, (character hkx, project txt) pairs, manifest section.
-VIEWS = (('', '', (('characters\\defaultmale.hkx', 'DefaultMale.txt'),
-                   ('characters female\\defaultfemale.hkx',
-                    'DefaultFemale.txt')), 'clips'),
+VIEWS = (('', '', THIRD_PERSON, 'clips'),
          ('_1stperson', '1st_',
           (('_1stperson\\characters\\firstperson.hkx', 'FirstPerson.txt'),),
           'first_person'))
@@ -58,14 +53,6 @@ SET_FILE = 'TES4Guns.txt'
 # ---------------------------------------------------------------------------
 # Per-file patches
 # ---------------------------------------------------------------------------
-
-def _load(rel: str, work_dir: str, stem: str, cls=HumanoidGraph):
-    """The vanilla packfile at `rel` decompiled, or None when absent."""
-    raw = get_asset_bytes(CHARACTER + rel)
-    if raw is None:
-        return None
-    return cls.from_hkx(raw, work_dir, stem)
-
 
 def _prepare(g: HumanoidGraph, clips: GunClips) -> GunGraphBuilder:
     """Add the gun tables to a graph; a builder whose ids follow the file's."""
@@ -230,7 +217,7 @@ def patch_behaviors(clips: GunClips, char_out: str, work_dir: str,
     out_dir = os.path.join(char_out, *rel_dir.split('\\'))
     generators = []
     for stem in PATCHED:
-        g = _load(f'{rel_dir}\\{stem}.hkx', work_dir, prefix + stem)
+        g = load_vanilla(f'{rel_dir}\\{stem}.hkx', work_dir, prefix + stem)
         if g is None:
             raise FileNotFoundError(f'vanilla {rel_dir}\\{stem}.hkx is not '
                                     'available')
@@ -238,7 +225,7 @@ def patch_behaviors(clips: GunClips, char_out: str, work_dir: str,
                                       os.path.join(out_dir, f'{stem}.hkx'))
     cloned = 0
     for stem in CLONED:
-        g = _load(f'{rel_dir}\\{stem}.hkx', work_dir, prefix + stem)
+        g = load_vanilla(f'{rel_dir}\\{stem}.hkx', work_dir, prefix + stem)
         if g is not None and clone_slots(g, os.path.join(out_dir,
                                                          f'{stem}.hkx')):
             cloned += 1
@@ -250,45 +237,15 @@ def patch_behaviors(clips: GunClips, char_out: str, work_dir: str,
 def register_clips(clips: GunClips, generators: list, char_out: str,
                    work_dir: str, view=VIEWS[0]) -> dict:
     """Append the clips to the view's character files; the fragment appends."""
-    anims = list(dict.fromkeys(clips.entries[g['stem']]['anim']
-                               for g in generators))
-    animdata, animsetdata = [], []
-    for rel, project in view[2]:
-        cf = _load(rel, work_dir, os.path.splitext(os.path.basename(rel))[0],
-                   CharacterFile)
-        if cf is None:
-            raise FileNotFoundError(f'vanilla {rel} is not available')
-        index = cf.append_animations(anims)
-        cf.write(os.path.join(char_out, *rel.split('\\')))
-        animdata.append({'project': project,
-                         'clips': _clip_lines(clips, generators, index),
-                         'motions': _motion_lines(clips, index)})
+    animdata = register_animations(clips.entries, generators, char_out,
+                                   work_dir, view[2])
+    animsetdata = []
+    for _rel, project in view[2]:
         stem = os.path.splitext(project)[0]
         animsetdata.append({'entry': f'{stem}Data\\{project}',
                             'set_file': SET_FILE,
                             'block': _set_block(clips, generators)})
     return {'animdata_append': animdata, 'animsetdata_append': animsetdata}
-
-
-def _clip_lines(clips: GunClips, generators: list, index: dict) -> list:
-    """animationdata clip blocks for every generator, against `index`."""
-    lines = []
-    for g in generators:
-        e = clips.entries[g['stem']]
-        lines += clip_block_lines(
-            {'name': g['name'], 'rate': g['rate'], 'sounds': e['sounds'],
-             'feet': e['feet'], 'events': g['events'],
-             'duration': e['duration']}, index[e['anim']])
-    return lines
-
-
-def _motion_lines(clips: GunClips, index: dict) -> list:
-    """One root-motion block per appended animation index."""
-    lines = []
-    for anim, uid in sorted(index.items(), key=lambda kv: kv[1]):
-        e = next(c for c in clips.entries.values() if c['anim'] == anim)
-        lines += motion_entry_lines(uid, e['duration'], e.get('motion'))
-    return lines
 
 
 def _set_block(clips: GunClips, generators: list) -> list:

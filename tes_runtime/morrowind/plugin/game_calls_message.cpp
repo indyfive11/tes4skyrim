@@ -49,6 +49,29 @@ using NotificationFn = void (*)(void* vm, std::uint32_t stack, void* tag,
 
 NotificationFn g_notification = nullptr;
 
+// Game.PlayBink(file, abortOnFocusLost, abortOnEscape, loop, pauseVoice),
+// global, so its self slot is a tag.
+using PlayBinkFn = void (*)(void* vm, std::uint32_t stack, void* tag,
+                            void* file, bool abortOnFocusLost,
+                            bool abortOnEscape, bool loop, bool pauseVoice);
+
+PlayBinkFn g_playBink = nullptr;
+
+// OpenMW's video pauses every other sound and never stops for a lost focus;
+// the engine's player runs on the game thread.
+void PlayBink(const std::string& file, bool allowSkipping) {
+    if (!g_playBink) {
+        Log("game: PlayBink '%s' -- Game.PlayBink unresolved", file.c_str());
+        return;
+    }
+    PostToMainThread([file, allowSkipping]() {
+        void* name = nullptr;
+        if (!FixedString(&name, file.c_str())) return;
+        g_playBink(PapyrusVm(), 0, nullptr, &name, false, allowSkipping, false,
+                   true);
+    });
+}
+
 // The engine reports the click on the game thread, and a script only ever
 // reads it from its own tick, so the plain store is enough.
 void OnButton(unsigned int button) {
@@ -94,11 +117,13 @@ void Notify(const std::string& text) {
     g_notification(PapyrusVm(), 0, nullptr, &message);
 }
 
-void InstallMessageCalls() {
+void InstallMessageCalls(GameHooks& hooks) {
     g_showMessageBox = Native<ShowMessageBoxFn>("ShowMessageBox",
                                                 ids::kShowMessageBox);
     g_notification = Native<NotificationFn>("Debug.Notification",
                                             ids::kDebugNotification);
+    g_playBink = Native<PlayBinkFn>("Game.PlayBink", ids::kGamePlayBink);
+    hooks.playBink = PlayBink;
 }
 
 }  // namespace gamecalls

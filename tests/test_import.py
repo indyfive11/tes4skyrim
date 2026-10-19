@@ -376,6 +376,9 @@ class TestConverters:
         assert part_slots(piece('ARMO', 2, (14, 24))) == []
         assert part_slots(piece('ARMO', 6, (7, 9))) == [7, 9]
         assert armo_slots({'BMDT.BipedFlags': '16'}) == (1 << 3) | (1 << 29)
+        assert part_slots(piece('CLOT', 4, (3,))) == [3, 4, 5, 11, 12, 13, 14, 19, 20, 21, 22]
+        assert part_slots(piece('CLOT', 7, (5,))) == [5, 4, 21, 22]
+        assert part_slots(piece('CLOT', 4)) == []
 
     def test_armo_armor_type_enum(self):
         """ArmorType: 0=Light, 1=Heavy, 2=Clothing per wbArmorTypeEnum."""

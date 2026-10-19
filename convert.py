@@ -102,6 +102,7 @@ create_pool_job()
 from source_paths import (get_paths, is_asset_only,
                           load_config, resolve_plugin_path)
 from asset_convert.sources import source_registry
+from asset_convert import video
 from convert_cli import (SCOPED_STEPS, apply_config_overrides, build_parser,
                          selected_steps, unscoped_steps)
 import preflight
@@ -447,7 +448,7 @@ def phase_export(file_name: str, tes4_data: str, export_dir: str,
                  config: dict):
     """Export TES4 records using the Python binary reader."""
     from tes4_export.tes4_reader import read_file
-    from tes4_export.export import export_file, export_header
+    from tes4_export.export import export_file, export_header, use_source_codec
 
     if file_name == PATCH_NAME:
         return run_patch_export(export_dir)
@@ -475,6 +476,7 @@ def phase_export(file_name: str, tes4_data: str, export_dir: str,
     print(f"  Scanned {len(all_records)} records in {t1-t0:.2f}s")
 
     os.makedirs(out_dir, exist_ok=True)
+    use_source_codec(source, all_records)
     export_header(header, out_dir)
 
     # Export EVERY record in the file. Records carrying a master's load-order
@@ -800,8 +802,12 @@ def phase_import(file_name: str, tes4_data: str, tes5_data: str,
 # Phase 7: CONVERT SOUNDS
 # ===========================================================================
 
-def phase_sounds(file_name: str, config: dict, output_dir: str = None):
-    """Convert extracted sound files from BSA to XWM format in output."""
+def phase_sounds(file_name: str, config: dict, output_dir: str = None,
+                 tes4_data: str = None):
+    """Convert extracted sound files from BSA to XWM format in output.
+
+    Music and the videos the plugin's scripts play ride this stage too.
+    """
     _use_plugin_namespace(file_name)
     from asset_convert.asset_pipeline import convert_sounds
 
@@ -836,6 +842,9 @@ def phase_sounds(file_name: str, config: dict, output_dir: str = None):
           f"{mstats.get('cached', 0)} cached, "
           f"{mstats.get('failed', 0)} failed, "
           f"{mstats.get('tracks', 0)} tracks)")
+    video.report(file_name, video.convert_videos(
+        file_name, extract_dir, out_dir,
+        _plugin_data_dir(file_name, tes4_data, extract_dir)))
     return True
 
 
@@ -1166,7 +1175,8 @@ def _phase_runners(run) -> dict:
                                                 only=run.args.only),
         'import': lambda fn: phase_import(fn, run.tes4_data, run.tes5_data,
                                           run.export_dir, cfg, output_dir=out),
-        'sounds': lambda fn: phase_sounds(fn, cfg, output_dir=out),
+        'sounds': lambda fn: phase_sounds(fn, cfg, output_dir=out,
+                                          tes4_data=run.tes4_data),
         'scripts': lambda fn: (phase_scripts(fn, cfg, output_dir=out)
                                and phase_compile(fn, cfg, output_dir=out)),
         'lod': lambda _fn: _create_lod(out),

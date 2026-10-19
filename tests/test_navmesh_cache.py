@@ -1604,3 +1604,12 @@ def test_worker_context_is_initialized_before_any_rebuild(monkeypatch):
 
     navm_pool.precompute_navmeshes({}, _StubWriter(), {}, set())
     assert calls == ['init', 'prepare']
+
+
+def test_no_pathgrids_gathers_no_jobs_and_still_stamps_cell_grids(monkeypatch):
+    """Without PGRDs no master index is built, yet a grid-less exterior CELL still gets XCLC 0,0."""
+    monkeypatch.setattr(navm_pool, '_merged', lambda *a: pytest.fail('master merge built'))
+    cell = {'FormID': '00000A01', 'ParentWRLD': '0000003C', 'RecordFlags': '0'}
+    by_type = {'CELL': [cell], 'WRLD': [{'FormID': '0000003C'}]}
+    assert navm_pool.gather_navm_jobs(by_type, set(), {'REFR': {}}) == []
+    assert (cell['XCLC.X'], cell['XCLC.Y']) == ('0', '0')

@@ -338,6 +338,9 @@ _support_root = False
 #: The converted masters' origin FACTs, which a dependent's actors join.
 _master_origin_fids: list = []
 
+#: The origin FACTs a new generic line is gated on.
+_gate_origin_fids: list = []
+
 #: EditorID of the plugin-origin marker FACT, the same in every root master.
 _ORIGIN_EDID = 'TES4PluginOriginFaction'
 
@@ -352,9 +355,9 @@ def origin_gate(info_rec: dict) -> bytes:
 
     See: docs/commentary/tes5_import_actors.md#origin-faction
     """
-    if not _origin_faction_fid or not needs_origin_gate(info_rec, _origin_tes4_index):
+    if not _gate_origin_fids or not needs_origin_gate(info_rec, _origin_tes4_index):
         return b''
-    return build_or_chain(FUNC_GET_IN_FACTION, [_origin_faction_fid])
+    return build_or_chain(FUNC_GET_IN_FACTION, _gate_origin_fids)
 
 
 def is_support_root() -> bool:
@@ -373,15 +376,21 @@ def origin_memberships() -> list:
     return [f for f in [_origin_faction_fid] + _master_origin_fids if f]
 
 
-def create_origin_faction(writer, support_root: bool) -> int:
+def create_origin_faction(writer, support_root: bool, by_type: dict) -> int:
     """Create this plugin's origin marker faction; `support_root` if no master supplies one.
 
+    New generic lines gate on it, or on the listed masters' when `by_type`
+    defines no actor of its own, since then nobody could join it.
     See: docs/commentary/tes5_import_actors.md#origin-faction
     """
     global _origin_faction_fid, _origin_tes4_index, _support_root
     _origin_faction_fid = writer.derive_formid('FACT', _ORIGIN_EDID)
     _origin_tes4_index = writer.own_index - get_formid_index_offset()
     _support_root = support_root
+    own_actors = any(get_formid(rec, 'FormID') >> 24 == writer.own_index
+                     for sig in ('NPC_', 'CREA') for rec in by_type.get(sig, ()))
+    _gate_origin_fids[:] = ([_origin_faction_fid] if own_actors or not _master_origin_fids
+                            else _master_origin_fids)
     subs = pack_string_subrecord('EDID', _ORIGIN_EDID)
     subs += pack_subrecord('DATA', struct.pack('<I', 0))
     writer.add_record('FACT', pack_record('FACT', _origin_faction_fid, 0, subs))
@@ -397,7 +406,8 @@ def reset_origin_faction(master_index=None) -> None:
     global _origin_faction_fid, _origin_tes4_index, _support_root
     _origin_faction_fid = _origin_tes4_index = 0
     _support_root = False
-    found = (master_index.find_all_by_edid(b'FACT', _ORIGIN_EDID)
+    _gate_origin_fids.clear()
+    found =(master_index.find_all_by_edid(b'FACT', _ORIGIN_EDID)
              if master_index is not None else [])
     _master_origin_fids[:] = [f for f in found
                               if f >> 24 >= get_formid_index_offset()]
@@ -498,7 +508,7 @@ def create_vendor_factions(by_type: dict, writer, master_index=None,
     global _merchant_marker_faction_fid
     _vendor_faction_cache.clear()
     _merchant_faction_by_npc.clear()
-    _merchant_marker_faction_fid = 0
+    _merchant_marker_faction_fid = _adopted(master_index, b'FACT', _MERCHANT_MARKER_EDID)
 
     vendor_actors, unique_services = _collect_vendor_actors(by_type)
     if not unique_services:
@@ -514,9 +524,8 @@ def create_vendor_factions(by_type: dict, writer, master_index=None,
     n_dedicated = _write_merchant_factions(
         writer, vendor_actors, flst_by_svc, _build_merchant_chest_map(by_type),
         stock or {})
-    _merchant_marker_faction_fid = (
-        _adopted(master_index, b'FACT', _MERCHANT_MARKER_EDID)
-        or _write_merchant_marker(writer))
+    _merchant_marker_faction_fid = (_merchant_marker_faction_fid
+                                    or _write_merchant_marker(writer))
 
     print(f"  Vendor factions: {len(flst_by_svc)} shared service combos, "
           f"{n_dedicated} chest/stock merchants, merchant marker "
@@ -621,7 +630,7 @@ def get_vendor_faction_fids_for_actor(actor_fid: int, services: int) -> list[int
 
 
 def get_merchant_faction_fid() -> int:
-    """The single FACT the Barter topic gates on (0 if no merchants exist).
+    """The single FACT the Barter topic gates on: ours, a master's, or 0.
 
     See: docs/commentary/tes5_import_actors.md#barter-gate-ctda-limit
     """
@@ -683,7 +692,7 @@ def create_trainer_records(by_type: dict, writer, master_index=None,
     See: docs/commentary/tes5_import_actors.md#trainers
     """
     global _trainer_faction_fid
-    _trainer_faction_fid = 0
+    _trainer_faction_fid = _adopted(master_index, b'FACT', _TRAINER_FACTION_EDID)
     _trainer_class_by_npc.clear()
 
     clas_by_fid = {get_formid(r, 'FormID'): r
@@ -702,9 +711,7 @@ def create_trainer_records(by_type: dict, writer, master_index=None,
         return
     print(f"  Creating trainer records for {len(trainers)} trainer NPCs...")
 
-    _trainer_faction_fid = (
-        _adopted(master_index, b'FACT', _TRAINER_FACTION_EDID)
-        or _write_trainer_faction(writer))
+    _trainer_faction_fid = _trainer_faction_fid or _write_trainer_faction(writer)
 
     clone_cache: dict[tuple, int] = {}
     for npc_fid, clas_rec, teaches_idx, max_level in trainers:
@@ -753,7 +760,7 @@ def create_service_records(by_type: dict, writer, ctx, export_dir: str,
 
 
 def get_trainer_faction_fid() -> int:
-    """The synthetic trainer FACT FormID (0 when no trainers exist)."""
+    """The trainer marker FACT: ours, a master's, or 0."""
     return _trainer_faction_fid
 
 

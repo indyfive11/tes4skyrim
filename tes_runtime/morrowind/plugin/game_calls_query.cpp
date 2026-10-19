@@ -9,6 +9,7 @@
 #include "ids.h"
 #include "log.h"
 #include "main_thread.h"
+#include "object_tick.h"
 
 namespace tesruntime::mw {
 namespace gamecalls {
@@ -46,15 +47,15 @@ ClassificationFn g_classification = nullptr;
 RefQueryFn       g_weaponDrawn = nullptr;
 RefQueryFn       g_isSneaking = nullptr;
 RefQueryFn       g_actorRunning = nullptr;
-// Actor.IsEquipped(Form), Actor.GetSleepState(), Actor.GetEquippedSpell(int).
+// Actor.IsEquipped(Form), Actor.GetEquippedSpell(int).
 using FormQueryFn = bool (*)(void* vm, std::uint32_t stack, void* ref,
                              void* form);
-using StateFn = std::int32_t (*)(void* vm, std::uint32_t stack, void* ref);
 using HandQueryFn = void* (*)(void* vm, std::uint32_t stack, void* ref,
                               std::int32_t hand);
 FormQueryFn      g_isEquipped = nullptr;
-StateFn          g_sleepState = nullptr;
 HandQueryFn      g_equippedSpell = nullptr;
+ProcessEventFn   g_sleepStart = nullptr;
+ProcessEventFn   g_sleepStop = nullptr;
 
 // `GetDeadCount id`: the ENGINE's own count for that base actor, which covers
 // every death, scripted or not, and is saved with the game.
@@ -206,14 +207,36 @@ bool ItemIsEquipped(const std::string& actor, const std::string& item) {
            g_isEquipped(PapyrusVm(), 0, ref, form);
 }
 
-// `GetPCSleep`: GetSleepState is an ENUM -- 0 awake, 2 about to sleep,
-// 3 asleep, 4 waking. TES3 asks one yes/no question, which is state 3.
-constexpr std::int32_t kSleepStateAsleep = 3;
+// `GetPCSleep`: the VM's own sleep sinks, which hear the engine start and end
+// the player's sleep, drive the tick's latch (object_tick.h).
+int SleepStartHook(void* sink, const void* event, void* source) {
+    PostToMainThread(NoteSleepStarted);
+    return g_sleepStart(sink, event, source);
+}
 
-bool PlayerIsSleeping() {
-    void* ref = PlayerRef();
-    return ref && g_sleepState &&
-           g_sleepState(PapyrusVm(), 0, ref) == kSleepStateAsleep;
+int SleepStopHook(void* sink, const void* event, void* source) {
+    PostToMainThread(NoteSleepStopped);
+    return g_sleepStop(sink, event, source);
+}
+
+ProcessEventFn HookVmSink(const char* what, std::uint64_t sink,
+                          std::uint64_t process, ProcessEventFn hook) {
+    return reinterpret_cast<ProcessEventFn>(SwapVtableSlot(
+        what, Resolve(what, sink, nullptr), ids::kProcessEventSlot,
+        Resolve(what, process, nullptr), reinterpret_cast<void*>(hook)));
+}
+
+void InstallSleepSinks() {
+    if (g_sleepStart) return;
+    g_sleepStart = HookVmSink("SkyrimVM OnSleepStart sink",
+                              ids::kVmSleepStartSink,
+                              ids::kVmSleepStartProcess, &SleepStartHook);
+    g_sleepStop = HookVmSink("SkyrimVM OnSleepStop sink",
+                             ids::kVmSleepStopSink, ids::kVmSleepStopProcess,
+                             &SleepStopHook);
+    Log("sleep: OnSleepStart sink %s, OnSleepStop sink %s",
+        g_sleepStart ? "hooked" : "NOT hooked",
+        g_sleepStop ? "hooked" : "NOT hooked");
 }
 
 // `GetSpellReadied`: TES3's third draw state. Skyrim has no drawstate
@@ -310,15 +333,13 @@ void InstallQueryCalls(GameHooks& hooks) {
     hooks.fighting = FightingActor;
     g_isEquipped = Native<FormQueryFn>("Actor.IsEquipped",
                                        ids::kActorIsEquipped);
-    g_sleepState = Native<StateFn>("Actor.GetSleepState",
-                                   ids::kActorGetSleepState);
+    InstallSleepSinks();
     g_equippedSpell = Native<HandQueryFn>("Actor.GetEquippedSpell",
                                           ids::kActorEquippedSpell);
     hooks.weaponDrawn = WeaponIsDrawn;
     hooks.sneaking = ActorSneaking;
     hooks.running = ActorRunning;
     hooks.itemEquipped = ItemIsEquipped;
-    hooks.playerSleeping = PlayerIsSleeping;
     hooks.spellReadied = SpellIsReadied;
     hooks.applyMovementFlag = ApplyMovementFlag;
     hooks.resurrect = ResurrectActor;

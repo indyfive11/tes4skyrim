@@ -6,14 +6,16 @@ importer.  Real .spt inputs are used when the Oblivion export is available;
 structural assertions run unconditionally against synthetic parses.
 """
 
+import json
 import struct
 from pathlib import Path
 
 import numpy as np
 import pytest
 
+import source_paths
 from asset_convert.speedtree.spt_parser import parse_spt, SptParseError, BezierSpline
-from asset_convert.speedtree import spt_generator
+from asset_convert.speedtree import spt_engine_geom, spt_generator
 
 _EXPORT = Path('export/Oblivion.esm/trees')
 _HAVE_EXPORT = _EXPORT.is_dir() and any(_EXPORT.glob('*.spt'))
@@ -513,3 +515,75 @@ class TestEngineBranchPath:
         assert geo.n_leaves == 0
         assert geo.bark_tris is not None and len(geo.bark_tris) > 0, \
             'the bark must still be there'
+
+
+def _install(root, name, exe=True):
+    """A game folder under `root` with a Data dir and, unless told not, an Oblivion.exe."""
+    (root / name / 'Data').mkdir(parents=True)
+    if exe:
+        (root / name / 'Oblivion.exe').write_bytes(b'')
+    return str(root / name / 'Data')
+
+
+class TestFindOblivionExe:
+    """Which install's Oblivion.exe the engine harness is pointed at."""
+
+    def _find(self, tmp_path, monkeypatch, registry, configured, **given):
+        """`find_oblivion_exe()` with the registry stubbed and a real config file."""
+        monkeypatch.setattr(source_paths, '_registry_path',
+                            lambda game: registry if game == 'oblivion' else '')
+        monkeypatch.setattr(source_paths, 'SCRIPT_DIR', tmp_path)
+        (tmp_path / 'conversion_config.json').write_text(
+            json.dumps({'tes4DataPath': configured}), encoding='utf-8')
+        return spt_engine_geom.find_oblivion_exe(**given)
+
+    def test_the_configured_install_is_found_without_a_registry_entry(
+            self, tmp_path, monkeypatch):
+        """A machine with no registry key finds the install `tes4DataPath` names."""
+        configured = _install(tmp_path, 'Oblivion')
+        assert self._find(tmp_path, monkeypatch, '', configured) == str(
+            tmp_path / 'Oblivion' / 'Oblivion.exe')
+        assert self._find(tmp_path, monkeypatch, '', '') == ''
+        monkeypatch.chdir(tmp_path / 'Oblivion')
+        assert self._find(tmp_path, monkeypatch, '', '') == ''
+
+    def test_the_config_comes_before_the_registry(self, tmp_path, monkeypatch):
+        """With an Oblivion.exe in both, the harness follows `tes4DataPath`."""
+        registry = _install(tmp_path, 'Registered')
+        configured = _install(tmp_path, 'Configured')
+        assert self._find(tmp_path, monkeypatch, registry, configured) == str(
+            tmp_path / 'Configured' / 'Oblivion.exe')
+
+    def test_the_registry_answers_when_the_config_has_no_oblivion_exe(
+            self, tmp_path, monkeypatch):
+        """An empty, stale or exe-less `tes4DataPath` leaves the registry's install."""
+        registry = _install(tmp_path, 'Registered')
+        expected = str(tmp_path / 'Registered' / 'Oblivion.exe')
+        for configured in ('', str(tmp_path / 'gone' / 'Data'),
+                           _install(tmp_path, 'DataOnly', exe=False)):
+            assert self._find(tmp_path, monkeypatch, registry, configured) == expected
+        (tmp_path / 'conversion_config.json').unlink()
+        assert spt_engine_geom.find_oblivion_exe() == expected
+
+    def test_a_data_folder_passed_in_is_the_only_one_looked_at(
+            self, tmp_path, monkeypatch):
+        """An explicit `tes4_data` outranks both the config and the registry."""
+        registry = _install(tmp_path, 'Registered')
+        configured = _install(tmp_path, 'Configured')
+        given = _install(tmp_path, 'Given')
+        assert self._find(tmp_path, monkeypatch, registry, configured,
+                          tes4_data=given) == str(tmp_path / 'Given' / 'Oblivion.exe')
+        bare = _install(tmp_path, 'Bare', exe=False)
+        assert self._find(tmp_path, monkeypatch, registry, configured,
+                          tes4_data=bare) == ''
+
+    def test_a_config_that_cannot_be_parsed_is_an_error_only_when_it_is_read(
+            self, tmp_path, monkeypatch):
+        """Without an explicit folder the config is read, and a broken one raises."""
+        given = _install(tmp_path, 'Given')
+        self._find(tmp_path, monkeypatch, '', '')
+        (tmp_path / 'conversion_config.json').write_text('{not json', encoding='utf-8')
+        assert spt_engine_geom.find_oblivion_exe(given) == str(
+            tmp_path / 'Given' / 'Oblivion.exe')
+        with pytest.raises(ValueError):
+            spt_engine_geom.find_oblivion_exe()

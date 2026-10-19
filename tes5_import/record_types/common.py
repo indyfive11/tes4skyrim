@@ -4,7 +4,7 @@ Shared helper functions for TES5 record converters.
 
 import struct
 
-from asset_convert.game_paths import current_namespace
+from asset_convert.game_paths import ascii_path, current_namespace
 from asset_convert.nif.tex_paths import asset_anchor, authored_rel, names_anchor
 from ..base.mesh_bounds import get_mesh_obnd
 from ..base.text_reader import get_float, get_formid, get_int, get_str
@@ -29,11 +29,13 @@ from ..base.writer import (
 def prefix_path(path: str) -> str:
     """Namespaced `authored_rel` of an AUTHORED path; MUST match rewrite_tex_path.
 
+    Names the `ascii_path` the asset ships under.
     See: docs/commentary/asset_convert_texture.md#per-game-asset-namespace
     """
     if not path:
         return path
-    return current_namespace() + '\\' + authored_rel(path, asset_anchor(path))[0]
+    return (current_namespace() + '\\'
+            + ascii_path(authored_rel(path, asset_anchor(path))[0]))
 
 
 def landscape_texture_path(icon_path: str) -> str:

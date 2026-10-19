@@ -27,6 +27,7 @@ constexpr IdRva kBuild1597[] = {
     {55377, 0x96ddb0},  // kDebugNotification
     {55465, 0x972e10},  // kGetFormFromFile
     {55469, 0x9731b0},  // kGameGetPlayer
+    {55488, 0x9736a0},  // kGamePlayBink
     {55566, 0x9794b0},  // kGameGetForm
     {56632, 0x9ae930},  // kRefGetParentCell
     {68552, 0xc11f30},  // kControlMapAllowTextInput
@@ -63,6 +64,7 @@ constexpr IdRva kBuildVR[] = {
     {55377, 0x9a7e90},  // kDebugNotification
     {55465, 0x9acca0},  // kGetFormFromFile
     {55469, 0x9ad050},  // kGameGetPlayer
+    {55488, 0x9ad540},  // kGamePlayBink
     {55566, 0x9b3b80},  // kGameGetForm
     {56632, 0x9e9460},  // kRefGetParentCell
     {68552, 0xc4e8d0},  // kControlMapAllowTextInput

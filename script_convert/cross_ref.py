@@ -16,7 +16,7 @@ from tes5_import.base.text_reader import parse_export_file, unescape_value
 from tes5_import.record_types.world_falloutnv import is_fallout_export
 from asset_convert.game_paths import current_namespace
 from core.plugin_masters import (
-    master_chain, master_dir, masters_from_export_header
+    master_chain, master_dir, master_index_map, masters_from_export_header
 )
 from core.worker_budget import worker_count
 from core.worldspace_names import converted_worldspace_edid, renames_for
@@ -286,58 +286,65 @@ _SIG_SCANNERS = {'SCPT': _scan_scpt, 'CELL': _scan_cell, 'NPC_': _scan_actor,
                  'LIGH': _scan_light}
 
 
-#: Id fields the scan reads, re-keyed with the record's own FormID.
+#: The fields of a record that hold a FormID, beside its own, every `AIPackage[n]`
+#: and every `Item[n].FormID`; re-keyed with the record's own FormID.
 _ID_FIELDS = ('SCRI', 'NAME', 'ParentWRLD', 'DATA.EffectShader',
               'DATA.EnchantEffect', 'XESP.Reference', 'TNAM.Template')
 
+_FORMID_RE = re.compile(r'[0-9A-Fa-f]{8}')
 
-def _index_remap(root_dir: str, export_dir: str):
-    """{`export_dir`'s load-order index -> the root plugin's}, or None for the root.
 
-    Each master's export numbers ids in ITS OWN master order: DLCFrostcrag's
-    and Knights' own records are both `01xxxxxx`, while a plugin mastering
-    both names Knights' as `02xxxxxx`. Merged raw, the later master
-    overwrote the earlier one's ids.
+def _index_remaps(export_dir: str, dirs: list) -> list:
+    """For each folder of `dirs`: {index byte of its ids -> `export_dir`'s}, or None.
+
+    None reads the ids as written: the plugin's own folder, and a master whose
+    every index already agrees. A master the plugin does not list keeps only
+    the indexes that name a file it does list.
+    See: docs/commentary/tes5_import_override.md#script-graph-rekeys-masters
     """
-    if os.path.normcase(os.path.abspath(export_dir)) == \
-            os.path.normcase(os.path.abspath(root_dir)):
-        return None
-    slot_of = {n.lower(): i
-               for i, n in enumerate(masters_from_export_header(root_dir))}
-    own = masters_from_export_header(export_dir)
-    remap = {k: slot_of[n.lower()] for k, n in enumerate(own)
-             if n.lower() in slot_of}
-    self_slot = slot_of.get(os.path.basename(os.path.normpath(export_dir)).lower())
-    if self_slot is not None:
-        remap[len(own)] = self_slot
-    return remap
+    names = masters_from_export_header(export_dir)
+    slot_of = {n.lower(): i for i, n in enumerate(names)}
+    name_of = {master_dir(export_dir, n): n.lower() for n in master_chain(export_dir)}
+    remaps = []
+    for folder in dirs[:-1]:
+        slot = slot_of.get(name_of.get(folder))
+        remap = {k: v for k, v in master_index_map(folder, slot, names).items() if v is not None}
+        identity = slot is not None and remap == {i: i for i in range(slot + 1)}
+        remaps.append(None if identity else remap)
+    return remaps + [None]
 
 
-def _rekey(value: str, remap: dict, keep_unmapped: bool = True):
-    """`value` (a hex FormID, maybe followed by text) in the root's index space."""
-    m = re.match(r'[0-9A-Fa-f]{8}', value or '')
+def _rekey(value: str, remap: dict) -> str:
+    """`value` (a hex FormID, text may follow) in the plugin's index space; '' for a file it does not load."""
+    m = _FORMID_RE.match(value or '')
     if not m:
         return value
     raw = int(m.group(0), 16)
     slot = remap.get(raw >> 24)
     if slot is None:
-        return value if keep_unmapped else None
-    return '%08X' % (slot << 24 | raw & 0xFFFFFF) + value[8:]
+        return ''
+    return '%08X%s' % (slot << 24 | raw & 0xFFFFFF, value[8:])
+
+
+def _rekey_record(rec: dict, remap: dict) -> None:
+    """Move a master record's own id and its id fields into the plugin's index space."""
+    for key in rec:
+        if (key == 'FormID' or key in _ID_FIELDS or key.startswith('AIPackage[')
+                or (key.startswith('Item[') and key.endswith('.FormID'))):
+            rec[key] = _rekey(rec[key], remap)
 
 
 def _scan_record_lines(sig: str, lines: list, out: dict, remap: dict = None):
-    """Scan one record's KEY=VALUE lines into the partial result dicts."""
+    """Scan one record's KEY=VALUE lines into the partial result dicts.
+
+    `remap` is given for a master's record (`_index_remaps`).
+    """
     rec = _record_fields(lines)
+    if remap is not None:
+        _rekey_record(rec, remap)
     formid = rec.get('FormID')
     if not formid:
         return
-    if remap is not None:
-        formid = _rekey(formid, remap, keep_unmapped=False)
-        if formid is None:
-            return          # names a file the root plugin does not load
-        for key in [k for k in rec if k in _ID_FIELDS or k.startswith('AIPackage[')
-                    or (k.startswith('Item[') and k.endswith('.FormID'))]:
-            rec[key] = _rekey(rec[key], remap)
     edid = rec.get('EditorID')
     if edid:
         out['formid_to_edid'][formid] = edid
@@ -526,8 +533,9 @@ class CrossRefGraph:
 
         jobs = []
         dirs, self.worldspace_renames = _scan_chain(export_dir)
-        for d in dirs:
-            remap = _index_remap(export_dir, d)
+        for d, remap in zip(dirs, _index_remaps(export_dir, dirs)):
+            if remap == {}:
+                continue
             for fname in sorted(os.listdir(d)):
                 if not fname.endswith('.txt'):
                     continue
@@ -1560,8 +1568,10 @@ def _condition_stage_readers(export_dir: str):
     then unknown, and no quest of that build may be called a library.
     """
     readers = set()
-    for d in _export_dirs_with_masters(export_dir):
-        remap = _index_remap(export_dir, d)
+    dirs = _export_dirs_with_masters(export_dir)
+    for d, remap in zip(dirs, _index_remaps(export_dir, dirs)):
+        if remap == {}:
+            continue
         for name in _CONDITION_FILES:
             lines = _condition_lines(os.path.join(d, name))
             if lines is None:
@@ -1570,7 +1580,9 @@ def _condition_stage_readers(export_dir: str):
                 data = bytes.fromhex(raw[:32])
                 if int.from_bytes(data[8:12], 'little') in _STAGE_READ_FUNCTIONS:
                     fid = '%08X' % int.from_bytes(data[12:16], 'little')
-                    readers.add((fid if remap is None else _rekey(fid, remap)).upper())
+                    fid = fid if remap is None else _rekey(fid, remap)
+                    if fid:
+                        readers.add(fid.upper())
     return readers
 
 

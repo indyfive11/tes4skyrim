@@ -2693,6 +2693,38 @@ engine freeing a dead one (measured 2026-09-18: a cached pointer to a dead
 `PlaceAtPC` creature crashed the poll 41s later, `RefByRuntimeId`). Polling
 first is free and does not depend on which case applies.
 
+<a id="a-disabled-reference-is-still-in-the-world"></a>**A disabled reference
+is still in the world (2026-10-07, PENDING in-game confirmation).** `Is3DLoaded`
+answers false for a disabled reference, so a script that disabled its own
+object was unbound as "unloaded" and never ran again. Arktwend's tavern
+messenger (`ANFTaverneBoteScript`) starts with `if ( Storyvar < 2 ) Disable`
+and enables himself once the story reaches him: the log shows him bound, run
+once, `world: ANFTaverneBote disabled`, and then nothing, and the player was
+left with no way out of the scene. 260 of Arktwend's 753 scripts hold a bare
+`Disable`. OpenMW's `executeLocalScripts` (`apps/openmw/engine.cpp`) runs every
+local script of the active cells with no enabled test. So `LoadedRef` and
+`Load3DStateRef` (`game_calls.cpp` `InWorld`) now count a reference with no 3D
+as loaded while its parent cell is attached: `Cell.IsAttached`, id 56055,
+whose whole body is `cmp byte ptr [cell+0x44], 7`. The cell rather than
+`IsDisabled`, because enabling queues the 3D: for the frames after `Enable`
+the reference is neither disabled nor loaded, and a test on the flag would
+unbind the script on the tick it woke up.
+
+The first build of this unblocked the scene (in-game 2026-10-07: the messenger
+enabled, walked over and force-greeted) and brought two faults with it, both
+read out of that run's log:
+
+- **An interior must also be the player's cell.** The engine keeps the interior
+  just left attached, so the chargen cell's scripts ran on after the player was
+  moved to the tavern: `a_Ring Erscheint_Licht_02 enabled` was logged 1,457
+  more times, 48 seconds' worth.
+- **`Enable` and `Disable` reach the engine only on a CHANGE**
+  (`script_runner.cpp` `OpSetEnabled`). A TES3 script states what it wants
+  every frame and OpenMW's calls do nothing when the state holds; the Skyrim
+  natives were called thirty times a second per script, 90,760 log lines in
+  eight minutes, and the player saw the tavern's NPCs pop in slowly. That the
+  native calls caused the slow loading is inferred from the timing, not proven.
+
 Two things the sweep must carry that a click already had:
 
 - **The BASE id, from the staged row.** `BindInstance` passed `""`, so every
@@ -2796,7 +2828,11 @@ Morrowind Mod, Tamriel Rebuilt and Project Tamriel namespaces. An id a page
 lists FIRST beats the same id in another page's `also` list.
 
 The authored file covers only what UESP misses and a player would see -- it
-is hand-written and has no generator.
+is hand-written and has no generator. Arktwend (English) is the extreme case:
+it kept its German journal ids and authors QSTN names for only 31 of its 123
+journals, so 89 journals with pages showed raw ids like `A_I_TAVERNE`. Their
+names live in the authored file, taken from a title the first page carries
+where it has one ("The Patriarch Inn"), else composed from the pages.
 
 ### <a id="game-calls"></a>Natives, found at their registrations
 
@@ -3609,6 +3645,69 @@ entirely, so the audit reported 487 commands rather than 508 and could not
 report the family either way. Fixed by widening `_ARRAY` to the
 `inline constexpr` form, threading the header in beside `extensions0.cpp`, and
 letting a loop name carry an inline prefix and a trailing suffix.
+
+## <a id="npc-animation-files"></a>An NPC's own animation file (2026-10-07, PENDING in-game confirmation)
+
+**Code:** `plugin/npc_anim.cpp`, `plugin/game_calls_anim.cpp`
+(`InstallActorAnimCalls`); the clips and the table come from
+`asset_convert/havok/npc_anim_morrowind.py`
+([asset_convert_animation.md](asset_convert_animation.md#morrowind-npc-animation-files)).
+
+The converter stages `SKSE/Plugins/MorrowindRuntime/<plugin>.anims.txt`, BESIDE
+the plugin's sidecar folder and not inside it: the import sweeps every file in
+that folder it did not write itself, and this one is written by the creature
+stage. Three row kinds: `clip.<slug>.<group>=event|seconds`,
+`actor.<npc id>=slug|c2,..,c9|distance` (the wander package's eight idle
+chances and its distance; no chances and 0 without one) and
+`place.<placement FormID>=plugin|npc id|x,y,z,rx,ry,rz` (the authored
+placement, angles in degrees).
+
+Each tick the driver finds the bound placements now in the world (the same
+cell-change-or-heartbeat sweep the script instances use), and ten times a
+second runs OpenMW's `AiWander` choice for each: `getRandomIdle` fails outright
+above `fIdleChanceMultiplier`, then each idle rolls against its chance and the
+highest passing roll wins. A group the file defines is played by sending its
+graph event; with none chosen the file's own `idle` group plays, which is the
+default pose Morrowind shows between idles. Every clip loops in the graph and
+the driver times its end, so an NPC whose only idle is its seat never stands
+between cycles; an empty choice has to last half a second before the actor
+leaves the clip state.
+
+- **A playing actor is HELD on a TranslateTo glide.** In game (2026-10-07) the
+  clips played but the NPCs turned, drifted, and sat in the air or away from
+  their tables. Morrowind seats an NPC by standing it inside the chair
+  (`ANFTaverneNpc11` is 28 units from `furn_com_rm_chair_03`'s origin, at floor
+  height), Skyrim's character controller pushes it out and up, and the
+  converted wander package is a Sandbox that walks it off. A reference under
+  translation is moved by the translation alone, so while a clip plays the
+  actor is slid to its goal in 0.25 s whenever it is more than 3 units or 2
+  degrees off, then kept on a glide that never arrives (1 unit over 10,000 s,
+  renewed every 2 s). The goal is the authored placement (the `place.` row's
+  pose) when the wander distance is 0, else where the actor stood when the
+  clip began. Leaving glides to where the actor already is, which ends it.
+- **A wanderer walks when its roll gives no idle** (`Wander_MoveNow`): an NPC
+  whose package has a distance is released for 8 seconds.
+- **Fighting lets go at once**, and so does moving for an actor not yet held:
+  the clip state is a root state of the humanoid graph with no locomotion.
+- **The table is searched every 5 ticks for 5 seconds after a cell change.** A
+  cell's references resolve some frames after the player's cell changes; one
+  search on that tick found nothing and the next was the heartbeat, so the
+  NPCs stood for five seconds and then dropped into their seats.
+- **The event is sent through `NotifyAnimationGraph` itself**, slot 1 of the
+  holder at `ref+0x38`, which is the whole body of `Debug.SendAnimationEvent`
+  (id 55380). The native throws the result away, and "no graph took it" is what
+  an actor whose 3D is still loading answers; the driver asks again on the next
+  evaluation.
+- **The playing event is repeated every 2 seconds.** The engine sends its own
+  `IdleStop` and nothing reports it; a repeat while the state is active is a
+  self-transition the machine ignores.
+- `PlayGroup` and `LoopGroup` on such an NPC play the named group the same way
+  for `loops + 1` cycles, ahead of the object path.
+
+Not carried: the base animation's own `idle2`..`idle9` for NPCs with no file of
+their own, a group's Loop Start/Loop Stop split, `Sound:` cues inside a group,
+and `SkipAnim` on an actor. An actor knocked into ragdoll while seated is pulled
+back by the next repeat.
 
 ## <a id="object-animation"></a>`PlayGroup`, `LoopGroup` and `SkipAnim` on objects
 

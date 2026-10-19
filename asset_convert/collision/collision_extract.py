@@ -62,7 +62,7 @@ Cache: two-phase, mirroring mesh_bounds.
 """
 
 from asset_convert import case_paths
-from asset_convert.game_paths import current_namespace
+from asset_convert.game_paths import ascii_path, current_namespace
 from output_layout import assets_for
 import hashlib
 import json
@@ -1193,9 +1193,14 @@ def load_collision(cache_path, quiet: bool = False) -> int:
     return len(_COLLISION)
 
 
+def _entry(path_key: str) -> Optional[dict]:
+    """The cache entry for an authored or `ascii_path` key, or None."""
+    return _COLLISION.get(path_key) or _COLLISION.get(ascii_path(path_key))
+
+
 def get_collision(path_key: str) -> Optional[dict]:
     """Return {'w': [...9N floats], 'b': [...]} in game units for a key, or None."""
-    return _COLLISION.get(path_key)
+    return _entry(path_key)
 
 
 def collision_digest(path_key: str) -> str:
@@ -1213,7 +1218,7 @@ def collision_digest(path_key: str) -> str:
     """
     if path_key in _DIGESTS:
         return _DIGESTS[path_key]
-    ent = _COLLISION.get(path_key)
+    ent = _entry(path_key)
     if ent is None:
         digest = ''
     else:

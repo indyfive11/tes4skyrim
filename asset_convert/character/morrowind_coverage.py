@@ -49,6 +49,10 @@ SIDED_SLOTS = {('ARMO', 2): SBP_57_LEFT_PAULDRON, ('ARMO', 3): SBP_58_RIGHT_PAUL
                ('ARMO', 9): SBP_33_HANDS, ('ARMO', 10): SBP_59_RIGHT_HAND,
                ('CLOT', 5): SBP_59_RIGHT_HAND, ('CLOT', 6): SBP_33_HANDS}
 
+#: (record signature, CTDT type) -> the INDX parts its equip slot reserves whatever the record lists.
+SLOT_RESERVED_PARTS = {('CLOT', 4): (3, 4, 5, 11, 12, 13, 14, 19, 20, 21, 22),
+                       ('CLOT', 7): (4, 21, 22)}
+
 #: Sided slots that hide no body section.
 _DISPLAY_ONLY = frozenset({SBP_57_LEFT_PAULDRON, SBP_58_RIGHT_PAULDRON})
 
@@ -56,20 +60,30 @@ _DISPLAY_ONLY = frozenset({SBP_57_LEFT_PAULDRON, SBP_58_RIGHT_PAULDRON})
 _FIRST_SLOT = 30
 
 
-def sided_slot(rec: dict):
-    """The Skyrim slot a one-sided Morrowind piece takes, or None."""
+def _wearable_kind(rec: dict):
+    """(record signature, AODT/CTDT type) of a Morrowind wearable, or None."""
     kind = rec.get('MorrowindWearableType', '').strip()
     if not kind.isdigit():
         return None
-    return SIDED_SLOTS.get((rec.get('Signature', '').strip(), int(kind)))
+    return rec.get('Signature', '').strip(), int(kind)
+
+
+def sided_slot(rec: dict):
+    """The Skyrim slot a one-sided Morrowind piece takes, or None."""
+    return SIDED_SLOTS.get(_wearable_kind(rec))
 
 
 def part_slots(rec: dict) -> list:
-    """The INDX slots a Morrowind wearable covers; empty for a pauldron or any other record."""
-    if sided_slot(rec) in _DISPLAY_ONLY:
-        return []
+    """The INDX slots a Morrowind wearable covers: its parts plus its equip slot's reserved parts.
+
+    Empty for a pauldron, or a record with no parts.
+    See: docs/commentary/asset_convert_armor.md#morrowind-skin-fill
+    """
     count = int(rec.get('MorrowindPartCount', '0') or 0)
-    return [int(rec[f'MorrowindPart[{i}].Slot']) for i in range(count)]
+    if not count or sided_slot(rec) in _DISPLAY_ONLY:
+        return []
+    slots = [int(rec[f'MorrowindPart[{i}].Slot']) for i in range(count)]
+    return slots + [p for p in SLOT_RESERVED_PARTS.get(_wearable_kind(rec), ()) if p not in slots]
 
 
 def covered_partitions(slots) -> frozenset:

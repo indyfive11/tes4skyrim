@@ -221,6 +221,9 @@ struct GameHooks {
     bool  (*say)(const std::string& ref, const std::string& file,
                  const std::string& text) = nullptr;
     bool  (*sayDone)(const std::string& ref) = nullptr;
+    // `PlayBink file allowSkipping`: the engine's own full-screen Bink player
+    // on a file under Data\Video, skippable with Escape when `allowSkipping`.
+    void  (*playBink)(const std::string& file, bool allowSkipping) = nullptr;
     // `PositionCell`: moves `ref` into the cell of that name and puts it at
     // (x, y, z) with a Z rotation of `zRot` DEGREES.
     void (*moveToCell)(const std::string& ref, const std::string& cell,
@@ -283,9 +286,6 @@ struct GameHooks {
     // `HasItemEquipped`: is that item in any of the actor's equip slots.
     bool (*itemEquipped)(const std::string& actor,
                          const std::string& item) = nullptr;
-    // `GetPCSleep`: TES3 asks only whether the player is asleep; Skyrim's
-    // sleep state is an enum the call folds down to that one bit.
-    bool (*playerSleeping)() = nullptr;
     // `ForceSneak`/`ClearForceSneak`: puts the actor into the movement state
     // the latch now holds. `which` is a `MovementFlag`.
     void (*applyMovementFlag)(const std::string& actor, int which,
@@ -401,6 +401,25 @@ struct GameHooks {
     void (*skipAnim)(const std::string& ref) = nullptr;
     // Once a tick of unpaused play: advances every queue `playGroup` filled.
     void (*animTick)() = nullptr;
+    // What the NPC animation driver (npc_anim.cpp) needs of ONE reference, by
+    // RUNTIME FormID: a base NPC is placed many times and each copy plays its
+    // own idle, so the TES3 id alone cannot name which.
+    // See: docs/commentary/morrowind_runtime.md#npc-animation-files
+    //
+    // The runtime FormID of the reference a TES3 id names, or 0.
+    std::uint32_t (*refRuntimeId)(const std::string& ref) = nullptr;
+    // Sends a behaviour-graph event; false when no graph took it, which is
+    // what an actor whose 3D is still loading answers.
+    bool (*sendAnimEvent)(std::uint32_t runtimeFormId,
+                          const std::string& event) = nullptr;
+    // The reference's x, y, z and its three angles in degrees; false when it
+    // could not be read.
+    bool (*refPose)(std::uint32_t runtimeFormId, float out[6]) = nullptr;
+    // Starts a TranslateTo glide to that pose, arriving `seconds` from now.
+    // While it runs the reference is moved by nothing else.
+    void (*glideRef)(std::uint32_t runtimeFormId, const float pose[6],
+                     float seconds) = nullptr;
+    bool (*inCombat)(std::uint32_t runtimeFormId) = nullptr;
 };
 
 // The loop count `PlayGroup` passes: a looping group repeats until replaced.
@@ -511,6 +530,9 @@ public:
     // Runtime FormIDs of the actors a Sanctuary has landed on whose faction
     // rank the tick still keeps; each leaves once its Sanctuary is gone.
     std::set<std::uint32_t> sanctuaryHolders;
+    // Runtime FormIDs of the placed NPCs a script gave AI or moved, or that
+    // fought: npc_anim no longer holds them on their authored spot.
+    std::set<std::uint32_t> holdReleased;
     // The rank last set per actor since this state was loaded; not saved, so
     // a load always sets every rank once.
     std::map<std::uint32_t, int> sanctuaryRanks;

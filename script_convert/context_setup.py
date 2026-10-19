@@ -17,7 +17,7 @@ from output_layout import assets_for
 from script_convert.cross_ref import CrossRefGraph
 from script_convert.message_menus import build_chargen_menus
 from script_convert.static_scripts import STATIC_DIR, static_script_files
-from script_convert.ownership import read_owned, sibling_owned
+from script_convert.ownership import drop_owners, read_owned, sibling_owned
 from tes5_import.base.mesh_bounds import load_mesh_bounds
 from tes5_import.base.text_reader import parse_export_file
 from tes5_import.dialogue.converter import service_menu_kind
@@ -25,13 +25,15 @@ from tes5_import.dialogue.converter import service_menu_kind
 #: Static Papyrus sources deployed beside the generated scripts of a masterless plugin.
 
 
-def prepare_output_dir(output_dir: str, owner: str) -> set:
+def prepare_output_dir(output_dir: str, owner: str, departed=()) -> set:
     """Clear `owner`'s previous scripts; returns the names other plugins here own.
 
     A folder no other plugin shares is wiped whole, .psc tree and sibling .pex.
-    In a shared one only the files on `owner`'s own list go.
+    In a shared one only the files on `owner`'s own list go, plus those only
+    a `departed` owner claimed.
     See: docs/commentary/script_convert.md#wipe-output-dir
     """
+    orphaned = drop_owners(output_dir, departed)
     shared = sibling_owned(output_dir, owner)
     pex_dir = os.path.dirname(output_dir)
     if not shared:
@@ -40,7 +42,7 @@ def prepare_output_dir(output_dir: str, owner: str) -> set:
         stale = [n[:-4] for n in (os.listdir(pex_dir) if os.path.isdir(pex_dir) else [])
                  if n.lower().endswith('.pex')]
     else:
-        stale = read_owned(output_dir, owner) - shared
+        stale = (read_owned(output_dir, owner) | orphaned) - shared
     for name in stale:
         _remove_quietly(os.path.join(output_dir, name + '.psc'))
         _remove_quietly(os.path.join(pex_dir, name + '.pex'))

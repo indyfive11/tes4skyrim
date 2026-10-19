@@ -13,7 +13,7 @@ import struct
 
 from ..morrowind_ids import encode_editor_id
 from ..morrowind_world import cell_grid
-from ..tes3_reader import Tes3Record, get_subrecord
+from ..tes3_reader import Tes3Record, get_subrecord, text
 
 #: TES4 PKDT.Type per Morrowind package: Find, Follow, Escort, Wander, Travel.
 _FIND, _FOLLOW, _ESCORT, _WANDER, _TRAVEL = 0, 1, 2, 5, 6
@@ -34,14 +34,10 @@ _NO_DESTINATION = 1.0e38
 _PERSISTENT = 1024
 
 
-def _tes3_id(raw: bytes) -> str:
-    """A fixed 32-byte Morrowind ID field as text."""
-    return raw.split(b'\x00', 1)[0].decode('cp1252', 'replace')
-
-
 def _wander(fields) -> tuple:
     """AI_W: distance, duration, time of day, eight idle chances."""
-    return 'wander', {'distance': fields[0], 'duration': fields[1]}
+    return 'wander', {'distance': fields[0], 'duration': fields[1],
+                      'idles': fields[3:11]}
 
 
 def _travel(fields) -> tuple:
@@ -52,7 +48,7 @@ def _travel(fields) -> tuple:
 def _follow(fields, kind: str = 'follow') -> tuple:
     """AI_F / AI_E: optional destination, duration and the target actor."""
     pos = None if abs(fields[0]) >= _NO_DESTINATION else fields[:3]
-    return kind, {'pos': pos, 'duration': fields[3], 'target': _tes3_id(fields[4])}
+    return kind, {'pos': pos, 'duration': fields[3], 'target': fields[4]}
 
 
 def _escort(fields) -> tuple:
@@ -62,7 +58,7 @@ def _escort(fields) -> tuple:
 
 def _activate(fields) -> tuple:
     """AI_A: the object to go and activate."""
-    return 'activate', {'target': _tes3_id(fields[0])}
+    return 'activate', {'target': fields[0]}
 
 
 #: Subrecord -> (struct layout, parser), for every Morrowind package kind.
@@ -76,13 +72,16 @@ _PARSERS = {
 
 
 def _packages(rec: Tes3Record) -> list:
-    """Every AI package on the actor, in file order, as (kind, fields)."""
+    """Every AI package on the actor, in file order, as (kind, fields); a
+    fixed 32-byte ID field arrives as text."""
     out = []
     for sub in rec.subrecords:
         parser = _PARSERS.get(sub.type)
         if parser is None or len(sub.data) < struct.calcsize(parser[0]):
             continue
-        out.append(parser[1](struct.unpack_from(parser[0], sub.data, 0)))
+        fields = tuple(text(sub, f.split(b'\x00', 1)[0]) if isinstance(f, bytes) else f
+                       for f in struct.unpack_from(parser[0], sub.data, 0))
+        out.append(parser[1](fields))
     return out
 
 
@@ -165,7 +164,8 @@ def _package_lines(ctx, actor_id: str, form_id: str, kind: str, fields: dict,
              'PKDT.Flags=0', f'MorrowindHello={fields.get("hello", 0)}']
     if kind == 'wander':
         lines += [f'PKDT.Type={_WANDER}', f'PLDT.Type={_NEAR_EDITOR_LOCATION}',
-                  'PLDT.Location=0', f'PLDT.Radius={max(0, fields["distance"])}']
+                  'PLDT.Location=0', f'PLDT.Radius={max(0, fields["distance"])}',
+                  'MorrowindIdle=' + ','.join(str(c) for c in fields['idles'])]
         return lines + _schedule(fields['duration'])
     if kind == 'travel':
         marker = _marker(ctx, actor_id, fields['pos'], 'xmarker:' + form_id, markers)

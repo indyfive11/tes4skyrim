@@ -11,6 +11,7 @@
 
 #include "dialogue_state.h"
 #include "log.h"
+#include "npc_anim.h"
 #include "script_ops.h"
 
 namespace tesruntime::mw {
@@ -31,6 +32,9 @@ void Queue(const std::string& ref, const std::string& group, int mode,
     if (Hooks().isDisabled && Hooks().isDisabled(ref)) return;
     LogVerbose("anim: %s %s mode %d loops %u", ref.c_str(), group.c_str(), mode,
                loops);
+    // An NPC with its own animation file plays the group on its body; every
+    // other reference plays it on its mesh's sequences.
+    if (PlayNpcGroup(ref, group, loops)) return;
     if (Hooks().playGroup) Hooks().playGroup(ref, group, mode, loops);
 }
 

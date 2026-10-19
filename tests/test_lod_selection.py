@@ -12,6 +12,9 @@ after, by design.  They pin what the split moved -- the per-reference
 filters, the kept-tile footprint, the master modes, mesh staging and
 screening, the per-base memo and the file's shape -- so a later change to
 any of them has to show up here.
+
+`TestGameStartState` and `TestEnableParentChain` are ordinary tests of the
+rule that a LOD reference the records leave off at game start is not listed.
 """
 
 import sys
@@ -73,7 +76,8 @@ def _ref(fid, base, flags=0, cell=(0, 0), **extra):
     ref = {'form_id': fid, 'flags': flags, 'base_fid': base,
            'parent_wrld': WRLD, 'parent_cell': CELL,
            'x': cell[0] * 4096.0 + 100.0, 'y': cell[1] * 4096.0 + 100.0,
-           'z': 0.0, 'rx': 0.0, 'ry': 0.0, 'rz': 0.0, 'scale': 1.0}
+           'z': 0.0, 'rx': 0.0, 'ry': 0.0, 'rz': 0.0, 'scale': 1.0,
+           'xesp': None}
     ref.update(extra)
     return ref
 
@@ -297,3 +301,144 @@ class TestLodgenInput:
         assert [p.replace('/', '\\') for p in paths] == [
             ROCK, _far(ROCK), _far(ROCK, '_far8'), _far(ROCK, '_far16')]
         assert kw == {'source_meshes': [master / 'meshes']}
+
+
+DISABLED = 0x00000800
+MARKER = 0x30
+R = 0x01000D00
+ON, OFF = 0x01000C01, 0x01000C02
+
+
+class TestGameStartState:
+    """A LOD reference the records leave off at game start gets no row."""
+
+    def _listed(self, gen, tmp_path, refs):
+        """Form ids `write_lodgen_input` lists; ON and OFF are non-LOD parent markers."""
+        out = tmp_path / 'AutoConvertLOD'
+        _mesh(out, ROCK, _far(ROCK))
+        stats = {0x10: _stat(ROCK), MARKER: _stat('marker.nif', flags=0)}
+        parents = [_ref(ON, MARKER), _ref(OFF, MARKER, flags=DISABLED)]
+        return set(_rows(_write(gen, out, stats, parents + refs)))
+
+    def test_the_own_flag_or_the_parent_chain_decides(self, gen, tmp_path,
+                                                      capsys):
+        """No parent: the own flag. A parent: its state, inverted by `opposite`."""
+        refs = [_ref(R | 8, 0x10, xesp=(R | 5, False)),
+                _ref(R | 9, 0x10, xesp=(R | 4, True)),
+                _ref(R | 1, 0x10),
+                _ref(R | 2, 0x10, flags=DISABLED),
+                _ref(R | 3, 0x10, xesp=(ON, False)),
+                _ref(R | 4, 0x10, xesp=(ON, True)),
+                _ref(R | 5, 0x10, xesp=(OFF, True)),
+                _ref(R | 6, 0x10, xesp=(OFF, False)),
+                _ref(R | 7, 0x10, flags=LOD, xesp=(OFF, False)),
+                _ref(R | 10, 0x10, flags=DISABLED, xesp=(ON, False))]
+        assert self._listed(gen, tmp_path, refs) == {
+            R | 1, R | 3, R | 5, R | 8, R | 9, R | 10}
+        assert ('4 LOD-flagged reference(s) off at game start left out, '
+                '0 kept with an unresolved enable parent'
+                ) in capsys.readouterr().out
+
+    def test_an_unresolved_parent_keeps_the_reference(self, gen, tmp_path,
+                                                      capsys):
+        """Unscanned parent, a self-parent and a cycle all stay listed.
+
+        The player is always enabled, so the opposite of the player is off.
+        """
+        refs = [_ref(R | 1, 0x10, xesp=(0x7F000001, False)),
+                _ref(R | 2, 0x10, flags=DISABLED, xesp=(0x00000014, True)),
+                _ref(R | 3, 0x10, xesp=(R | 3, True)),
+                _ref(R | 4, 0x10, xesp=(R | 5, False)),
+                _ref(R | 5, 0x10, xesp=(R | 4, True)),
+                _ref(R | 6, 0x10, xesp=(R | 4, False))]
+        assert self._listed(gen, tmp_path, refs) == {R | i for i in range(1, 7)
+                                                     if i != 2}
+        assert ('1 LOD-flagged reference(s) off at game start left out, '
+                '5 kept with an unresolved enable parent'
+                ) in capsys.readouterr().out
+
+    def test_the_parent_is_found_by_its_full_id(self, gen, tmp_path):
+        """Records of several files share a local id; the named one is read, or none."""
+        twin_on, twin_off = 0x01000C05, 0x02000C05
+        refs = [_ref(twin_on, MARKER), _ref(twin_off, MARKER, flags=DISABLED),
+                _ref(0x00000C06, MARKER, flags=DISABLED),
+                _ref(R | 1, 0x10, xesp=(twin_on, False)),
+                _ref(R | 2, 0x10, xesp=(twin_off, False)),
+                _ref(R | 3, 0x10, xesp=(0x05000C06, False))]
+        assert self._listed(gen, tmp_path, refs) == {R | 1, R | 3}
+
+    def test_each_call_reads_the_records_afresh(self, gen, tmp_path):
+        """The same ids with another parent state give another answer."""
+        child = _ref(R | 1, 0x10, xesp=(R | 2, False))
+        off = [child, _ref(R | 2, MARKER, flags=DISABLED)]
+        on = [child, _ref(R | 2, MARKER)]
+        assert self._listed(gen, tmp_path, off) == set()
+        assert self._listed(gen, tmp_path, on) == {R | 1}
+
+    def test_a_base_placed_only_by_an_off_reference_is_not_resolved(
+            self, gen, tmp_path, monkeypatch):
+        """Its meshes are neither prefetched nor resolved; the other base's are."""
+        out = tmp_path / 'AutoConvertLOD'
+        _mesh(out, ROCK, _far(ROCK), ROCK2, _far(ROCK2))
+        stats = {0x10: _stat(ROCK), 0x11: _stat(ROCK2, edid='Rock02')}
+        refs = [_ref(R | 1, 0x10, flags=DISABLED), _ref(R | 2, 0x11)]
+        warm, resolved = gen._prescreen_meshes, gen._lod_meshes_for
+        seen = {'warm': [], 'resolved': []}
+
+        def spy_warm(paths, *args, **kw):
+            seen['warm'] += [p.replace('/', '\\') for p in paths]
+            return warm(paths, *args, **kw)
+
+        def spy_resolved(stat, *args):
+            seen['resolved'].append(stat['edid'])
+            return resolved(stat, *args)
+        monkeypatch.setattr(gen, '_prescreen_meshes', spy_warm)
+        monkeypatch.setattr(gen, '_lod_meshes_for', spy_resolved)
+        assert set(_rows(_write(gen, out, stats, refs))) == {R | 2}
+        assert seen['resolved'] == ['Rock02']
+        assert ROCK2 in seen['warm'] and ROCK not in seen['warm']
+
+
+class TestEnableParentChain:
+    """The state of a chain is the same whichever of its references is asked first."""
+
+    @staticmethod
+    def _chain(n, opposite=False):
+        """{id: ref}: n refs from R up, each enabled by the next, the last by none."""
+        refs = [_ref(R + i, 0x10, xesp=(R + i + 1, opposite))
+                for i in range(n - 1)] + [_ref(R + n - 1, 0x10)]
+        return {r['form_id']: r for r in refs}
+
+    def test_walk_order_does_not_change_a_deep_refs_state(self, gen):
+        """Ref 17 of a 21-ref chain is on, asked first or after the chain's head."""
+        by_fid, alone, after = self._chain(21), {}, {}
+        gen._initially_enabled(R, by_fid, after)
+        assert gen._initially_enabled(R + 17, by_fid, alone) is True
+        assert gen._initially_enabled(R + 17, by_fid, after) is True
+
+    def test_a_long_chain_is_resolved_link_by_link(self, gen):
+        """40 refs, every link `opposite`: the state alternates down from the last."""
+        by_fid, state = self._chain(40, opposite=True), {}
+        assert gen._initially_enabled(R, by_fid, state) is False
+        assert [state[R + i] for i in (36, 37, 38, 39)] == [
+            False, True, False, True]
+
+    def test_an_opposite_bit_applies_from_its_own_link_down(self, gen):
+        """A is a plain child of B, B the opposite of C, C is on: A and B are off."""
+        refs = [_ref(R | 1, 0x10, xesp=(R | 2, False)),
+                _ref(R | 2, 0x10, xesp=(R | 3, True)), _ref(R | 3, 0x10)]
+        state = {}
+        gen._initially_enabled(R | 1, {r['form_id']: r for r in refs}, state)
+        assert state == {R | 1: False, R | 2: False, R | 3: True}
+
+    def test_a_cycle_is_unknown_from_every_entry(self, gen):
+        """A and B enable each other; both, and a ref hanging off them, are unknown."""
+        refs = [_ref(R | 1, 0x10, xesp=(R | 2, False)),
+                _ref(R | 2, 0x10, xesp=(R | 1, True)),
+                _ref(R | 3, 0x10, xesp=(R | 1, False))]
+        by_fid = {r['form_id']: r for r in refs}
+        for first in by_fid:
+            state = {}
+            gen._initially_enabled(first, by_fid, state)
+            assert [gen._initially_enabled(f, by_fid, state)
+                    for f in by_fid] == [None, None, None]

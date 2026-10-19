@@ -38,6 +38,7 @@ them does.
 - [NAM5/NAM6/NAM7/NAM8 are all required](#required-nam-subrecords)
 - [Head parts: RNAM decides who can see the hair](#hdpt-valid-races)
 - [A plugin's own race stands in by its shared face parts](#new-races-by-face-parts)
+- [Morrowind faces: authored head and hair, measured sliders](#morrowind-faces)
 - [A creature race is a caster only for a castable spell](#caster-race-needs-a-castable-spell)
 - [Attack reach is per creature: reach-variant races](#reach-variant-races)
 - [A creature race allows PC dialogue only when a creature on it talks](#creature-talk-prompt)
@@ -592,7 +593,12 @@ race every plugin shares, so Nehrim NPCs passed them. Race was Oblivion's
 plugin boundary only because Oblivion was the only file loaded.
 
 EVERY converted plugin creates its own, root or dependent, and gates its own
-new lines on it. A plugin's actors join its own and every converted master's
+new lines on it -- unless it defines no actor of its own (a dialogue-only
+add-on, or one that only overrides its masters' actors). Then nobody can join
+its faction, so its lines gate on the factions of the masters its header lists
+instead, the only speakers its author could have meant. Measured on every
+dependent exported here, none is such an add-on, so no current build changes.
+A plugin's actors join its own and every converted master's
 (`origin_memberships`, found by EditorID through
 `ChainedMasterIndex.find_all_by_edid`), so dialogue flows DOWN the master chain
 and never up or across: Oblivion's generic lines reach Morroblivion's actors,
@@ -990,6 +996,60 @@ Only the actor's race uses it (`_actor_race_edid`, leveled-actor shells);
 `GetIsRace` on a plugin's own race is already a marker-faction test
 (`race_factions.py`), and voice types resolve from the plugin's own race
 EditorIDs first, so neither moves.
+
+## <a id="morrowind-faces"></a>Morrowind faces: authored head and hair, measured sliders
+
+**Code:** `tes5_import/actors/npc_face_morrowind.py`, `asset_convert/character/morrowind_head.py`,
+`tes5_import/generated/morrowind_faces.json`; export lines from `_emit_head_parts` in
+`tes4_export/record_types/morrowind_actors.py`.
+
+A TES3 NPC names a head and a hair BODY part (`BNAM`, `KNAM`), each reused by
+many NPCs: the top Dark Elf male heads carry about 110 NPCs each in
+Morrowind.esm. Across Morrowind, Tribunal, Bloodmoon, Tamriel_Data, TR_Mainland
+and Arktwend, 12,939 NPCs use 846 heads and 678 hairs. Before this, the
+exporter dropped both, so every NPC was bald with the race's neutral face.
+
+The export writes `MorrowindHead`, `MorrowindHair` and each part's mesh
+(`...Model`). The import builds:
+
+- **Hair and beard** from a hand-made table of the closest vanilla head part,
+  keyed by BODY id. It was made by rendering every part (`tools/nif/nif_render.py`
+  contact sheets, hair on its paired head), matching against the playable
+  vanilla hairs and beards rendered on Skyrim heads, then hand-reviewing every
+  low-confidence row (62 of 167 hairs and 21 of 50 beard picks corrected). An
+  empty pick means bald / clean-shaven. Morrowind paints beards into the head,
+  so the beard is keyed by the HEAD id. Arktwend reuses 34 vanilla ids with
+  its own meshes; the Morrowind answer wins.
+- **Validity per race**: a pick is written only if its vanilla FLST lists the
+  NPC's Skyrim race. Tamriel Data marks some heads with a race other than the
+  NPC wearing them (a Dark Elf head filed as a beast race). A hair that fails,
+  or is missing from the table (another plugin's part), takes a hair from the
+  race's playable pool, chosen by the hair id's CRC — the same part always
+  gets the same hair.
+- **Sliders (NAM9)**: seven proportions of the head mesh (nose reach, nose
+  drop, jaw width, chin reach, chin length, brow reach, cheek width), each
+  divided by head height. Each becomes a z-score against the other heads of
+  its Morrowind race and sex in this run (all heads when a group has fewer
+  than 6), clamped to ±2.5, and lands on Skyrim's slider as
+  `vanilla mean + z × vanilla spread`. Slider directions come from SKSE's
+  `FaceMorphList` enum (`kMorph_NoseShortLong`: positive is long, and so on).
+  Vanilla means and spreads are a census of Skyrim.esm's non-templated NPCs
+  per playable race and sex (spreads 0.3–0.8 everywhere). Unmeasured sliders
+  sit at the race mean. Each NPC then adds noise of 0.1 × spread seeded by the
+  CRC of its EditorID, so NPCs sharing a head look related, not identical.
+- **Skin** is the median color of the head's texture, written as the
+  skin-tone tint layer — Morrowind's head textures carry their own tone
+  (a Nord head samples pink, a Dark Elf head gray).
+- **Hair color** is the hair texture's median, mapped to the nearest vanilla
+  CLFM (`map_hair_color`). A generated CLFM would be keyed on a computed
+  color, which the FormID rules forbid.
+- **Weight (NAM7)** is the race's vanilla mean (vanilla writes 0–100; the
+  census means run 15–64) with the same 0.1 × spread noise. Other sources
+  still write 1.0.
+
+Meshes resolve through the plugin's and its masters' asset trees, then the
+Morrowind install's archives (`morrowind_assets`); a head that cannot be read
+keeps the race mean plus noise. Measuring takes about 12 ms per part.
 
 ## <a id="package-order"></a>AI packages keep TES4 order
 

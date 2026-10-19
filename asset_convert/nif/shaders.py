@@ -22,6 +22,7 @@ from asset_convert.nif.nif_flags import (TT_SCALE_U, TT_SCALE_V,
 from asset_convert.nif.sequences import (MATERIAL_COLOR_EMISSIVE,
                                          TEX_TRANSFORM_VARS)
 from asset_convert.nif.tex_paths import (bs_pp_texture_slots, full_res_twin,
+                                         path_bytes, path_text,
                                          rewrite_tex_path)
 from asset_convert.nif.uv_transform import base_map, expand_harvested
 from asset_convert.sources import base_plugins as _base_plugins
@@ -105,7 +106,7 @@ def resolve_source_texture(tex_rel, src_nif_path, fallback_roots=()):
 
     Maps textures\\tes4\\fire\\x\\y.dds back to
     export/<esm>/textures/fire/x/y.dds beside the source mesh tree, falling
-    back to the master's roots; every root is searched case-blind.
+    back to the master's roots. Each tree is tried exactly, then ignoring case.
     See: docs/commentary/asset_convert_shader.md#texture-fallback-roots
     """
     if not src_nif_path:
@@ -441,9 +442,7 @@ def has_spec_mask(normal_rel, stats):
     """
     if not normal_rel or stats is None:
         return False
-    rel = normal_rel.decode('utf-8', 'replace') \
-        if isinstance(normal_rel, bytes) else normal_rel
-    src = resolve_source_texture(rel, stats.get('_src_path', ''),
+    src = resolve_source_texture(path_text(normal_rel), stats.get('_src_path', ''),
                                  stats.get('_tex_fallback', ()))
     if src is None:
         stats['spec_missing_normal'] = stats.get('spec_missing_normal', 0) + 1
@@ -477,11 +476,9 @@ def _glow_map_for(glow_path, tex_set, stats):
         named = rewrite_tex_path(glow_path)
         if _normal_exists(named, stats):
             return named
-    diffuse = tex_set.textures[0]
-    if isinstance(diffuse, bytes):
-        diffuse = diffuse.decode('utf-8', errors='replace')
+    diffuse = path_text(tex_set.textures[0])
     rel = None
-    if diffuse and diffuse != DEFAULT_DIFFUSE_TEXTURE.decode('utf-8'):
+    if diffuse and diffuse != path_text(DEFAULT_DIFFUSE_TEXTURE):
         rel = _resolve_map_for(diffuse, '_g', stats)
     if rel is not None and not glow_path:
         stats['glow_derived'] = stats.get('glow_derived', 0) + 1
@@ -502,7 +499,7 @@ def apply_glow(shader, tex_set, glow_path, stats):
     if rel is None:
         return False
 
-    tex_set.textures[GLOW_SLOT] = rel.encode('utf-8')
+    tex_set.textures[GLOW_SLOT] = path_bytes(rel)
     shader.skyrim_shader_type = SHADER_TYPE_GLOWMAP
     shader.shader_flags_2.slsf_2_glow_map = 1
     shader.shader_flags_1.slsf_1_environment_mapping = 0
@@ -544,9 +541,7 @@ def _parallax_diffuse(ts, tex_set, stats):
     diffuse_rel = tex_set.textures[0]
     if data is None or not diffuse_rel:
         return None
-    if isinstance(diffuse_rel, bytes):
-        diffuse_rel = diffuse_rel.decode('utf-8', errors='replace')
-    return data, diffuse_rel
+    return data, path_text(diffuse_rel)
 
 
 def apply_parallax(ts, shader, tex_set, tex_apply_mode, stats):
@@ -568,7 +563,7 @@ def apply_parallax(ts, shader, tex_set, tex_apply_mode, stats):
     if height_rel is None:
         return
 
-    tex_set.textures[parallax.HEIGHT_SLOT] = height_rel.encode('utf-8')
+    tex_set.textures[parallax.HEIGHT_SLOT] = path_bytes(height_rel)
     shader.skyrim_shader_type = parallax.SHADER_TYPE_HEIGHTMAP
     shader.shader_flags_1.slsf_1_parallax = 1
     shader.shader_flags_1.slsf_1_environment_mapping = 0

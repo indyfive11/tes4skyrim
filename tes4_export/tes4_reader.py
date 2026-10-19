@@ -12,6 +12,8 @@ import struct
 import zlib
 from dataclasses import dataclass, field
 
+from .text_encoding import decode
+
 #: TES4 record header; FO3/FNV use 24, resolved per file by detect_header_size.
 RECORD_HEADER_SIZE = 20
 #: GRUP header size; 24 for FO3/FNV, resolved per file alongside the record header.
@@ -265,16 +267,35 @@ def get_all_subrecords(rec: Record, sig: str) -> list:
 
 
 def get_string(sub: Subrecord) -> str:
-    """Extract a null-terminated string from a subrecord.
+    """A null-terminated string subrecord, in the plugin's own code page.
 
-    TES4 plugins store text as cp1252 (Windows-1252), not UTF-8. Decoding as
-    UTF-8 turns every high byte into U+FFFD, destroying curly punctuation
-    (0x92) and German umlauts (0xE4/0xF6/0xFC/0xDF) beyond recovery -- the
-    export text is the only input the import stage gets.
+    See: docs/commentary/tes4_export_text_encoding.md#choosing-the-code-page
     """
     if sub is None:
         return ""
-    return sub.data.rstrip(b"\x00").decode("cp1252", errors="replace")
+    return decode(sub.data.rstrip(b"\x00"))
+
+
+#: Placed and terrain records, which carry no player-visible text.
+_NO_TEXT_TYPES = frozenset(("REFR", "ACHR", "ACRE", "LAND", "PGRD", "NAVM"))
+
+#: The subrecords holding player-visible text: names, descriptions, responses.
+_TEXT_SUBS = frozenset(("FULL", "DESC", "NAM1"))
+
+
+def text_sample(source_path: str, records: list):
+    """Yield the player-visible string payloads of `records`, read from `source_path`."""
+    with open(source_path, "rb") as fh:
+        mm = mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ)
+    try:
+        hdr_size = detect_header_size(mm)
+        for rec in records:
+            if rec.type in _NO_TEXT_TYPES:
+                continue
+            full = _read_record(mm, rec.offset, len(mm), hdr_size=hdr_size)
+            yield from (sub.data for sub in full.subrecords if sub.type in _TEXT_SUBS)
+    finally:
+        mm.close()
 
 
 def get_formid_str(form_id: int) -> str:

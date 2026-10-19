@@ -24,6 +24,10 @@ constexpr std::uint64_t kGetFormFromFile = 55465;
 // TESForm* LookupFormByID(uint32) (0x1a0b70), the body of Game.GetForm.
 constexpr std::uint64_t kLookupFormByID = 14617;
 
+// TESObjectREFR* LookupReferenceByHandle(uint32* handle, NiPointer<TESObjectREFR>* out)
+// (0x261e40), which holds a reference on what it hands out (ref_handle.cpp).
+constexpr std::uint64_t kLookupByHandle = 17201;
+
 // UIManager::AddMessage(this, BSFixedString* menu, u32 msgId, void* data)
 // (0x170730). Identified by its pool arithmetic: [rcx+0x378] is poolUsed,
 // compared against 0x40 = kPoolSize, and (poolUsed + 0x1c) << 5 lands on

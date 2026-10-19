@@ -347,6 +347,40 @@ def _anim_sources(model_path: Path) -> tuple:
     return animated, animated_model if animated_model.is_file() else model_path
 
 
+def write_skeleton(mesh_source, out_dir: str) -> tuple:
+    """Write a model's bones as `skeleton.nif` with a NonAccum root child; (path, root bone name)."""
+    skeleton = read_nif(str(mesh_source))
+    root_name = _insert_nonaccum(skeleton)
+    _strip(skeleton, keep_geometry=False)
+    path = os.path.join(out_dir, SKELETON_NIF)
+    _write_nif(path, skeleton)
+    return path, root_name
+
+
+def group_clips(kf_path, root_name: str, wanted, unless: str = '',
+                fps: float = DEFAULT_FPS) -> dict:
+    """{group: DecodedClip} for each of `wanted` the animation defines; {} when it defines `unless`.
+
+    Every clip is the group's whole Start..Stop span and loops, which is how
+    the TES3 engine replays an idle group back to back; a group whose Stop
+    is its Start is a held pose and ships as one frame's worth.
+    See: docs/commentary/asset_convert_animation.md#morrowind-npc-animation-files
+    """
+    anim = read_nif(str(kf_path))
+    found, cues = groups(text_keys(anim))
+    tracks = _tracks(anim, root_name)
+    out = {}
+    if unless in found:
+        return out
+    for group in wanted:
+        events = found.get(group, {})
+        start, stop = events.get('start'), events.get('stop')
+        if tracks and start is not None and stop is not None and stop >= start:
+            span = (start, max(stop, start + 1.0 / fps), True)
+            out[group] = _clip(group, span, tracks, events, cues, fps)
+    return out
+
+
 def split_creature(model_path, out_dir: str, body_name: str, base_anim=None,
                    fps: float = DEFAULT_FPS) -> list:
     """Write skeleton.nif, the body NIF and one .kf per clip; the stems written.
@@ -356,10 +390,7 @@ def split_creature(model_path, out_dir: str, body_name: str, base_anim=None,
     See: docs/commentary/tes4_export_morrowind.md#bipedal-creatures
     """
     anim_path, mesh_source = _anim_sources(Path(model_path))
-    skeleton = read_nif(str(mesh_source))
-    root_name = _insert_nonaccum(skeleton)
-    _strip(skeleton, keep_geometry=False)
-    _write_nif(os.path.join(out_dir, SKELETON_NIF), skeleton)
+    root_name = write_skeleton(mesh_source, out_dir)[1]
     body = read_nif(str(mesh_source))
     _insert_nonaccum(body)
     _strip(body, keep_geometry=True)
@@ -381,7 +412,7 @@ def split_creature(model_path, out_dir: str, body_name: str, base_anim=None,
     return list(clips)
 
 
-def _slashed(path: str) -> str:
+def slashed(path: str) -> str:
     """An exported path with its escaped backslashes folded to forward slashes."""
     return path.replace(chr(92) * 2, chr(92)).replace(chr(92), '/')
 
@@ -402,14 +433,14 @@ def _sources(rec_dir) -> dict:
         if source and model:
             biped = bool(int(rec.get('ACBS.Flags') or 0) & _BIPEDAL)
             known = out.get(source, (None, None, False))
-            out[source] = (os.path.dirname(_slashed(model)),
+            out[source] = (os.path.dirname(slashed(model)),
                            rec.get('NIFZ[0]', '').strip(), biped or known[2])
     return out
 
 
 def source_dirs(rec_dir) -> set:
     """Lowercase backslashed meshes-relative folders holding a source model."""
-    return {os.path.dirname(_slashed(s)).lower().replace('/', chr(92))
+    return {os.path.dirname(slashed(s)).lower().replace('/', chr(92))
             for s in _sources(rec_dir)}
 
 

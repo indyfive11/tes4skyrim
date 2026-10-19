@@ -15,8 +15,8 @@ See: docs/commentary/morrowind_runtime.md#dynamic-text
 
 from asset_convert.ui.swf import FONT_EM
 
-#: The printable ASCII range the menu needs; TES3 text is single-byte.
-FIRST_CODE, LAST_CODE = 32, 126
+#: The first printable code; the codes below it are controls with no outline.
+FIRST_CODE = 32
 
 
 class _ContourPen:
@@ -103,13 +103,14 @@ class _ContourPen:
         return self.contours
 
 
-def load(path, first: int = FIRST_CODE, last: int = LAST_CODE):
+def load(path):
     """`(glyphs, ascent, descent, leading)` ready for `define_font2`.
 
-    Glyphs come back ordered by character code, which the CodeTable requires.
-    A code the font does not cover is skipped rather than faked. Composite
-    glyphs are flattened through `DecomposingPen`, so accented letters arrive
-    as plain contours.
+    Every printable code the face covers, so any language its letters reach
+    renders. Glyphs come back ordered by character code, which the CodeTable
+    requires. Composite glyphs are flattened through `DecomposingPen`, so
+    accented letters arrive as plain contours.
+    See: docs/commentary/morrowind_runtime.md#dynamic-text
     """
     from fontTools.pens.recordingPen import DecomposingRecordingPen
     from fontTools.ttLib import TTFont
@@ -120,9 +121,8 @@ def load(path, first: int = FIRST_CODE, last: int = LAST_CODE):
     glyph_set = font.getGlyphSet()
 
     glyphs = []
-    for code in range(first, last + 1):
-        name = cmap.get(code)
-        if name is None:
+    for code, name in sorted(cmap.items()):
+        if code < FIRST_CODE:
             continue
         flat = DecomposingRecordingPen(glyph_set)
         glyph_set[name].draw(flat)

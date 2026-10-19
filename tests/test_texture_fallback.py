@@ -102,36 +102,72 @@ class TestResolutionThroughTheFallback:
 
 
 class TestCaseBlindResolution:
-    """NIFs keep Oblivion's mixed case; extracted files are lowercase.
+    """NIFs keep their author's mixed case; extracted files are lowercase.
 
-    On a case-sensitive filesystem an exact join missed 35,552 of 40,337
-    Oblivion shapes' normal maps, and they fell back to the flat default.
+    On a case-sensitive filesystem the exact join misses, and the shape falls
+    back to the flat default normal map with no specular mask or height map.
+    See: docs/commentary/asset_convert_texture.md#case-blind-lookups
     """
 
     def test_a_mixed_case_path_finds_the_lowercase_file(self, tmp_path):
+        """The mesh's spelling resolves to the file the tree really holds."""
         mod = _tree(tmp_path, 'Base.esm', textures=['architecture/arstone02_n.dds'])
         got = shaders.resolve_source_texture(
             'textures\\tes4\\Architecture\\ARStone02_n.dds',
             str(mod / 'meshes' / 'a.nif'))
-        assert os.path.samefile(
+        assert isinstance(got, str) and os.path.samefile(
             got, mod / 'textures' / 'architecture' / 'arstone02_n.dds')
 
     def test_the_base_is_searched_case_blind_too(self, tmp_path):
+        """A fallback root is matched the same way as the mod's own tree."""
         base = _tree(tmp_path, 'Base.esm', textures=['rock/stone.dds'])
         mod = _tree(tmp_path, 'Mod.esp', header_masters=['Base.esm'])
         got = shaders.resolve_source_texture(
             'textures\\tes4\\Rock\\Stone.DDS', str(mod / 'meshes' / 'a.nif'),
             shaders.master_texture_roots(mod / 'meshes'))
-        assert got is not None and str(base) in got
+        assert isinstance(got, str) and os.path.samefile(
+            got, base / 'textures' / 'rock' / 'stone.dds')
+
+    def test_the_mods_own_copy_in_another_case_comes_before_the_masters(
+            self, tmp_path):
+        """The own tree is searched in any case before the first fallback root."""
+        _tree(tmp_path, 'Base.esm', textures=['rock/stone.dds'])
+        mod = _tree(tmp_path, 'Mod.esp', textures=['Rock/Stone.dds'],
+                    header_masters=['Base.esm'])
+        got = shaders.resolve_source_texture(
+            'textures\\tes4\\rock\\stone.dds', str(mod / 'meshes' / 'a.nif'),
+            shaders.master_texture_roots(mod / 'meshes'))
+        assert isinstance(got, str) and os.path.samefile(
+            got, mod / 'textures' / 'Rock' / 'Stone.dds')
+
+    def test_every_fallback_root_is_searched_in_any_case(self, tmp_path):
+        """A second master is reached, and matched the same way, when the first lacks the file."""
+        _tree(tmp_path, 'First.esm', textures=['rock/other.dds'])
+        second = _tree(tmp_path, 'Second.esm', textures=['rock/stone.dds'])
+        mod = _tree(tmp_path, 'Mod.esp', header_masters=['First.esm', 'Second.esm'])
+        got = shaders.resolve_source_texture(
+            'textures\\tes4\\Rock\\Stone.DDS', str(mod / 'meshes' / 'a.nif'),
+            shaders.master_texture_roots(mod / 'meshes'))
+        assert isinstance(got, str) and os.path.samefile(
+            got, second / 'textures' / 'rock' / 'stone.dds')
 
     def test_a_mod_folder_named_Textures_is_found(self, tmp_path):
+        """A loose mod's `Textures/` folder counts as its texture tree."""
         d = tmp_path / 'Loose.esp'
         (d / 'Meshes').mkdir(parents=True)
         (d / 'Textures' / 'Tower').mkdir(parents=True)
         (d / 'Textures' / 'Tower' / 'Wall.dds').write_bytes(b'DDS ')
         got = shaders.resolve_source_texture(
             'textures\\tes4\\tower\\wall.dds', str(d / 'Meshes' / 'a.nif'))
-        assert os.path.samefile(got, d / 'Textures' / 'Tower' / 'Wall.dds')
+        assert got is not None and os.path.samefile(
+            got, d / 'Textures' / 'Tower' / 'Wall.dds')
+
+    def test_an_exact_hit_is_the_path_the_join_builds(self, tmp_path):
+        """With the case already right, the string is the plain join."""
+        mod = _tree(tmp_path, 'Base.esm', textures=['rock/stone.dds'])
+        got = shaders.resolve_source_texture(
+            'textures\\tes4\\rock\\stone.dds', str(mod / 'meshes' / 'a.nif'))
+        assert got == str(mod) + os.sep + os.path.join('textures', 'rock', 'stone.dds')
 
     def test_a_name_differing_beyond_case_still_misses(self, tmp_path):
         mod = _tree(tmp_path, 'Base.esm', textures=['rock/stone.dds'])

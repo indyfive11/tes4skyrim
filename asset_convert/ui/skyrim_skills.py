@@ -13,11 +13,11 @@ line per skill, in the language the install is set to.
 See: docs/commentary/morrowind_runtime.md#skyrim-skill-list
 """
 
-import configparser
 import struct
 from pathlib import Path
 
 from asset_convert.sources.skyrim_assets import find_skyrim_data, get_asset_bytes
+from core.skyrim_language import language
 from tes5_import.base.tes5_reader import records
 
 #: Where the runtime reads the table, inside TESRuntime.zip.
@@ -27,21 +27,6 @@ SKILL_TABLE = Path('SKSE') / 'Plugins' / 'MorrowindRuntime' / 'skyrim_skills.txt
 FIRST_SKILL = 6
 FIRST_SKILL_AVIF = 0x0000044C
 SKILL_COUNT = 18
-
-#: Where the install's language is set, and what an unset one reads as.
-LANGUAGE_INI = Path.home() / 'Documents' / 'My Games' / 'Skyrim Special Edition' / 'Skyrim.ini'
-DEFAULT_LANGUAGE = 'english'
-
-
-def language() -> str:
-    """Skyrim.ini's `[General] sLanguage`, else English."""
-    ini = configparser.ConfigParser(strict=False, interpolation=None)
-    try:
-        ini.read(LANGUAGE_INI, encoding='utf-8')
-    except (configparser.Error, UnicodeDecodeError):
-        return DEFAULT_LANGUAGE
-    return ini.get('General', 'sLanguage', fallback=DEFAULT_LANGUAGE).strip().lower() \
-        or DEFAULT_LANGUAGE
 
 
 def _decode(raw: bytes) -> str:

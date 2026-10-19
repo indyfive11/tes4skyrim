@@ -19,6 +19,9 @@ namespace tesruntime::mw {
 // False when an address is missing, in which case NOTHING is hooked.
 bool InstallActivation();
 
+// True when this FormID belongs to a converted Morrowind plugin.
+bool IsMorrowindForm(std::uint32_t formId);
+
 // True when this FormID belongs to a converted Morrowind plugin AND that
 // actor has dialogue. The hot path is the first test.
 bool IsMorrowindSpeaker(std::uint32_t formId);

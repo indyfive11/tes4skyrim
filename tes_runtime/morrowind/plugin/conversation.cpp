@@ -140,6 +140,7 @@ ThumbDrag g_drag;
 bool g_scrollToEnd = false;
 bool g_captionDirty = false;
 bool g_open = false;
+bool g_inResultScript = false;
 
 // OpenMW: the list is dead while a choice is pending or goodbye was said;
 // the button only while a choice is pending.
@@ -186,38 +187,40 @@ void CalibrateLineHeight() {
 
 double SpanWidth(const std::string& text, std::size_t begin, std::size_t end) {
     double width = 0;
-    for (std::size_t i = begin; i < end; ++i) width += CharWidth(text[i]);
+    for (std::size_t i = begin; i < end;) width += CharWidth(NextChar(text, i));
     return width;
 }
 
 // The lines a word-wrapping field makes of `plain` in `width` pixels: a
 // break at the last space when a word would overflow, mid-word when one
 // word alone does, and always at a newline. A space itself may overflow.
+// Lines are byte ranges that always start on a whole UTF-8 character.
 std::vector<Line> WrapLines(const std::string& plain, double width) {
     std::vector<Line> lines;
     std::size_t begin = 0;
     std::size_t lastSpace = std::string::npos;
     double x = 0;
-    for (std::size_t i = 0; i < plain.size(); ++i) {
-        const char c = plain[i];
-        if (c == '\n') {
-            lines.push_back({begin, i + 1});
-            begin = i + 1;
+    for (std::size_t i = 0; i < plain.size();) {
+        const std::size_t start = i;
+        const char32_t c = NextChar(plain, i);
+        if (c == U'\n') {
+            lines.push_back({begin, i});
+            begin = i;
             lastSpace = std::string::npos;
             x = 0;
             continue;
         }
         const double w = CharWidth(c);
-        if (c != ' ' && x + w > width && i > begin) {
+        if (c != U' ' && x + w > width && start > begin) {
             const std::size_t at = (lastSpace != std::string::npos &&
-                                    lastSpace >= begin) ? lastSpace + 1 : i;
+                                    lastSpace >= begin) ? lastSpace + 1 : start;
             lines.push_back({begin, at});
             begin = at;
             lastSpace = std::string::npos;
-            x = SpanWidth(plain, begin, i);
+            x = SpanWidth(plain, begin, start);
         }
         x += w;
-        if (c == ' ') lastSpace = i;
+        if (c == U' ') lastSpace = start;
     }
     lines.push_back({begin, plain.size()});
     return lines;
@@ -237,9 +240,10 @@ std::size_t CharAt(double x, double y) {
     }
     const Line& row = g_paneLines[static_cast<std::size_t>(line)];
     double at = kHistory.x + layout::kTextGutter;
-    for (std::size_t i = row.begin; i < row.end; ++i) {
-        at += CharWidth(g_panePlain[i]);
-        if (x < at) return i;
+    for (std::size_t i = row.begin; i < row.end;) {
+        const std::size_t start = i;
+        at += CharWidth(NextChar(g_panePlain, i));
+        if (x < at) return start;
     }
     return std::string::npos;
 }
@@ -571,7 +575,9 @@ void Deliver(const std::string& title, const Reply& reply) {
     g_lastTopic = reply.topic;
 
     SetRunningTopic(reply.topic);
+    g_inResultScript = true;
     RunResultScript(reply.resultScript, context);
+    g_inResultScript = false;
     SetRunningTopic("");
     for (const std::string& message : State().messages) {
         Entry notice;
@@ -977,5 +983,7 @@ void BeginConversation(const char* speaker, const char* displayName,
 }
 
 bool ConversationOpen() { return g_open; }
+
+bool InResultScript() { return g_inResultScript; }
 
 }  // namespace tesruntime::mw

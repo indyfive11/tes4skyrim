@@ -30,6 +30,7 @@ import json
 import os
 import re
 from asset_convert.audio.mp3_length import mp3_duration
+from asset_convert.game_paths import find_nocase
 from output_layout import assets_for
 from concurrent.futures import ThreadPoolExecutor
 
@@ -52,15 +53,9 @@ def scan_voice_durations(export_dir: str, use_cache: bool = True,
     fallback for a `Say()` whose response cannot be known statically.
     """
     cache_path = os.path.join(export_dir, CACHE_NAME)
-    voice_root = str(assets_for(export_dir) / 'sound' / 'voice')
-    # A mod's loose files keep their author's casing ('Voice'); match it
-    # case-insensitively so a case-sensitive filesystem still finds it.
-    sound_dir = os.path.dirname(voice_root)
-    if not os.path.isdir(voice_root) and os.path.isdir(sound_dir):
-        voice_root = next((os.path.join(sound_dir, d) for d in os.listdir(sound_dir)
-                           if d.lower() == 'voice'
-                           and os.path.isdir(os.path.join(sound_dir, d))), voice_root)
-    if not os.path.isdir(voice_root):
+    voice_root = find_nocase(assets_for(export_dir), 'sound', 'voice',
+                             kind=os.path.isdir)
+    if voice_root is None:
         return {}
     if use_cache and os.path.isfile(cache_path):
         try:

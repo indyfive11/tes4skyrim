@@ -10,6 +10,9 @@ See: docs/commentary/script_convert.md#wipe-output-dir
 
 import os
 
+from asset_convert.sources import source_registry
+from core.plugin_masters import export_root
+
 #: Suffix of the per-plugin list of scripts written into a shared `scripts/` folder.
 OWNED_SUFFIX = '.owned.txt'
 
@@ -39,10 +42,41 @@ def write_owned(source_dir, owner: str, names) -> None:
         fh.write(''.join(f'{n}\n' for n in sorted(set(names))))
 
 
-def sibling_owned(source_dir, owner: str) -> set:
-    """Every script name another plugin sharing this folder claims."""
+def listed_owners(source_dir) -> list:
+    """Every owner with a list beside the `scripts/source/` tree `source_dir`."""
     pex_dir = os.path.dirname(str(source_dir))
     names = os.listdir(pex_dir) if os.path.isdir(pex_dir) else []
-    others = [n[:-len(OWNED_SUFFIX)] for n in names
-              if n.endswith(OWNED_SUFFIX) and n != owner + OWNED_SUFFIX]
+    return [n[:-len(OWNED_SUFFIX)] for n in names if n.endswith(OWNED_SUFFIX)]
+
+
+def sibling_owned(source_dir, owner: str) -> set:
+    """Every script name another plugin sharing this folder claims."""
+    others = [o for o in listed_owners(source_dir) if o != owner]
     return set().union(*(read_owned(source_dir, o) for o in others))
+
+
+def departed_owners(source_dir, export_dir) -> list:
+    """Owners listed here that are no longer live members of `export_dir`'s mod.
+
+    A member is gone once unregistered or `removed_from_folder`. Only a
+    registered mod is judged; any other folder keeps every list.
+    See: docs/commentary/script_convert.md#departed-owners
+    """
+    root = export_root(export_dir)
+    plugin = owner_key(export_dir)
+    if not source_registry.get(root, plugin):
+        return []
+    live = {owner_key(source_registry.record_dir(root, m)).casefold()
+            for m in source_registry.group_members(root, plugin)
+            if not source_registry.removed_from_folder(root, m)}
+    live.add(plugin.casefold())
+    return [o for o in listed_owners(source_dir) if o.casefold() not in live]
+
+
+def drop_owners(source_dir, owners) -> set:
+    """Delete `owners`' lists; returns the script names they claimed."""
+    names = set().union(*(read_owned(source_dir, o) for o in owners))
+    for owner in owners:
+        os.remove(owned_list_path(source_dir, owner))
+        print(f'  Dropped the script list of departed member {owner}')
+    return names

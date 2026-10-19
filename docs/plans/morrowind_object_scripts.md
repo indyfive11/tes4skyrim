@@ -275,12 +275,15 @@ which the interpreter routes to `Context::messageBox`. Inside dialogue that
 appends to `State().messages` and the menu renders it. An object script has no
 menu open, so it needs the game's own.
 
-🛑 **`Debug.MessageBox(string)` (ID 55376) is the right native, and
-`Message.Show` is not.** `Show` displays a MESG *record*, so its text is
-authored at build time; TES3 passes arbitrary runtime strings, and the corpus
-has thousands of distinct ones. `Debug.MessageBox` takes the string directly.
-It was located at its registration — `lea r8,['Debug'] / lea rdx,['MessageBox']`
-at `0x9a9598`, callback stored into `[rdi+0x50]` after the call, `0x9a8640`.
+🛑 **A buttonless `MessageBox` is NOT modal — it goes to `Debug.Notification`
+(ID 55377).** TES3 shows it as a box with no OK that fades after
+`length × fMessageTimePerChar` (OpenMW `InterpreterContext::messageBox` →
+`MessageBoxManager::createMessageBox`); only a buttoned call is modal and goes
+to `ShowMessageBox` ([messagebox-buttons](../commentary/morrowind_runtime.md#messagebox-buttons)).
+Routing buttonless calls to `Debug.MessageBox` turned 217 of Arktwend's 265
+calls into OK boxes that halt play. `Message.Show` serves neither: it displays
+a MESG *record*, so its text is authored at build time, while TES3 passes
+arbitrary runtime strings.
 
 ## <a id="placeatpc"></a>`PlaceAtPC` and the instance a placement table cannot hold
 

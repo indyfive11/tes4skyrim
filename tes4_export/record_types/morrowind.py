@@ -15,7 +15,7 @@ import struct
 from ..morrowind_armor import emit_worn_models
 from ..record_types.common import escape_value
 from ..record_types.morrowind_materials import material_of, matt_formid
-from ..tes3_reader import Tes3Record, get_string, get_subrecord
+from ..tes3_reader import Tes3Record, get_string, get_subrecord, text
 
 #: Source extensions that always ship as DDS, whatever a record calls them.
 _IMAGE_EXTS = ('tga', 'bmp')
@@ -178,7 +178,7 @@ def emit_inventory(lines: list, rec: Tes3Record, ctx) -> None:
         if sub.type != 'NPCO' or len(sub.data) < 36:
             continue
         count = struct.unpack_from('<i', sub.data, 0)[0]
-        item = sub.data[4:36].split(b'\x00', 1)[0].decode('cp1252', 'replace')
+        item = text(sub, sub.data[4:36].split(b'\x00', 1)[0])
         form_id = ctx.resolve(item)
         if form_id:
             items.append((form_id, count))

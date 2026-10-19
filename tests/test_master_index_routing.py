@@ -161,6 +161,20 @@ class TestRoutingByIndexByte:
         assert len(seen) == 2
 
 
+def test_edid_found_on_an_override_copy_names_the_overridden_record(tmp_path):
+    """A later master's copy of an earlier master's record keeps that record's id."""
+    cell = _rec(b'CELL', 0x0202E438, _sub(b'EDID', b'TamrielCell\x00'))
+    tam = _write(tmp_path, 'Tamriel.esp', ['Skyrim.esm', 'Oblivion.esm'], cell)
+    anq = _write(tmp_path, 'ElsweyrAnequina.esp',
+                 ['Skyrim.esm', 'Oblivion.esm', 'Tamriel.esp'], cell)
+    chained = ChainedMasterIndex(
+        [MasterIndex(tam), MasterIndex(anq)], base_slot=2,
+        child_masters=['Skyrim.esm', 'Oblivion.esm', 'Tamriel.esp', 'ElsweyrAnequina.esp'])
+    assert chained.find_by_edid(b'CELL', 'TamrielCell') == 0x0202E438
+    assert chained.find_all_by_edid(b'CELL', 'TamrielCell') == [0x0202E438] * 2
+    assert b'TamrielCell' in chained.record(0x0202E438)
+
+
 class TestBaseSlot:
     def test_base_slot_shifts_the_whole_routing_table(self, colliding_masters):
         """With one prepended master the same masters answer one slot lower."""

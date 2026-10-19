@@ -25,6 +25,7 @@ from asset_convert.character.hair_plan import (FIT_ARGS, build_plan, bucket_weig
                                                norm_model, out_rel_dir, variant_stem)
 from asset_convert.nif.pyffi_monkey_patch import apply_patches
 apply_patches()
+from asset_convert.nif.tex_paths import path_bytes, path_text
 from pyffi.formats.nif import NifFormat
 
 from core.worker_budget import worker_count
@@ -724,13 +725,12 @@ def _fix_hair_textures(data, textures_root):
         ts = getattr(block, 'texture_set', None)
         if ts is None:
             continue
-        raw = ts.textures[0]
-        rel = raw.decode('utf-8', 'replace') if isinstance(raw, bytes) else str(raw)
+        rel = path_text(ts.textures[0])
         fixed = resolve_hair_texture(rel, textures_root)
         if fixed:
-            ts.textures[0] = fixed.encode('utf-8')
+            ts.textures[0] = path_bytes(fixed)
             stem = fixed.rsplit('.', 1)[0]
-            ts.textures[1] = (stem + '_n.dds').encode('utf-8')
+            ts.textures[1] = path_bytes(stem + '_n.dds')
             rel = fixed
         diffuse_rel = diffuse_rel or rel
 

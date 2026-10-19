@@ -7,6 +7,7 @@ import argparse
 
 from core.collision_options import WINDING_FIX_DEFAULT_PLUGINS
 from core.navmesh_options import DEFAULT_GENERATOR, GENERATORS
+from tes4_export import text_encoding
 from tes4_export.export_morrowind import (MORROWIND_SOURCE_KEY,
                                           SOURCE_MORROBLIVION, SOURCE_VANILLA)
 
@@ -67,11 +68,15 @@ def unscoped_steps(args, steps: list) -> list:
 
 
 def apply_config_overrides(args, config: dict) -> None:
-    """Let this run's flags override conversion_config.json, without saving it."""
+    """Let this run's flags override conversion_config.json, without saving it,
+    and hand the source text encoding setting to every stage."""
     if args.no_engine_branches:
         config["speedtreeEngineBranches"] = False
     if args.morrowind_source:
         config[MORROWIND_SOURCE_KEY] = args.morrowind_source
+    if args.source_encoding:
+        config[text_encoding.CONFIG_KEY] = args.source_encoding
+    text_encoding.configure(config.get(text_encoding.CONFIG_KEY))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -123,6 +128,12 @@ def _add_run_args(parser) -> None:
                              "this run only, instead of the configured "
                              "Settings > Morrowind source (which is left "
                              "unchanged).")
+    parser.add_argument("--source-encoding",
+                        choices=(text_encoding.AUTO,) + text_encoding.CODECS,
+                        help="Code page the source plugins' text is in, for "
+                             "this run only: cp1252 Western, cp1251 Russian, "
+                             "cp1250 Central European. Default auto: cp1251 "
+                             "or cp1252, read from each plugin's own text.")
     parser.add_argument("--only", nargs="+", metavar="NAME",
                         help="Scope the stage to these units instead of "
                              "rebuilding all of them. Honored by "

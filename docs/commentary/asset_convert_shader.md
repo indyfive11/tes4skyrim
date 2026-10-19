@@ -425,7 +425,7 @@ changes are pinned by the fixtures in `tests/test_authored_paths.py`.
 <a id="texture-fallback-roots"></a>
 
 **Code:** `resolve_source_texture`, `master_texture_roots` in
-`asset_convert/nif/shaders.py`
+`asset_convert/nif/shaders.py`; the case-blind pass is `case_paths.resolve`
 
 [Master-export blindness](../../CLAUDE.md#master-blindness), the asset half. An
 imported mod ships only the files it changes; everything else lives in its
@@ -437,6 +437,28 @@ the resolver falls back through the master roots
 [nearest first](tes5_import_mod_merge.md#base-order-nearest-first): the last
 `_HEADER.txt` master's tree before the root's, so an unofficial patch's copy of a
 texture beats the base game's.
+
+Each tree is tried exactly, then [ignoring case](asset_convert_texture.md#case-blind-lookups):
+a mesh keeps its author's `textures\dungeons\ayleidruins\ARStone02.dds` while
+the extracted file is `textures/dungeons/ayleidruins/arstone02.dds`. The own
+tree's case-blind pass comes before the first fallback root, so a mod's own
+copy under another spelling is found before its master's, as on a filesystem
+that ignores case.
+
+The resolver runs about three times for every textured shape, so the folder
+listings behind that second pass are the shared, remembered listings of
+[`case_paths`](asset_convert_paths.md#case-resolver): a listing that may be
+stale (its folder's modification time moved, or it was read within two seconds
+of a change) is read again before a miss is final. The care is needed because
+creature workers also resolve textures against a tree under `output/`, which
+the run is writing.
+
+Over Oblivion.esm's 40,984 textured shapes, the derived normal map was not
+found for 36,022 before and for 942 after (the pipeline's own count of
+defaulted normals). Its 124,399 lookups take 1.8 s where the exact probes took
+0.19 s, and 8.3 s with no memory at all. In a flat folder of 10,000 names,
+with every lookup a miss, a shape costs 0.15 ms with the memory and 29 ms
+without.
 
 ## Material defaults come from vanilla, not from Oblivion
 <a id="shader-material-defaults"></a>

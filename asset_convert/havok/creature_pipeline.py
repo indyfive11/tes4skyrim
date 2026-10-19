@@ -33,6 +33,10 @@ import shutil
 from asset_convert.havok.creature_sounds import sound_data_by_folder
 from asset_convert.havok.creature_split_morrowind import (source_dirs,
                                                           split_creatures)
+from asset_convert.havok.npc_anim_morrowind import convert_npc_anims
+from asset_convert.havok.npc_graph_morrowind import (build_npc_graphs,
+                                                     remove_npc_graphs)
+from asset_convert.paths import EXPORT
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
 
@@ -486,6 +490,31 @@ def convert_guns(export_dir: str, out_meshes_dir: str, workers: int = None,
         return {}
     work = os.path.join(str(paths.EXPORT), 'skyrim_assets', 'humanoid_graph')
     return build_gun_graphs(manifest, out_meshes_dir, work, log)
+
+
+#: Whether a Morrowind plugin's NPC animation files are converted; off, their earlier outputs are deleted.
+NPC_ANIMS = False
+
+
+def humanoid_appends(export_dir: str, out_meshes_dir: str, workers: int = None,
+                     log=print) -> dict:
+    """The fragment appends of what a plugin adds to the humanoid project.
+
+    FO3/FNV guns, else (with `NPC_ANIMS`) the animation files a Morrowind
+    plugin's NPCs name; {} for a plugin with neither.
+    See: docs/commentary/asset_convert_animation.md#morrowind-npc-animation-files
+    """
+    guns = convert_guns(export_dir, out_meshes_dir, workers, log)
+    if guns:
+        return guns
+    if not NPC_ANIMS:
+        remove_npc_graphs(out_meshes_dir, log)
+        return {}
+    work = os.path.join(str(EXPORT), 'skyrim_assets', 'humanoid_graph_tes3')
+    manifest = convert_npc_anims(export_dir, out_meshes_dir, work, workers, log)
+    return build_npc_graphs(manifest, out_meshes_dir, work, log)
+
+
 def _creature_folders(export_dir: str, meshes_root: str, names, log) -> list:
     """(folder, leaf name, referenced by a CREA) for every animated creature folder.
 
@@ -674,7 +703,7 @@ def convert_creatures(export_dir: str, out_meshes_dir: str,
             all_manifests.setdefault(m['name'], m)
     plugin_out = os.path.dirname(os.path.normpath(out_meshes_dir))
     appends = (_kept_appends(plugin_out) if names
-               else convert_guns(export_dir, out_meshes_dir, workers, log))
+               else humanoid_appends(export_dir, out_meshes_dir, workers, log))
     if all_manifests or appends:
         path = write_fragment(list(all_manifests.values()), out_meshes_dir,
                               os.path.basename(plugin_out), appends, plugin_out)

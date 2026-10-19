@@ -47,6 +47,7 @@ from .overrides.nested import (DELETED_FLAG as OVERRIDE_DELETED_FLAG,
                         detect_injected_records, open_masters)
 from .record_types import interior_range, magic_art
 from .record_types.crime import plan_crime
+from .record_types.npc_markers_morrowind import place_npc_markers, write_idle_table
 from .record_types.spell_tomes import create_spell_tomes
 from .record_types.spell_tomes_morrowind import chain_tables
 from .record_types.world_falloutnv import is_fallout_export
@@ -54,9 +55,12 @@ from .actors.combat_approach import create_combat_approach
 from .actors.combat_style import create_combat_styles
 from .actors.confidence import create_confidence_records
 from .actors.misc_stats import create_misc_stat_globals
+from .actors import npc_face_morrowind
 from .actors.stat_factions import create_stat_factions
 from script_convert.constants import FORCE_FLEE_QUEST, FORCE_GREET_QUEST
 from .packages.force_flee import write_force_flee_quest
+from .packages.actor_wiring import set_stand_still_list
+from .packages.stand_still import create_stand_still
 from script_convert.cross_ref import hosted_script_type, index_record_details
 from .dialogue.converter import build_npc_to_vtyp_map
 from .dialogue.force_greets import dial_index, write_force_greet_quest
@@ -297,7 +301,7 @@ def _prescan_special_records(by_type: dict, ctx, writer, export_dir: str, _step_
     support_root = not ctx or not adopt_master_special_records(ctx, master_export_dirs(ctx))
     if support_root:
         create_vtyp_records(writer, export_dir, by_type)
-    _origin_fact = create_origin_faction(writer, support_root)
+    _origin_fact = create_origin_faction(writer, support_root, by_type)
     print(f"  Plugin-origin faction: {_origin_fact:08X} (TES4PluginOriginFaction)")
     if support_root:
         create_tes4_special_records(writer)
@@ -320,6 +324,7 @@ def _prescan_special_records(by_type: dict, ctx, writer, export_dir: str, _step_
     create_combat_styles(writer, by_type, getattr(ctx, 'master_export', None),
                          getattr(ctx, 'master_index', None), wanted=tes4_source)
     WELL_KNOWN_PROPERTIES.update(create_combat_approach(writer, getattr(ctx, 'master_index', None)))
+    set_stand_still_list(create_stand_still(writer, getattr(ctx, 'master_index', None)))
     set_whole_day_global(create_day_clock(writer, by_type, ctx))
     _step_done('vtyp/special records')
 
@@ -1026,6 +1031,24 @@ def _prescan_outfits_hair_skin(by_type: dict, ctx, export_dir: str, writer):
               f"from authored textures")
     except Exception as _skin_exc:
         print(f"  WARNING: race skin tone index unavailable: {_skin_exc}")
+    _measure_morrowind_heads(by_type, ctx, export_dir)
+
+
+def _measure_morrowind_heads(by_type: dict, ctx, export_dir: str) -> None:
+    """Measure the head and hair parts this plugin's Morrowind NPCs wear.
+
+    See: docs/commentary/tes5_import_actors.md#morrowind-faces
+    """
+    npcs = [r for r in by_type.get('NPC_', []) if npc_face_morrowind.is_morrowind_face(r)]
+    if not npcs:
+        return
+    dirs = [getattr(ctx, 'export_dir', None) or export_dir]
+    if ctx:
+        dirs.extend(master_export_dirs(ctx))
+    started = time.time()
+    n = npc_face_morrowind.load(npcs, dirs)
+    print(f"  Morrowind faces: {n} head and hair parts measured for {len(npcs)} NPCs "
+          f"in {time.time() - started:.1f}s")
 
 
 def _apply_dobj_battle_override(battle, writer) -> None:
@@ -1258,6 +1281,8 @@ def _run_prescans(st: ImportState, all_records: list, num_new_masters: int,
     _prescan_effect_families(by_type, ctx, writer)
     plan_crime(by_type, ctx, writer, export_dir, st.plugin_out_dir,
                st.output_path, st.output_root)
+    place_npc_markers(by_type, writer, st.num_tes4_masters)
+    write_idle_table(st.output_path)
     _scpt_master_export = _prescan_script_plans(by_type, ctx, st.xref,
                                                 st.fid_to_edid, export_dir,
                                                 _step_done)

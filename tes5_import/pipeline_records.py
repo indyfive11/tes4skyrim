@@ -52,6 +52,7 @@ from .actors.attribute_tables import (write_attribute_tables, write_chargen_tabl
 from .record_types.bodypart_falloutnv import write_falloutnv_sidecars
 from .record_types.world_falloutnv import is_fallout_source
 from .record_types.sound import convert_SOUN
+from .record_types.npc_markers_morrowind import flush_npc_markers
 from .base.owned_records import (
     WELL_KNOWN_PROPERTIES,
 )
@@ -403,6 +404,21 @@ def _phases23_records(st, export_dir: str, phase_done,
 
 
 
+def _door_xtel_targets(st) -> dict:
+    """{door REFR FormID: XTEL target FormID} over the masters' and own REFRs."""
+    door_xtel_target = {}
+    sources = [records_of(getattr(st.ctx, 'master_export', None), 'REFR'),
+               ((r.get('FormID', ''), r) for r in st.by_type.get('REFR', []))]
+    for fid_str, rec in (p for src in sources for p in src):
+        if 'XTEL.Door' not in rec or not fid_str or rec.get('Signature', 'REFR') != 'REFR':
+            continue
+        tgt = get_formid(rec, 'XTEL.Door')
+        src_fid = get_formid({'FormID': fid_str}, 'FormID') if tgt else 0
+        if src_fid:
+            door_xtel_target[src_fid] = tgt
+    return door_xtel_target
+
+
 def _phase4a_navmesh(st, export_dir: str, phase_done, skip_types) -> None:
     """Phase 4a: generate navmeshes, then the three ordered post-passes.
 
@@ -465,20 +481,8 @@ def _phase4a_navmesh(st, export_dir: str, phase_done, skip_types) -> None:
 
     from .navmesh.split import split_disconnected_interiors
     _t_sp = time.time()
-    door_xtel_target = {}
-    _xtel_sources = [records_of(getattr(st.ctx, 'master_export', None), 'REFR')]
-    _xtel_sources.append((r.get('FormID', ''), r) for r in st.by_type.get('REFR', []))
-    for fid_str, rec in (p for src in _xtel_sources for p in src):
-        if 'XTEL.Door' not in rec:
-            continue
-        if not fid_str or rec.get('Signature', 'REFR') != 'REFR':
-            continue
-        tgt = get_formid(rec, 'XTEL.Door')
-        if tgt:
-            src_fid = get_formid({'FormID': fid_str}, 'FormID')
-            if src_fid:
-                door_xtel_target[src_fid] = tgt
-    n_split = split_disconnected_interiors(st.navm_cache, st.writer, door_xtel_target)
+    n_split = split_disconnected_interiors(
+        st.navm_cache, st.writer, _door_xtel_targets(st)) if st.navm_cache else 0
     print(f"    Interior split: {time.time() - _t_sp:.1f}s")
     if n_split:
         print(f"  Navmesh split: {n_split} interior meshes split into "
@@ -500,6 +504,7 @@ def run_record_phases(st, export_dir: str, phase_done,
     _phase1_simple_records(st, export_dir, phase_done, skip_types)
     _phases23_records(st, export_dir, phase_done, skip_types)
     _phase4a_navmesh(st, export_dir, phase_done, skip_types)
+    flush_npc_markers(st.by_type)
 
     land_cache = _precompute_land(st.by_type, export_dir)
     if st.ctx:

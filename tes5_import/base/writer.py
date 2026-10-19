@@ -17,6 +17,8 @@ import hashlib
 import struct
 import threading
 
+from core.skyrim_language import text_codec
+
 from .tes5_reader import (GRP_HDR, GRP_TEMPORARY_CHILDREN, REC_HDR,
                           SUB_HDR, walk)
 
@@ -79,16 +81,17 @@ def pack_subrecord(sig: str, data: bytes) -> bytes:
     return sig_bytes + struct.pack('<H', len(data)) + data
 
 
-def pack_string_subrecord(sig: str, value: str) -> bytes:
-    """Pack a null-terminated string subrecord.
+def encode_string(value: str) -> bytes:
+    """`value` NUL-terminated, in the code page Skyrim reads plugin text in.
 
-    TES5 plugins store text as cp1252 (Windows-1252) -- the same encoding
-    TES4 uses, and xEdit's default (wbEncoding := wbMBCSEncoding(1252)).
-    Writing UTF-8 turns one authored character into a multi-byte run that
-    the engine renders as one garbage glyph per byte.
+    See: docs/commentary/tes4_export_text_encoding.md#writing-skyrim-text
     """
-    data = value.encode('cp1252', errors='replace') + b'\x00'
-    return pack_subrecord(sig, data)
+    return (value or '').encode(text_codec(), errors='replace') + b'\x00'
+
+
+def pack_string_subrecord(sig: str, value: str) -> bytes:
+    """Pack a null-terminated string subrecord."""
+    return pack_subrecord(sig, encode_string(value))
 
 
 def pack_record(sig: str, form_id: int, flags: int, subrecords: bytes,
@@ -1134,7 +1137,7 @@ class PluginWriter:
             'IPCT', 'IPDS', 'FSTP', 'FSTS',
             'STAT', 'MSTT', 'ACTI', 'TACT', 'CONT', 'DOOR',
             'FLOR', 'FURN', 'GRAS', 'TREE', 'LIGH', 'MISC', 'KEYM', 'ARMO',
-            'ARMA', 'BOOK', 'AMMO', 'ENCH', 'SPEL', 'ALCH', 'INGR', 'SCRL',
+            'ARMA', 'BOOK', 'AMMO', 'ENCH', 'SPEL', 'ALCH', 'IDLM', 'INGR', 'SCRL',
             'PROJ', 'EXPL', 'ADDN',
             'SLGM', 'VTYP', 'OTFT', 'NPC_', 'LVLN', 'LVLI', 'LVSP',
             'IMGS', 'WTHR',

@@ -6,6 +6,7 @@
 
 - [Asset Conversion Notes](#asset-conversion-notes)
 - [Asset Pipeline](#asset-pipeline)
+- [One mesh plan per mod](#one-plan-per-mod)
 - [DOOR conversion notes](#door-conversion-notes)
 - [NIF mesh rotation](#nif-mesh-rotation)
 - [NIF particle system conversion](#nif-particle-system-conversion)
@@ -120,6 +121,23 @@ Nehrim's MQ14/MQ34 explosions reuse, `LucienLachanceDead.NIF`, hanging chickens,
 A skipped-folder mesh now converts when a placed-fixture record
 (`fixture_plan.FIXTURE_TYPES`: STAT, ACTI, LIGH, CONT, DOOR) names it, into the
 normal `meshes\<ns>\creatures\...` path the record already carries.
+
+### <a id="one-plan-per-mod"></a>One mesh plan per mod, from every member's records
+
+**Code:** `_exported_members`, `_mesh_plan` in `asset_convert/asset_pipeline.py`
+
+An imported mod's plugins share one asset tree and convert into one output
+tree, and the batch reconverts every NIF on each run. The per-mesh plan --
+wearable variants, clutter mass, door and fixture models, sit travel, resting
+items -- used to come from the converting plugin's records alone, so whichever
+member ran Meshes last decided how the shared meshes came out: converting
+`Sky_Main_Grass.esp` after `Sky_Main.esm` rebuilt every door and fixture
+without `Sky_Main.esm`'s records. The plan now merges every exported member
+(variant bits OR-ed, the largest mass, model sets united, the first travel per
+marker), so every member's run writes the same tree. A plugin outside any
+mod, or alone in one, gets exactly its own plan. The post-passes need no merge:
+hair, grass and magic-effect phase meshes are written beside the batch's
+output, and hair prunes only files named after its own plan's hairs.
 
 ## DOOR conversion notes
 <a id="door-conversion-notes"></a>

@@ -66,7 +66,7 @@ def _export(tmp_path, item_pos):
 def _stocked(tmp_path, item_pos, export=_export, plugin='P.esm') -> bool:
     """Whether `plugin`'s shelf box holds the book placed at `item_pos`."""
     export(tmp_path, item_pos)
-    path, _ = resting_items_plan.write_index(tmp_path, plugin)
+    path, _ = resting_items_plan.write_index(tmp_path, [plugin])
     resting_items_plan._LOADED.pop(path, None)
     plan = {fixture_plan.FIXTURE_KEY: {'f/shelf.nif'},
             resting_items_plan.RESTING_KEY: path}

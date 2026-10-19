@@ -1066,6 +1066,12 @@ def _rebind(skinned_geoms, skel_root, targets, prn_out, authored) -> int:
     return len(skinned_geoms)
 
 
+def _morrowind_arm_fit():
+    """The morrowind_arm_fit module; imported late as it imports this module."""
+    from asset_convert.character import morrowind_arm_fit
+    return morrowind_arm_fit
+
+
 def _reweight_morrowind_arms(skinned_geoms, skel_root, sk_skel, female, weight) -> None:
     """Phase B2, morrowind_weights; imported late as it imports this module."""
     from asset_convert.character.morrowind_weights import reweight_arms
@@ -1105,8 +1111,12 @@ def retarget_skin_to_skyrim(data, src_path: str = '', prn_out: set | None = None
     if not skel_root or not skinned_geoms:
         return 0
     bake_geoms_to_bind_pose(skinned_geoms, skel_root)
+    bind = _morrowind_arm_fit().bind_vertices(skinned_geoms, skel_root) if morrowind else None
     _deform_vertices(skinned_geoms, skel_root, ob_skel, female, morrowind,
                      (allow_wrap, weight, race))
+    if morrowind:
+        _morrowind_arm_fit().seat_arms(skinned_geoms, skel_root, bind, (ob_skel, sk_skel),
+                                       load_animation_deltas(ob_skel))
     _place_bones(skinned_geoms, bone_nodes, skel_root, sk_skel, src_map)
     if morrowind:
         _reweight_morrowind_arms(skinned_geoms, skel_root, sk_skel, female, weight)

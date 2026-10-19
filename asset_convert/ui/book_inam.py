@@ -703,14 +703,17 @@ def _as_roots(roots):
 
 
 def find_source_mesh(extract_roots, model):
-    """Locate BOOK MODL `model` across this plugin's asset root then its masters'."""
+    """Locate BOOK MODL `model` across this plugin's asset root then its masters'.
+
+    Each root is tried exactly, then ignoring case.
+    """
     found = case_paths.resolve(_as_roots(extract_roots), 'meshes\\' + model,
                                'book_inam.mesh')
     return str(found) if found else None
 
 
 def _normal_sibling(tex_path):
-    """The `<stem>_n<ext>` file beside `tex_path`, in any case, or None."""
+    """The `_n` map beside `tex_path`, in whatever case it is spelled, or None."""
     if not tex_path:
         return None
     stem, ext = os.path.splitext(os.path.basename(tex_path))

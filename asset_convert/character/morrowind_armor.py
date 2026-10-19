@@ -27,6 +27,7 @@ from pyffi.formats.nif import NifFormat
 
 from asset_convert import paths
 from asset_convert.character.body_wrap import field_path
+from asset_convert.character.morrowind_arm_fit import rotation_between, stretch_along
 from asset_convert.character.prn_skin import (rigid_skin_data,
                                               rigid_skin_instance)
 from asset_convert.character.skin_retarget import (
@@ -125,22 +126,6 @@ def bind_worlds(path) -> dict:
     root = read_nif(str(path)).roots[0]
     return {get_block_name(n): _full_transform(n, root) for n in root.tree()
             if isinstance(n, NifFormat.NiNode) and get_block_name(n).startswith(_BONE_PREFIX)}
-
-
-def _rotation_between(here, there) -> np.ndarray:
-    """Row-vector rotation turning direction `here` onto `there`."""
-    here = here / np.linalg.norm(here)
-    there = there / np.linalg.norm(there)
-    axis = np.cross(here, there)
-    sine = np.linalg.norm(axis)
-    if sine <= 1e-6:
-        return np.eye(3)
-    axis /= sine
-    cosine = float(np.clip(here @ there, -1.0, 1.0))
-    skew = np.array([[0, -axis[2], axis[1]],
-                     [axis[2], 0, -axis[0]],
-                     [-axis[1], axis[0], 0]])
-    return (np.eye(3) + sine * skew + (1 - cosine) * skew @ skew).T
 
 
 def _twist_shift(placed: np.ndarray, target: np.ndarray, axis: np.ndarray) -> np.ndarray:
@@ -369,7 +354,7 @@ class RestSkeleton:
     def direction_delta(self, bone: str) -> np.ndarray:
         """Rotation turning the bone's segment onto the Skyrim one; else identity."""
         segment = self._segment(bone)
-        return np.eye(3) if segment is None else _rotation_between(*segment)
+        return np.eye(3) if segment is None else rotation_between(*segment)
 
     def stretch(self, bone: str, verts: np.ndarray) -> np.ndarray:
         """Pivot offsets turned onto the Skyrim bone, stretched along it to its length.
@@ -384,11 +369,7 @@ class RestSkeleton:
         if segment is None:
             return verts
         mw_len, sk_len = (float(np.linalg.norm(v)) for v in segment)
-        axis = segment[1] / sk_len
-        along = verts @ axis
-        moved = np.where(along > mw_len, along - mw_len + sk_len,
-                         np.where(along > 0.0, along * (sk_len / mw_len), along))
-        return verts + np.outer(moved - along, axis)
+        return stretch_along(verts, segment[1] / sk_len, mw_len, sk_len)
 
     def pivot(self, bone: str) -> np.ndarray:
         """The Skyrim rest position of the bone a Morrowind bone is renamed onto."""

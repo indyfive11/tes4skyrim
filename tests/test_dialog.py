@@ -397,6 +397,17 @@ class TestCTDAConversion:
         player = convert_ctda(_tes4_ctda(type_byte=0x62, comp=0x41F00000, func=14, p1=0), offset=1)
         assert (player[0], struct.unpack_from('<HxxI', player, 8)) == (0x60, (74, 0x01000A01))
 
+    def test_get_vampire_tests_the_vampirism_effect(self, monkeypatch):
+        """GetVampire becomes HasMagicEffectKeyword on VAMP's family; with no family it drops."""
+        from tes5_import.base import owned_records
+        from tes5_import.base.constants import mgef_family_keyword_name
+        ctda = _tes4_ctda(type_byte=0x02, func=40)
+        assert convert_ctda(ctda, offset=1) is None
+        monkeypatch.setitem(owned_records.WELL_KNOWN_PROPERTIES,
+                            mgef_family_keyword_name('VAMP'), 0x01000B01)
+        out = convert_ctda(ctda, offset=1)
+        assert struct.unpack_from('<HxxIxxxxI', out, 8) == (699, 0x01000B01, 1)
+
     def test_quest_stage_param2_not_remapped(self):
         """59 GetStageDone(ptQuest, ptQuestStage): p1 is a FormID, p2 is the
         stage NUMBER and must stay a small integer."""
@@ -963,6 +974,8 @@ class TestQUST:
         assert quest_name({**named, 'name': ''}) == 'Report to Caius Cosades'
         assert (quest_name({'id': 'TR_m7_Shin_NasarKill', 'name': ''})
                 == 'Enemy of the Nasar')
+        assert (quest_name({'id': 'A_I_TAVERNE', 'name': ''})
+                == 'The Fur Seal Tavern')
         assert quest_name({'id': 'NoSuch_Journal', 'name': ''}) == 'NoSuch_Journal'
 
     def test_uesp_quest_id_field_spellings(self):
@@ -1883,6 +1896,56 @@ class TestOriginGate:
         return (bytes([type_byte, 0, 0, 0]) + struct.pack('<f', comp)
                 + struct.pack('<H', func) + bytes(2)
                 + struct.pack('<I', param1) + bytes(4)).hex()
+
+    @pytest.mark.parametrize('own_actor', [False, True])
+    def test_an_actorless_addon_gates_on_its_masters_audience(self, own_actor):
+        """A dialogue-only add-on's own faction has no members to speak its lines."""
+        from tes5_import.base.writer import PluginWriter
+        from tes5_import.record_types.actor_common import (
+            create_origin_faction, origin_gate, reset_origin_faction)
+
+        class MasterIndex:
+            def find_all_by_edid(self, sig, edid):
+                return [0x02000010]
+
+        set_formid_index_offset(2)
+        try:
+            reset_origin_faction(MasterIndex())
+            writer = PluginWriter(masters=['Skyrim.esm', 'Oblivion.esm', 'Master.esm'])
+            by_type = {'NPC_': [{'FormID': '01000042' if own_actor else '00000042'}]}
+            own = create_origin_faction(writer, False, by_type)
+            gate = origin_gate({'FormID': '01000200'})
+            expected = own if own_actor else 0x02000010
+            assert struct.pack('<I', expected) in gate
+            assert struct.pack('<I', 0x02000010 if own_actor else own) not in gate
+        finally:
+            set_formid_index_offset(0)
+            reset_origin_faction()
+
+    @pytest.mark.parametrize('master_marker', [0x01000777, 0])
+    def test_a_reply_under_the_masters_barter_topic_is_service_gated(self, master_marker):
+        """Without the gate a dependent's barter reply opened barter on any NPC."""
+        from types import SimpleNamespace
+        from tes5_import.base.writer import PluginWriter
+        from tes5_import.dialogue.converter import DIAL_TYPE_SERVICE
+        from tes5_import.overrides.nested import _nested_info
+        from tes5_import.record_types.actor_common import create_vendor_factions
+
+        class MasterIndex:
+            def find_by_edid(self, sig, edid):
+                return master_marker if edid == 'TES4MerchantFaction' else 0
+
+        create_vendor_factions({}, PluginWriter(masters=['Skyrim.esm']), MasterIndex())
+        ctx = SimpleNamespace(master_export={'0000010F': {
+            'FormID': '0000010F', 'DATA.Type': str(DIAL_TYPE_SERVICE)}})
+        rec = {'FormID': '01000200', 'ParentDIAL': '0000010F', 'DATA.Flags': '0',
+               'ResponseCount': '1', 'Response[0].ResponseNumber': '1',
+               'Response[0].ResponseText': 'Have a look.'}
+        info = _nested_info(rec, ctx)
+        if master_marker:
+            assert struct.pack('<I', master_marker) in info
+        else:
+            assert info == b''
 
     def test_run_on_target_pin_does_not_scope_the_speaker(self):
         """A Target-side test is about the LISTENER, not who is talking.

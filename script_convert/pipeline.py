@@ -34,7 +34,7 @@ from script_convert.context_setup import (
     build_xref, chargen_menu_plan, deploy_static_scripts, load_bounds_cache,
     load_records, prepare_output_dir, quest_edids_by_fid,
     service_menu_topics, topic_unlock_globals)
-from script_convert.ownership import owner_key, write_owned
+from script_convert.ownership import departed_owners, owner_key, write_owned
 from script_convert.message_menus import build_message_plan
 from script_convert.commands_falloutnv import (quest_objective_indices,
                                                set_quest_objectives)
@@ -271,7 +271,8 @@ def build_script_context(export_dir: str, output_dir: str) -> dict:
     See: docs/commentary/script_convert.md#script-output-dir
     """
     owner = owner_key(export_dir)
-    shared = prepare_output_dir(output_dir, owner)
+    shared = prepare_output_dir(output_dir, owner,
+                                departed_owners(output_dir, export_dir))
     bounds_cache = load_bounds_cache(export_dir)
     _WRITTEN.extend(deploy_static_scripts(export_dir, output_dir, shared))
     xref = build_xref(export_dir)

@@ -25,6 +25,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from tes5_import.navmesh import from_pgrd as pgrd_to_navm
+from tes5_import.navmesh import worker as navm_worker
 from tools.navmesh import job_trace
 from tes5_import.navmesh.edge_links import build_edge_links, NavMeshView, extract_nvnm, SEAM_BAND
 
@@ -127,11 +128,8 @@ def _build_meshes(selected, base_model_by_fid, door_fids):
     for (job, gx, gy) in selected:
         rec, fid = job['pgrd_rec'], job['navm_fid']
         ic, raw_ic = _intercell_points(rec, gx, gy)
-        navm_bytes, meta = pgrd_to_navm.convert_PGRD(
-            rec, navm_fid=fid, land_rec=job['land_rec'],
-            cell_rec=job['cell_rec'], refr_recs=job['refr_recs'],
-            base_model_by_fid=base_model_by_fid, door_fids=door_fids,
-            extra_door_refrs=job.get('extra_door_refrs'))
+        navm_bytes, meta = navm_worker.convert_job(job, base_model_by_fid,
+                                                   door_fids)
         if not navm_bytes:
             print(f"  grid({gx},{gy}) PGRD {rec.get('FormID')}: NO MESH "
                   f"(intercell {len(ic)}/{raw_ic})")

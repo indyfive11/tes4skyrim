@@ -52,7 +52,7 @@ from ..packages.actor_wiring import CSTY_DEFAULT
 from .vmad_swap import SCRIPT_SWAP_KEY, SCRIPTED_TYPES, swap_vmad_script
 from .ref_state import REF_SIGS
 
-from ..base.writer import RECORD_HEADER_SIZE
+from ..base.writer import RECORD_HEADER_SIZE, encode_string
 _COMPRESSED_FLAG = 0x00040000
 
 # Export key -> the output subrecord it writes, for keys whose value is a
@@ -227,10 +227,6 @@ def replace_vmad(record: bytes, vmad: bytes) -> bytes:
         at = 1 if subs[0][0] == b'EDID' else 0
         subs.insert(at, (b'VMAD', vmad))
     return join_subrecords(record[:RECORD_HEADER_SIZE], subs)
-
-
-def _encode_string(value: str) -> bytes:
-    return (value or '').encode('cp1252', errors='replace') + b'\x00'
 
 
 # --------------------------------------------------------------------------
@@ -1238,7 +1234,7 @@ def _classify_changes(changes: dict, sig_name: str, plugin_export: dict,
         if sub_sig is None:
             buckets.generic.add(key)
             continue
-        buckets.pending[sub_sig] = _encode_string(value)
+        buckets.pending[sub_sig] = encode_string(value)
     return buckets
 
 
@@ -1258,7 +1254,7 @@ def _substitute_strings(subs: list, buckets: _Buckets) -> tuple:
             seen[sub_sig] = n + 1
             values = buckets.indexed[sub_sig]
             if n < len(values):
-                out.append((sub_sig, _encode_string(values[n])))
+                out.append((sub_sig, encode_string(values[n])))
             else:
                 out.append((sub_sig, payload))
             replaced.add(sub_sig)

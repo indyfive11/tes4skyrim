@@ -1,0 +1,9 @@
+clip.sit_1.idle9=TES3Anim_sit_1_idle9|2.000
+clip.fish_2.idle=TES3Anim_fish_2_idle|0.033
+clip.fish_2.idle2=TES3Anim_fish_2_idle2|1.000
+actor.Sitter=sit_1|0,0,0,0,0,0,0,100|0
+actor.Fisher=fish_2|100,0,0,0,0,0,0,0|0
+actor.Walker=sit_1|0,0,0,0,0,0,0,100|512
+place.00AA0001=scripts.esm|Sitter|10.000,20.000,30.000,0.000,0.000,90.000
+place.00AA0002=scripts.esm|Fisher
+place.00AA0003=scripts.esm|Walker|1.000,2.000,3.000,0.000,0.000,0.000

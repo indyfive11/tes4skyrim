@@ -43,6 +43,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__)))))
 from tes5_import.navmesh import cache_audit, pool as navm_pool
 from tes5_import.navmesh import worker as navm_worker
+from tes5_import.record_types.world_morrowind import register_tes3_locks
 
 
 def init_worker_for(export_dir, im, door_fids, base_model_by_fid, offset):
@@ -98,6 +99,7 @@ def load_export(export_dir, offset):
     if n_lvl:
         print(f'  {n_lvl} leveled placements become ACHR (not carved)',
               flush=True)
+    register_tes3_locks(by_type, export_dir, master_export)
     door_fids = navm_pool.build_door_fid_set(by_type, master_export)
     base_model_by_fid = navm_pool.build_base_model_index(by_type,
                                                          master_export)
@@ -151,8 +153,6 @@ def main():
         export_dir, args.offset)
     print(f'  {len(jobs)} navmesh jobs', flush=True)
 
-    from tes5_import.navmesh.from_pgrd import convert_PGRD
-
     geom_cache = init_worker_for(export_dir, im, door_fids, base_model_by_fid,
                                  args.offset)
 
@@ -204,12 +204,8 @@ def main():
               f'refrs={len(job["refr_recs"])} '
               f'land={"Y" if job["land_rec"] is not None else "N"}', flush=True)
         try:
-            nb, meta = convert_PGRD(
-                job['pgrd_rec'], land_rec=job['land_rec'],
-                cell_rec=job['cell_rec'], refr_recs=job['refr_recs'],
-                base_model_by_fid=base_model_by_fid, door_fids=door_fids,
-                navm_fid=job['navm_fid'], geom_cache=geom_cache,
-                extra_door_refrs=job.get('extra_door_refrs'))
+            nb, meta = navm_worker.convert_job(job, base_model_by_fid,
+                                               door_fids, geom_cache)
         except Exception:
             failed += 1
             traceback.print_exc()

@@ -15,6 +15,7 @@
 
 #include "dialogue_state.h"
 #include "log.h"
+#include "npc_anim.h"
 #include "script_ops.h"
 
 namespace tesruntime::mw {
@@ -41,6 +42,7 @@ class OpAiTravel : public Interpreter::Opcode1 {
         const float y = PopFloat(runtime);
         const float z = PopFloat(runtime);
         DropOptional(runtime, optional);
+        ReleaseNpcHold(actor);
         if (Hooks().aiTravel) Hooks().aiTravel(actor, x, y, z);
     }
 };
@@ -59,6 +61,7 @@ class OpAiWander : public Interpreter::Opcode1 {
         const float duration = PopFloat(runtime);
         PopFloat(runtime);
         DropOptional(runtime, optional);
+        ReleaseNpcHold(actor);
         if (Hooks().aiWander) Hooks().aiWander(actor, range, duration);
     }
 };
@@ -70,6 +73,7 @@ class OpAiFollow : public Interpreter::Opcode1 {
 public:
     static void Apply(const std::string& actor, const std::string& target,
                       float duration, float x, float y, float z) {
+        ReleaseNpcHold(actor);
         if (Escort) {
             if (Hooks().aiEscort) {
                 Hooks().aiEscort(actor, target, duration, x, y, z);
@@ -118,6 +122,7 @@ class OpAiActivate : public Interpreter::Opcode1 {
         const std::string actor = R::Target(runtime);
         const std::string object = PopString(runtime);
         DropOptional(runtime, optional);
+        ReleaseNpcHold(actor);
         if (Hooks().aiActivate) Hooks().aiActivate(actor, object);
     }
 };

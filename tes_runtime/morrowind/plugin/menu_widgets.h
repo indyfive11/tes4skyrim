@@ -52,9 +52,13 @@ struct ThumbDrag {
     void End() { bar = nullptr; }
 };
 
-// A glyph's width on screen at the body size, as the movie draws it, and a
-// whole line's.
-double CharWidth(char c);
+// The character starting at byte `i` of the UTF-8 `text`, moving `i` past it.
+// See: docs/commentary/morrowind_runtime.md#dynamic-text
+char32_t NextChar(const std::string& text, std::size_t& i);
+
+// A character's width on screen at the body size, as the movie draws it (one
+// the face lacks measures as '?'), and a whole line's.
+double CharWidth(char32_t c);
 double TextWidth(const std::string& text);
 
 // An HTML field's markup: `rgb` as "#RRGGBB"; text escaped, with each newline

@@ -34,6 +34,7 @@ kRefGetParentCell
 kGetFormFromFile
 kBSFixedStringCtor
 kDebugNotification
+kGamePlayBink
 
 # The skill cap: AdvanceSkill in the player's vtable, and the trainer's train step.
 kPlayerAdvanceSkill

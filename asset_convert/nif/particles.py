@@ -20,8 +20,8 @@ from asset_convert.nif.shaders import (apply_fx_soft_effect,
                                        base_texture_path,
                                        collect_tex_transform_ctrls,
                                        find_flip_controller)
-from asset_convert.nif.tex_paths import (bs_pp_texture_slots,
-                                         rewrite_tex_path)
+from asset_convert.nif.tex_paths import (bs_pp_texture_slots, path_bytes,
+                                         path_text, rewrite_tex_path)
 from asset_convert.nif.uv_transform import apply_static_uv, base_map
 
 
@@ -333,8 +333,8 @@ def _effective_psys_texture(flip_ctrl, diffuse_path, fix_textures):
     if not diffuse_path:
         return b''
     ep = (rewrite_tex_path(diffuse_path) if fix_textures
-          else diffuse_path.decode('utf-8', errors='replace'))
-    return ep.encode('utf-8')
+          else path_text(diffuse_path))
+    return path_bytes(ep)
 
 
 def _build_psys_shader(effective_path, emissive, alpha, curve_hue):

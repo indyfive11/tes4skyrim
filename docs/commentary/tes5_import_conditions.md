@@ -23,6 +23,7 @@ Parameter remapping and the crash rule are in
 - [Engine-fixed FormID parameters](#engine-fixed-params)
 - [GameDaysPassed reads a whole-day copy](#whole-days)
 - [GetIsRace on a plugin-authored race becomes a faction test](#plugin-authored-races)
+- [GetVampire becomes a test for the vampirism effect](#get-vampire)
 
 ## <a id="engine-fixed-params"></a>Engine-fixed FormID parameters
 
@@ -505,6 +506,25 @@ Skyrim one.
 Counted in the exports: Morroblivion has 1 such quest condition (Riekling) and
 2 INFO conditions (ash ghoul races), Nehrim 8 INFO conditions (`Aeterna1`), and
 Oblivion none.
+
+### <a id="get-vampire"></a>GetVampire becomes a test for the vampirism effect
+
+**Code:** `_vampirism` in `conditions.py`
+
+Oblivion's GetVampire (function 40, opcode 0x1028) has no Skyrim counterpart,
+and dropping it failed open: every vampire-only line played for everyone. Its
+condition handler in Oblivion.exe (`0x4F4830`) returns 1 when the subject is an
+actor and `0x5E04C0` answers true, and `0x5E04C0` is just
+`GetActorValue(0x45) > 0` -- the Vampirism actor value, which only the VAMP
+effect raises. In Oblivion.esm that effect is on the five `Vampirism*`
+abilities (`Vampirism25` .. `Vampirism100`, `testvampire`), carried by 104
+NPCs. Skyrim has no Vampirism value, but the effect survives conversion as a
+hidden MGEF, so the condition becomes `HasMagicEffectKeyword` on VAMP's family
+keyword ([effect families](tes5_import_magic.md#effect-families)), which
+compares the same 1/0 and keeps the operator, run-on and OR flag. Skyrim's own
+`Vampire` keyword is no substitute: it sits on Skyrim's vampire races, which no
+converted actor uses. A plugin with no VAMP effect in reach keeps dropping it.
+Counted in the exports: 13 conditions in Oblivion.esm, 95 in Morrowind_ob.esm.
 
 ### <a id="run-on-target"></a>Run On = Target under a script-driven topic
 

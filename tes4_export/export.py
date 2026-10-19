@@ -20,6 +20,8 @@ import time
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
 
+from . import text_encoding
+
 from .record_types.actors import (
     export_BSGN,
     export_CLAS,
@@ -105,6 +107,7 @@ from .tes4_reader import (
     get_string,
     get_subrecord,
     read_file,
+    text_sample,
 )
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -307,11 +310,12 @@ _worker_path = None
 def _format_chunk_worker(args: tuple) -> str:
     """Format one chunk of records; returns the joined text blocks.
 
-    args = (source_path, entries) with entries a list of
+    args = (source_path, code page, entries) with entries a list of
     (offset, parent_wrld, parent_cell, parent_dial, is_vwd).
     """
     global _worker_mm, _worker_path
-    source_path, entries = args
+    source_path, codec, entries = args
+    text_encoding.use(codec)
     if _worker_path != source_path:
         if _worker_mm is not None:
             _worker_mm.close()
@@ -343,8 +347,9 @@ def _export_per_type_parallel(by_type: dict, output_dir: str, source_path: str):
     that order, so each output file's record order matches the serial path
     exactly; results stream to disk as they arrive.
     """
-    jobs = []       # (source_path, entries)
-    job_sigs = []   # parallel list: sig of each job
+    jobs = []
+    job_sigs = []
+    codec = text_encoding.current()
     for sig, records in by_type.items():
         entries = []
         chunk_bytes = 0
@@ -354,12 +359,12 @@ def _export_per_type_parallel(by_type: dict, output_dir: str, source_path: str):
             chunk_bytes += rec.data_size
             if (chunk_bytes >= _FORMAT_CHUNK_BYTES
                     or len(entries) >= _FORMAT_CHUNK_RECORDS):
-                jobs.append((source_path, entries))
+                jobs.append((source_path, codec, entries))
                 job_sigs.append(sig)
                 entries = []
                 chunk_bytes = 0
         if entries:
-            jobs.append((source_path, entries))
+            jobs.append((source_path, codec, entries))
             job_sigs.append(sig)
 
     workers = min(_WORKER_COUNT, max(1, len(jobs)))
@@ -400,6 +405,14 @@ def _write_format_results(by_type: dict, output_dir: str, job_sigs: list,
     _close_current()
 
 
+def use_source_codec(source_path: str, records: list) -> str:
+    """Pick `source_path`'s code page from its `records`; decode in it from now on."""
+    codec = text_encoding.choose(text_sample(source_path, records))
+    text_encoding.use(codec)
+    print(f"  Text code page: {codec}")
+    return codec
+
+
 def export_header(header: Record, output_dir: str):
     """Write the TES4 file header info."""
     filepath = os.path.join(output_dir, "_HEADER.txt")
@@ -424,6 +437,7 @@ def export_header(header: Record, output_dir: str):
         lines.append(f"Master[{i}]={get_string(mast)}")
 
     lines.append(f"Flags={header.flags}")
+    lines.append(f"{text_encoding.HEADER_KEY}={text_encoding.current()}")
 
     with open(filepath, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
@@ -477,6 +491,7 @@ def main():
     print(f"  Scanned {len(all_records)} records in {t1-t0:.2f}s")
 
     os.makedirs(output_dir, exist_ok=True)
+    use_source_codec(args.input, all_records)
     export_header(header, output_dir)
     export_file(all_records, output_dir, type_filter,
                 source_path=args.input,

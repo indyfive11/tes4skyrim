@@ -396,6 +396,19 @@ constexpr std::uint64_t kCellIsInterior = 56056;
 // beside the name string `IsAttached`, one registration above IsInterior's.
 // Its whole body is `cmp byte ptr [cell+0x44], 7`.
 constexpr std::uint64_t kCellIsAttached = 56055;
+
+// Debug.SendAnimationEvent(ObjectReference, string) (0xa073f0 on 1.6.1170),
+// the `lea` stored beside the name string `SendAnimationEvent`. Its whole
+// body builds a BSFixedString and calls slot 1 of the
+// IAnimationGraphManagerHolder at ref+0x38 -- NotifyAnimationGraph -- and
+// throws the bool away. The NPC animation driver needs that bool, so it makes
+// the same call itself; the id only proves the build has the native.
+// See: docs/commentary/morrowind_runtime.md#npc-animation-files
+constexpr std::uint64_t kDebugSendAnimationEvent = 55380;
+constexpr std::size_t kGraphHolderOffset = 0x38;
+constexpr std::size_t kNotifyGraphSlot = 1;
+// Actor.IsInCombat (0x9f54a0), found at its registration beside "IsInCombat".
+constexpr std::uint64_t kActorIsInCombat = 54945;
 constexpr std::uint64_t kActorGetValue = 54675;
 constexpr std::uint64_t kActorSetValue = 54743;
 constexpr std::uint64_t kActorRestoreValue = 54737;
@@ -417,16 +430,6 @@ constexpr std::uint64_t kActorEquipItem = 54661;
 // See: docs/commentary/morrowind_runtime.md#engine-written-locals
 constexpr std::uint64_t kEquipObject = 52933;
 constexpr std::uint64_t kUnequipObject = 52937;
-
-// Debug.MessageBox(string) (0x9a8640), global: found at its registration,
-// `lea r8,['Debug'] / lea rdx,['MessageBox']`, the callback stored into
-// [rdi+0x50] AFTER the call. Takes the text in r9 as a BSFixedString.
-//
-// 🛑 The MESSAGE-BOX native, not Notification: TES3's `MessageBox` is modal and
-// may carry buttons. `Message.Show` cannot serve it -- that needs an authored
-// MESG record per string, and the corpus passes arbitrary runtime text.
-// See: docs/plans/morrowind_object_scripts.md#messagebox
-constexpr std::uint64_t kDebugMessageBox = 55376;
 
 // The message box Debug.MessageBox is a one-button WRAPPER over
 // (0xa072f0 tail-calls it): it builds the MessageBoxData, so it takes the
@@ -499,6 +502,18 @@ constexpr std::uint64_t kVmMagicEffectApplySink = 217097;
 constexpr std::uint64_t kVmMagicEffectApplyProcess = 53978;
 constexpr std::size_t kProcessEventSlot = 0x8;
 
+// SkyrimVM's BSTEventSink<TESSleepStartEvent> and <TESSleepStopEvent>
+// vtables (0x1912948 and 0x1912960 on 1.6.1170), whose slot-1 ProcessEvents
+// (0x9c7910, 0x9c7b20) load 'OnSleepStart' and 'OnSleepStop'. The Sleep/Wait
+// menu's start (0x95e000) calls the player's sleep start (0x72e7f0), which
+// sends the start event, only when the menu was opened for SLEEPING; a wait
+// goes to 0x72e940 and its own event instead.
+// See: docs/commentary/morrowind_runtime.md#the-tick-stops-while-the-game-is-paused
+constexpr std::uint64_t kVmSleepStartSink = 217129;
+constexpr std::uint64_t kVmSleepStartProcess = 53994;
+constexpr std::uint64_t kVmSleepStopSink = 217131;
+constexpr std::uint64_t kVmSleepStopProcess = 53995;
+
 // TESMagicEffectApplyEvent: the target and caster (NiPointers' raw pointers)
 // and the MGEF's runtime FormID. The VM's argument functor (vtable 0x1912ba8,
 // slot 1) reads the caster at +0x8 and looks the +0x10 id up expecting form
@@ -559,10 +574,9 @@ constexpr std::uint64_t kWeatherClassification = 56775;
 // count, the only native of that name.
 constexpr std::uint64_t kActorBaseDeadCount = 55987;
 
-// The equip and sleep queries, located the same way and present in all 12
+// The equip queries, located the same way and present in all 12
 // shipped versionlibs. Live-image RVAs (1.6.1170), GOG 1.6.659 in brackets:
 //   bool  Actor.IsEquipped(Form)           0x9e8d20  [0x98a070]
-//   int   Actor.GetSleepState()            0x9e9030  [0x98a380]
 //   int   Actor.GetEquippedItemType(int)   0x9e8710  [0x989a60]
 //   Spell Actor.GetEquippedSpell(int)      0x9e8630  [0x989980]
 //
@@ -583,7 +597,6 @@ constexpr std::uint64_t kActorBaseDeadCount = 55987;
 constexpr std::size_t kOffActorMoveFlags = 0xCC;
 constexpr std::uint32_t kActorFlagForceSneak = 4;
 constexpr std::uint64_t kActorIsEquipped = 54707;
-constexpr std::uint64_t kActorGetSleepState = 54715;
 constexpr std::uint64_t kActorEquippedItemType = 54685;
 constexpr std::uint64_t kActorEquippedSpell = 54683;
 
@@ -821,6 +834,12 @@ constexpr std::uint32_t kGfxValueManaged = 0x40;
 // OpenMW's buttonless messageBox is.
 constexpr std::uint64_t kDebugNotification = 55377;
 
+// Game.PlayBink(string, bool abortOnFocusLost, bool abortOnEscape, bool loop,
+// bool pauseVoice) (0xa0d0b0), global, the callback beside "PlayBink" at its
+// registration: it reads the file through [r9] and the four flags from
+// [rsp+0x28..0x40] at entry, and plays Bink 1 ("BIK") and Bink 2 ("KB2").
+constexpr std::uint64_t kGamePlayBink = 55488;
+
 // Crime natives, each found at its registration in 1.6.1170 (the callback's
 // lea beside the name's): Actor.GetCrimeFaction, Faction.GetCrimeGold /
 // SetCrimeGold / SetCrimeGoldViolent / PlayerPayCrimeGold / SendPlayerToJail.
@@ -878,6 +897,37 @@ constexpr std::size_t kOffControllerStepSeconds = 0x88;
 constexpr std::size_t kOffControllerVelocity = 0x90;
 constexpr std::size_t kOffControllerFallStart = 0x240;
 constexpr std::size_t kControllerGetPositionSlot = 2;
+
+// A still actor is never pushed out of what it stands in (game_calls_still.cpp).
+//   bhkCharProxyController vtable  0x19edff0  [1.7.104 0x1a89578]  the one
+//        GetCharController's pointer carries; its GetPositionImpl (0xed1dc0,
+//        [0x1098920]) reads the bhkCharacterProxy at +0x330, whose
+//        hkpCharacterProxy is at +0x10
+//   hkpCharacterProxy+0xdc  penetrationRecoverySpeed: copied to and from the
+//        Cinfo's +0x7c (0xb80497, 0xb8058c), the offset Havok's own class
+//        table gives it; at 0xb83c44 a penetrating contact adds
+//        -distance * this along its normal, then is clamped to distance 0
+//   ProcessLists singleton pointer  0x20f69b0: the nearby actors' handles at
+//        +0x30, their count at +0x40 (the two fields its 443 readers use most)
+constexpr std::uint64_t kProxyControllerVtable = 240560;
+constexpr std::size_t kOffProxyControllerProxy = 0x340;
+constexpr std::size_t kOffProxyRecoverySpeed = 0xdc;
+constexpr std::uint64_t kProcessListsSingleton = 400315;
+constexpr std::size_t kOffHighActorHandles = 0x30;
+constexpr std::size_t kOffHighActorCount = 0x40;
+
+// An NPC npc_anim holds on its spot is taken out of the physics simulation
+// the way the engine takes a paired-animation actor out of it: bit 17 of the
+// bhkCharacterController flags at +0x218 (CommonLib's kNoSim).
+//   0x54a070 (ID 32847) sets it on an actor's controller; its only caller,
+//        0x547e10 (ID 32803), looks up two ACHR handles and freezes both
+//   0xed505b, in the proxy controller's step (ID 79206): the bit jumps past
+//        the whole step, so no gravity, push-out or support moves the actor
+//   0x6ab9c8: the move onto the navmesh skips an actor carrying the bit
+//   0x688156..0x6881f6: SetPosition sets the bit around its move and puts
+//        the old value back, so a TranslateTo glide keeps the hold
+constexpr std::size_t kOffControllerFlags = 0x218;
+constexpr std::uint32_t kControllerNoSim = 1u << 17;
 
 // PlayerControlsData.moveInputVec: strafe then forward, -1..1. The input sink
 // (0x79a970) zeroes it, then hands `this+0x24` to each handler, and

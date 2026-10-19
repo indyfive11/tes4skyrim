@@ -19,8 +19,8 @@ from tes4_export.record_types.morrowind import (export_ARMO, export_DOOR,
                                                 export_LIGH,
                                                 export_SOUN, export_WEAP,
                                                 tes4_signature)
-from tes4_export.record_types.morrowind_actors import (export_BSGN, export_CLAS, export_LEVI,
-                                                       export_NPC_)
+from tes4_export.record_types.morrowind_actors import (RaceTable, export_BSGN, export_CLAS,
+                                                       export_LEVI, export_NPC_)
 from tes4_export.record_types.morrowind_scripts import export_SCPT
 from tes4_export.morroblivion import MorroblivionModels
 from tes4_export.morrowind_cell import parse_cell as _parse
@@ -196,6 +196,43 @@ def test_npc_exports_in_the_tes4_actor_vocabulary():
     assert 'Faction[0].Rank=3' in lines and 'FactionCount=1' in lines
     assert 'AIDT.Aggression=30' in lines and 'AIDT.Confidence=80' in lines
     assert 'AIDT.Services=1' in lines and 'AIPackageCount=0' in lines
+
+
+def _body(body_id: str, race: str, mesh: str, part: int = 0) -> reader.Tes3Record:
+    """A skin BODY part of `race` (part 0 head, 1 hair) using `mesh`."""
+    return _rec('BODY', body_id, _text('FNAM', race), _text('MODL', mesh),
+                _sub('BYDT', bytes([part, 0, 0, 0])))
+
+
+def test_custom_race_takes_the_vanilla_race_it_names_or_shares_meshes_with():
+    """A custom race converts as the vanilla race it is named after, else the one whose head/hair meshes
+    it shares most; with neither, or a tie, it stays Imperial."""
+    races = RaceTable()
+    races.add([_rec('RACE', 'Khajiit', _text('FNAM', 'Khajiit')),
+               _rec('RACE', 'Nord', _text('FNAM', 'Nord')),
+               _rec('RACE', 'Argonian', _text('FNAM', 'Argonian')),
+               _rec('RACE', 'T_Els_Ohmes', _text('FNAM', 'Khajiit')),
+               _rec('RACE', 'Normanen', _text('FNAM', 'Normanne')),
+               _rec('RACE', 'Mixed', _text('FNAM', 'Mixed')),
+               _rec('RACE', 'T_Val_Imga', _text('FNAM', 'Imga')),
+               _body('b_nord_head', 'Nord', 'b\\nord_head.nif'),
+               _body('b_nord_hair', 'Nord', 'b\\nord_hair.nif', 1),
+               _body('b_arg_head', 'Argonian', 'b\\arg_head.nif'),
+               _body('norm_head', 'Normanen', 'b\\nord_head.nif'),
+               _body('norm_hair', 'Normanen', 'b\\nord_hair.nif', 1),
+               _body('norm_own', 'Normanen', 'ark\\own.nif'),
+               _body('mix_a', 'Mixed', 'b\\nord_head.nif'),
+               _body('mix_b', 'Mixed', 'b\\arg_head.nif')])
+    ctx = MorrowindContext()
+    ctx.race_formids = races.formids()
+
+    def race_of(race_id):
+        """The RNAM.Race line an NPC of `race_id` exports."""
+        lines = export_NPC_(_rec('NPC_', 'npc', _text('RNAM', race_id)), ctx)
+        return next(line for line in lines if line.startswith('RNAM.Race='))
+    assert race_of('T_Els_Ohmes') == 'RNAM.Race=000223C7'
+    assert race_of('Normanen') == 'RNAM.Race=000224FD'
+    assert race_of('Mixed') == race_of('T_Val_Imga') == 'RNAM.Race=00000907'
 
 
 def test_enchant_keeps_its_own_skill():

@@ -660,6 +660,20 @@ def plugin_binary(export_dir, plugin: str):
     return cand if cand.is_file() else None
 
 
+def removed_from_folder(export_dir, plugin: str) -> bool:
+    """Whether `plugin` came from a folder that is still on disk but no longer holds it.
+
+    An archive import or an unreachable folder never counts as removed.
+    See: docs/commentary/script_convert.md#departed-owners
+    """
+    entry = get(export_dir, plugin) or {}
+    folder, member = entry.get('archive_original'), entry.get('plugin_member')
+    if entry.get('kind') != 'folder' or not (folder and member) or not Path(folder).is_dir():
+        return False
+    bases = [Path(folder) / r for r in entry.get('payload_root') or ()] or [Path(folder)]
+    return not any((base / member).is_file() for base in bases)
+
+
 def retained_archive(export_dir, plugin: str):
     """The archive copy kept for re-import, or None if not retained/missing.
 

@@ -14,6 +14,7 @@
 
 #include "dialogue_state.h"
 #include "log.h"
+#include "npc_anim.h"
 #include "script_ops.h"
 #include "script_tables.h"
 
@@ -204,6 +205,7 @@ class OpSetPos : public Interpreter::Opcode0 {
         const std::string ref = R::Target(runtime);
         const int axis = AxisOf(PopString(runtime));
         const float value = PopFloat(runtime);
+        ReleaseNpcHold(ref);
         if (Hooks().setPosition) Hooks().setPosition(ref, axis, value);
     }
 };

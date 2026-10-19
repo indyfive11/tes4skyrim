@@ -27,7 +27,8 @@ from asset_convert.nif.shaders import (ALPHA_BLEND_ENABLED, ALPHA_DST_ONE,
                                        resolve_lowres, resolve_normal_for)
 from asset_convert.nif.morroblivion_textures import substitute
 from asset_convert.nif.nif_flags import NIF_FLAGS
-from asset_convert.nif.tex_paths import rewrite_tex_path
+from asset_convert.nif.tex_paths import (path_bytes, path_text,
+                                         rewrite_tex_path)
 from asset_convert.nif.uv_transform import apply_static_uv
 from asset_convert.nif.tri_reconstruct import (UnreconstructibleGeometry,
                                                clear_match_groups,
@@ -219,7 +220,7 @@ def _normal_slot(diffuse, authored_normal, fix_textures, stats):
     if authored_normal:
         return (resolve_lowres(rewrite_tex_path(authored_normal), stats)
                 if fix_textures
-                else authored_normal.decode('utf-8', errors='replace'))
+                else path_text(authored_normal))
     if stats is None:
         return base + '_n.dds'
     found = resolve_normal_for(diffuse, stats)
@@ -263,10 +264,10 @@ def _fill_texture_slots(tex_set, diffuse_path, authored_normal,
     diffuse_path = _upgraded_diffuse(diffuse_path, stats)
     diffuse = (resolve_lowres(rewrite_tex_path(diffuse_path), stats)
                if fix_textures
-               else diffuse_path.decode('utf-8', errors='replace'))
-    tex_set.textures[0] = diffuse.encode('utf-8')
-    tex_set.textures[1] = _normal_slot(
-        diffuse, authored_normal, fix_textures, stats).encode('utf-8')
+               else path_text(diffuse_path))
+    tex_set.textures[0] = path_bytes(diffuse)
+    tex_set.textures[1] = path_bytes(_normal_slot(
+        diffuse, authored_normal, fix_textures, stats))
 
 
 def _build_texture_set(diffuse_path, authored_normal, fix_textures, stats):
@@ -341,7 +342,7 @@ def _flip_frames(flip_ctrl, fix_textures):
     if flip_ctrl is None:
         return []
     return [(rewrite_tex_path(s.file_name) if fix_textures
-             else s.file_name.decode('utf-8', errors='replace'))
+             else path_text(s.file_name))
             for s in flip_ctrl.sources if s is not None and s.file_name]
 
 
@@ -354,7 +355,7 @@ def _atlas_controller(eff_shader, flip_ctrl, atlas):
     See: docs/commentary/asset_convert_shader.md#flipbook-to-atlas
     """
     atlas_path, n_pad, n_real = atlas
-    eff_shader.source_texture = atlas_path.encode('utf-8')
+    eff_shader.source_texture = path_bytes(atlas_path)
     eff_shader.uv_scale.u = 1.0 / n_pad
     eff_shader.uv_offset.u = 0.0
     delta = float(getattr(flip_ctrl, 'delta', 0.0) or 0.0)
@@ -420,7 +421,7 @@ def _build_effect_shader(ts, tex_set, si, flip_ctrl, diffuse_path,
     frames = _flip_frames(flip_ctrl, fix_textures)
     atlas = plan_flipbook_atlas(frames, stats) if len(frames) >= 2 else None
     if frames:
-        effective_path = frames[0].encode('utf-8')
+        effective_path = path_bytes(frames[0])
     else:
         effective_path = tex_set.textures[0] if diffuse_path else b''
 
@@ -572,10 +573,8 @@ def _carry_alpha(ts, tex_set, si, stats):
     ts.bs_properties[1] = alpha_prop
     diffuse = tex_set.textures[0] if tex_set.textures else None
     if diffuse and stats is not None:
-        if isinstance(diffuse, bytes):
-            diffuse = diffuse.decode('utf-8', errors='replace')
         stats.setdefault('_alpha_opacity_diffuse', set()).add(
-            diffuse.replace('/', '\\').lower())
+            path_text(diffuse).replace('/', '\\').lower())
 
 
 def _mark_skinned(ts):

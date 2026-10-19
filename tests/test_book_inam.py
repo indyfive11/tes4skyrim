@@ -19,6 +19,7 @@ from asset_convert.ui.book_inam import (
     Island,
     bake_atlas,
     calibrate,
+    find_source_mesh,
     inv_basename,
     write_dds,
 )
@@ -172,6 +173,61 @@ def test_inv_basename():
     assert inv_basename('Clutter\\Books\\Octavo02.NIF') == 'octavo02'
     assert inv_basename('Architecture/ImperialCity/Interior/ICElderScroll01.NIF') \
         == 'icelderscroll01'
+
+
+# ---------------------------------------------------------------------------
+# source mesh lookup
+# ---------------------------------------------------------------------------
+
+def test_find_source_mesh_ignores_case(tmp_path):
+    """A MODL's mixed case finds the mesh a lowercase tree holds."""
+    real = tmp_path / 'meshes' / 'clutter' / 'books' / 'octavo02.nif'
+    real.parent.mkdir(parents=True)
+    real.write_bytes(b'')
+    got = find_source_mesh([str(tmp_path)], 'Clutter\\Books\\Octavo02.NIF')
+    assert got is not None and os.path.samefile(got, real)
+    assert find_source_mesh([str(tmp_path)], 'clutter\\books\\octavo02.nif') \
+        == os.path.join(str(tmp_path), 'meshes', 'clutter', 'books', 'octavo02.nif')
+    assert find_source_mesh([str(tmp_path)], 'Clutter\\Books\\Quarto02.NIF') is None
+
+
+def test_find_source_mesh_matches_every_root_in_any_case(tmp_path):
+    """A master's tree is matched the same way when the plugin's own lacks the mesh."""
+    (tmp_path / 'Mod.esp').mkdir()
+    real = tmp_path / 'Base.esm' / 'meshes' / 'clutter' / 'books' / 'octavo02.nif'
+    real.parent.mkdir(parents=True)
+    real.write_bytes(b'')
+    got = find_source_mesh([str(tmp_path / 'Mod.esp'), str(tmp_path / 'Base.esm')],
+                           'Clutter\\Books\\Octavo02.NIF')
+    assert isinstance(got, str) and os.path.samefile(got, real)
+
+
+def test_a_books_cover_and_its_normal_are_found_in_any_case(tmp_path):
+    """A loose mod's mixed-case cover resolves, and so does the `_n` beside it."""
+    cover = tmp_path / 'textures' / 'Clutter' / 'Books' / 'Octavo02.dds'
+    cover.parent.mkdir(parents=True)
+    cover.write_bytes(b'DDS ')
+    normal = cover.with_name('Octavo02_N.dds')
+    normal.write_bytes(b'DDS ')
+    got = book_inam._find_source_texture([str(tmp_path)], 'textures\\clutter\\books\\octavo02.dds')
+    assert isinstance(got, str) and os.path.samefile(got, cover)
+    sibling = book_inam._normal_sibling(got)
+    assert isinstance(sibling, str) and os.path.samefile(sibling, normal)
+    assert book_inam._normal_sibling(str(normal)) is None
+    exact = cover.with_name('Plain_n.dds')
+    exact.write_bytes(b'DDS ')
+    assert book_inam._normal_sibling(str(cover.with_name('Plain.dds'))) == str(exact)
+
+
+def test_a_cover_is_found_in_a_masters_tree_and_under_its_dds_name(tmp_path):
+    """Every root gets the case-blind pass, for the name as written and as `.dds`."""
+    (tmp_path / 'Mod.esp').mkdir()
+    cover = tmp_path / 'Base.esm' / 'textures' / 'Clutter' / 'Books' / 'Folio.DDS'
+    cover.parent.mkdir(parents=True)
+    cover.write_bytes(b'DDS ')
+    roots = [str(tmp_path / 'Mod.esp'), str(tmp_path / 'Base.esm')]
+    got = book_inam._find_source_texture(roots, 'textures\\clutter\\books\\folio.tga')
+    assert isinstance(got, str) and os.path.samefile(got, cover)
 
 
 # ---------------------------------------------------------------------------

@@ -1,7 +1,7 @@
 // The sound commands: PlaySound and its 3D/looping/volume-pitch variants,
-// StopSound and GetSoundPlaying. Each names a TES3 SOUN id, which SOUN.txt
-// maps to the SNDR the import minted, and reaches the engine through a
-// GameHook so the headless tests run with the hooks null.
+// StopSound, GetSoundPlaying, and PlayBink's videos. Each sound names a TES3
+// SOUN id, which SOUN.txt maps to the SNDR the import minted, and reaches the
+// engine through a GameHook so the headless tests run with the hooks null.
 //
 // TES3's distinction between PlaySound and PlaySound3D is WHERE the sound
 // sits: the non-3D form plays on the listener, the 3D form on a reference.
@@ -186,9 +186,22 @@ class OpSayDone : public Interpreter::Opcode0 {
     }
 };
 
+// `PlayBink file allowSkipping`: OpenMW pops the file, then the skip flag,
+// and plays `video\<file>` full-screen; the hook hands it to Game.PlayBink.
+class OpPlayBink : public Interpreter::Opcode0 {
+    void execute(Interpreter::Runtime& runtime) override {
+        const std::string file = PopString(runtime);
+        const bool allowSkipping = PopInt(runtime) != 0;
+        Log("video: play '%s'%s", file.c_str(),
+            allowSkipping ? " (skippable)" : "");
+        if (Hooks().playBink) Hooks().playBink(file, allowSkipping);
+    }
+};
+
 }  // namespace
 
 void InstallSoundOps(OpcodeInstaller& into) {
+    into.Real<OpPlayBink>(Compiler::Misc::opcodePlayBink);
     namespace S = Compiler::Sound;
     into.Real<OpSay<Implicit>>(S::opcodeSay);
     into.Real<OpSay<Explicit>>(S::opcodeSayExplicit);

@@ -27,6 +27,8 @@
 
 #include "engine.h"
 #include "gamebryo_sequence.h"
+#include "glide.h"
+#include "ids.h"
 #include "log.h"
 #include "main_thread.h"
 #include "object_tick.h"
@@ -294,9 +296,72 @@ void AnimTick() {
     }
 }
 
+// --- actors: what the NPC animation driver asks of one reference -----------
+
+using ActorQueryFn = bool (*)(void* vm, std::uint32_t stack, void* actor);
+
+void*        g_sendAnimationEvent = nullptr;
+ActorQueryFn g_isInCombat = nullptr;
+
+std::uint32_t RefRuntimeId(const std::string& ref) {
+    void* target = OwnerRef(ref);
+    return target ? FormIdOf(target) : 0;
+}
+
+// 🛑 NotifyAnimationGraph itself, not Debug.SendAnimationEvent: the native
+// discards the result, and "no graph took it" is what an actor whose 3D is
+// still loading answers -- without it the first event after a cell load is
+// lost and the NPC stands for the length of the clip it never started.
+bool SendAnimEvent(std::uint32_t id, const std::string& event) {
+    void* ref = RefByRuntimeId(id);
+    if (!ref || !g_sendAnimationEvent || !IsActorRef(ref)) return false;
+    void* holder = static_cast<char*>(ref) + ids::kGraphHolderOffset;
+    void* name = Name(event);
+    return VCall<bool (*)(void*, void**)>(holder, ids::kNotifyGraphSlot)(holder, &name);
+}
+
+bool RefPoseOf(std::uint32_t id, float out[6]) {
+    void* ref = RefByRuntimeId(id);
+    if (!ref) return false;
+    const Pose pose = RefPose(PapyrusVm(), ref);
+    for (int axis = 0; axis < kPoseAxes; ++axis) {
+        out[axis] = pose.at[axis];
+        out[kPoseAxes + axis] = pose.angle[axis];
+    }
+    return true;
+}
+
+void GlideRef(std::uint32_t id, const float pose[6], float seconds) {
+    void* ref = RefByRuntimeId(id);
+    if (!Has3D(ref)) return;
+    Pose goal{};
+    for (int axis = 0; axis < kPoseAxes; ++axis) {
+        goal.at[axis] = pose[axis];
+        goal.angle[axis] = pose[kPoseAxes + axis];
+    }
+    GlideTo(PapyrusVm(), ref, goal, seconds);
+}
+
+bool InCombat(std::uint32_t id) {
+    void* ref = RefByRuntimeId(id);
+    return ref && g_isInCombat && IsActorRef(ref) && g_isInCombat(PapyrusVm(), 0, ref);
+}
+
+void InstallActorAnimCalls(GameHooks& hooks) {
+    g_sendAnimationEvent = Native<void*>("Debug.SendAnimationEvent",
+                                         ids::kDebugSendAnimationEvent);
+    g_isInCombat = Native<ActorQueryFn>("Actor.IsInCombat", ids::kActorIsInCombat);
+    hooks.refRuntimeId = RefRuntimeId;
+    hooks.sendAnimEvent = SendAnimEvent;
+    hooks.refPose = RefPoseOf;
+    hooks.glideRef = GlideRef;
+    hooks.inCombat = InCombat;
+}
+
 }  // namespace
 
 void InstallAnimCalls(GameHooks& hooks) {
+    InstallActorAnimCalls(hooks);
     if (!sequence::Install()) {
         Log("game: PlayGroup unavailable -- the sequence natives did not resolve");
         return;

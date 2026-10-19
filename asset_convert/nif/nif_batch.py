@@ -21,7 +21,7 @@ from asset_convert.collision.mesh_scan_fragments import set_fragment_dir
 from asset_convert.nif.fixture_plan import FIXTURE_KEY
 from asset_convert.nif.nif_converter import convert_nif
 from asset_convert.nif.tex_paths import snapshot_repairs
-from asset_convert.game_paths import current_namespace, set_namespace
+from asset_convert.game_paths import ascii_dest, current_namespace, set_namespace
 from asset_convert.nif.shaders import (default_normal_texture, SPEC_STRENGTH,
                                        master_texture_roots)
 from core.process_job import join_pool_job
@@ -161,6 +161,7 @@ def _empty_batch_stats(total):
 def _collect_nifs(mesh_path, subdir_filter, fixtures=()):
     """(files to convert, how many the filters dropped).
 
+    A mesh counts whatever the case of its `.nif` extension.
     Each `subdir_filter` entry is a path prefix under the mesh root: a root
     folder (`clutter`), a nested one (`tr/l`) or a single mesh.  A SKIP_PATHS
     mesh still converts when a placed-fixture record names it (`fixtures`,
@@ -171,8 +172,6 @@ def _collect_nifs(mesh_path, subdir_filter, fixtures=()):
                 for s in subdir_filter]
                if subdir_filter is not None else None)
     keep, skipped = [], 0
-    # A mod's loose files keep their author's casing ('Tower.NIF'); match the
-    # extension case-insensitively or a case-sensitive filesystem skips them.
     for nf in mesh_path.rglob('*.nif', case_sensitive=False):
         parts = tuple(p.lower() for p in nf.relative_to(mesh_path).parts)
         if (any(seg in parts for seg in SKIP_PATHS)
@@ -416,7 +415,7 @@ def batch_convert(mesh_dir, output_dir, *, fix_textures=True,
         return stats
 
     work_args = [
-        (str(nif_file), str(out_base / nif_file.relative_to(mesh_path)),
+        (str(nif_file), str(ascii_dest(out_base, nif_file.relative_to(mesh_path))),
          fix_textures, remap_skeleton, str(mesh_path), wearable_plan,
          parallax, textures_only, tex_fallback)
         for nif_file in nif_files

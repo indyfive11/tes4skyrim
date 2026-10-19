@@ -146,7 +146,7 @@ ActivateFn OriginalActivate(void* form) {
 // is the overwhelming majority.
 ObjectScript* ScriptInstance(void* ref) {
     const std::uint32_t refId = FormIdOf(ref);
-    if (!refId || !g_pluginMask.test(PluginIndex(refId))) return nullptr;
+    if (!refId || !IsMorrowindForm(refId)) return nullptr;
     return InstanceForRef(refId);
 }
 
@@ -358,9 +358,12 @@ const char* PlayerName() {
     return DisplayName(FormFromFile(ids::kSkyrimMaster, ids::kPlayerBaseFormId));
 }
 
+bool IsMorrowindForm(std::uint32_t formId) {
+    return g_pluginMask.test(PluginIndex(formId));
+}
+
 bool IsMorrowindSpeaker(std::uint32_t formId) {
-    if (!g_pluginMask.test(PluginIndex(formId))) return false;
-    return FindSpeaker(formId) != nullptr;
+    return IsMorrowindForm(formId) && FindSpeaker(formId) != nullptr;
 }
 
 const char* SpeakerId(std::uint32_t formId) {

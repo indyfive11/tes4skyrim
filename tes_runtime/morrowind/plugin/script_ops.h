@@ -91,7 +91,8 @@ void InstallWorldOps(OpcodeInstaller& into);
 void InstallEventOps(OpcodeInstaller& into);
 
 // PlaySound and its 3D/looping/VP variants, StopSound and GetSoundPlaying.
-// Each names a TES3 SOUN id the sidecar maps to an SNDR. script_ops_sound.cpp.
+// Each names a TES3 SOUN id the sidecar maps to an SNDR. Also PlayBink, which
+// names a file under Data\Video. script_ops_sound.cpp.
 void InstallSoundOps(OpcodeInstaller& into);
 
 // The Transformation commands that MOVE something: PositionCell, Position,

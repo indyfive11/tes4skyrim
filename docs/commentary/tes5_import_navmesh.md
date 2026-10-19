@@ -969,6 +969,16 @@ changes can't bake in.
 **Code:** `navmesh/pool.py`. The parent-side scheduling around `navm_worker` —
 gathering jobs, the indexes their carving needs, the cache tag, and the pool.
 
+#### <a id="no-pathgrids-no-gather"></a>A plugin with no pathgrids builds no carving indexes
+
+Jobs are driven only by the plugin's own PGRDs, so with none `gather_navm_jobs`
+returns `[]` before merging the masters' REFR/LAND/CELL. It still stamps XCLC on
+grid-less exterior cells (the builders rely on it). `_phase4a_navmesh` likewise
+skips the door-teleport table when no navmesh was made, since only the interior
+split reads it. Measured on Morrowind-Morroblivion-Compatibility.esp: navmesh
+phase 31.2 s → 15.9 s, output byte-identical. The rest builds indexes later
+phases need; master edge relinking is untouched.
+
 #### <a id="refs-overhang-their-cell"></a>A quarter of exterior refs overhang their own cell
 
 **Code:** `navmesh/pool.py::_overhang_index`. A cell's geometry was gathered

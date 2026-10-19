@@ -25,6 +25,8 @@ import json
 import os
 from typing import Dict, Optional, Tuple
 
+from asset_convert.game_paths import ascii_path
+
 OBNDTuple = Tuple[int, int, int, int, int, int]
 
 # Module-level caches populated by load_mesh_bounds().
@@ -82,14 +84,11 @@ def load_mesh_bounds(cache_path, quiet: bool = False) -> int:
 
 
 def get_mesh_obnd(path_key: str) -> Optional[OBNDTuple]:
-    """Return cached OBND tuple for *path_key*, or ``None`` if not found.
-
-    *path_key* must be lowercase with forward slashes, relative to the mesh
-    output directory root (e.g. ``"tes4/furniture/chairnoble01.nif"``).
-    """
-    return _MESH_BOUNDS.get(path_key)
+    """Cached OBND for a lowercase `ns/dir/x.nif` key or its ascii_path, else None."""
+    return _MESH_BOUNDS.get(path_key) or _MESH_BOUNDS.get(ascii_path(path_key))
 
 
 def get_mesh_physics_flags(path_key: str) -> int:
     """Physics bits of a converted mesh (physics_flags_from_data), 0 if unknown."""
-    return _MESH_PHYSICS.get(path_key, 0)
+    return (_MESH_PHYSICS.get(path_key)
+            or _MESH_PHYSICS.get(ascii_path(path_key), 0))

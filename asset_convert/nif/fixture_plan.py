@@ -37,8 +37,8 @@ def fixture_model_ids(export_dir, types=FIXTURE_TYPES, field='FormID') -> dict:
     """Map placed-fixture record `field` (FormID or EditorID) -> mesh-relative NIF path."""
     out = {}
     export_dir = Path(export_dir)
-    for name in types:
-        for rec in iter_records(export_dir / name):
+    for type_file in types:
+        for rec in iter_records(export_dir / type_file):
             model = rec.get('Model.MODL', '').strip()
             if model:
                 out[rec.get(field, '')] = norm_model_path(model)

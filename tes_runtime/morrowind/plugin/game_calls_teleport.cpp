@@ -40,7 +40,6 @@ constexpr float kCellSize = 8192.0f;
 
 constexpr const char* kPlayerId = "player";
 
-using ProcessEventFn = int (*)(void* sink, const void* event, void* source);
 using RefFormFn = void* (*)(void* vm, std::uint32_t stack, void* ref);
 
 ProcessEventFn g_originalApply = nullptr;

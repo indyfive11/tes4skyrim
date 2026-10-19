@@ -5538,4 +5538,8 @@ class TestMeshSubdirFilter:
         self._tree(tmp_path)
         assert self._kept(tmp_path, ['TR\\l', 'td/vfx.nif']) == ['td/vfx.nif', 'tr/l/candle.nif']
 
-
+    def test_an_uppercase_extension_is_a_mesh_too(self, tmp_path):
+        """A loose mod's `Tower.NIF` is collected on any filesystem."""
+        self._tree(tmp_path)
+        (tmp_path / 'td' / 'Tower.NIF').write_bytes(b'')
+        assert self._kept(tmp_path, ['td']) == ['td/Tower.NIF', 'td/vfx.nif']

@@ -22,7 +22,8 @@ from pathlib import Path
 from asset_convert import case_paths
 from asset_convert.game_paths import win_join
 from asset_convert.lod.effect_mesh import is_effect_mesh
-from asset_convert.lod.esm_scan import (FLAG_DISTANT_LOD, parse_esm,
+from asset_convert.lod.esm_scan import (FLAG_DISTANT_LOD,
+                                        FLAG_INITIALLY_DISABLED, parse_esm,
                                         parse_esm_cached)
 
 # ---------------------------------------------------------------------------
@@ -689,7 +690,6 @@ _Scope = namedtuple('_Scope', 'cell_wrld wrld_fid keep_cells ref_index state')
 
 #: REFR header flags the selection reads (TES5 values).
 FLAG_PERSISTENT = 0x00000400
-FLAG_INITIALLY_DISABLED = 0x00000800
 
 #: "Is Full LOD" on a REFR; the engine draws a persistent one itself.
 FLAG_FULL_LOD = 0x00010000
@@ -773,16 +773,19 @@ def _state_exclusion(ref, stat, scope):
     return None
 
 
-def _initially_enabled(fid, scope):
+def _initially_enabled(fid, scope, memo=None):
     """True/False: is `fid` enabled at game start; None when it cannot be known.
 
     A ref with an enable parent takes the parent's state, inverted by the
     XESP opposite bit, and ignores its own Initially Disabled flag; the
     player is always enabled; an unscanned parent or a parent cycle is
     unknown. Walked iteratively with no depth cap, so the answer does not
-    depend on which ref of a chain is asked first.
+    depend on which ref of a chain is asked first. `scope` is a `_Scope`,
+    or a `{form id: ref}` map whose memo is `memo`.
     See: docs/commentary/asset_convert_terrain.md#object-lod-selection
     """
+    if memo is not None:
+        scope = _Scope(None, None, None, scope, memo)
     chain, state = [], None
     while fid not in scope.state:
         ref = scope.ref_index.get(fid)
@@ -874,6 +877,11 @@ def _reference_lines(refs, stats, scope, roots):
 def _log_selection(selection, listed: int) -> None:
     """Print each per-reference rule's count and its five commonest models."""
     dropped = sum(sum(selection[k].values()) for k in _STATE_RULES)
+    print(f"  Object-LOD selection: "
+          f"{sum(selection['disabled'].values())} LOD-flagged reference(s) "
+          f"off at game start left out, "
+          f"{sum(selection[_UNKNOWN_PARENT].values())} kept with an "
+          f"unresolved enable parent")
     print(f"  Object-LOD selection: {listed} reference(s) listed, "
           f"{dropped} dropped by per-reference rules")
     for key, models in selection.items():

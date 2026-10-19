@@ -145,9 +145,6 @@ constexpr std::uint64_t kActorBodyPartData = 37181;
 constexpr std::uint64_t kRttiCast = 15619;
 constexpr std::uint64_t kDismemberSkinRtti = 410521;
 
-// TESObjectREFR* LookupReferenceByHandle(std::uint32_t* handle, NiPointer<TESObjectREFR>* out)
-constexpr std::uint64_t kLookupByHandle = 17201;
-
 // The ObjectReference Papyrus natives the limb drop uses (native callback
 // pointers read off their registrations at 0x9d600c / 0x9d75bb / 0x9d33ef):
 //   PlaceAtMe(VM*, stack, TESObjectREFR* self, TESForm*, int count, bool persist, bool disabled)

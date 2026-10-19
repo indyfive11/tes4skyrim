@@ -17,8 +17,8 @@ from tes4_export.export_morrowind import (MorrowindContext, convert_plugin,
                                           register_magic_effects)
 from tes4_export.record_types.morrowind_dialog import DIAL_SIG, INFO_SIG
 from tes4_export.morrowind_cell import parse_cell
-from tes4_export.morrowind_ids import (IdIndex, encode_editor_id, load_index,
-                                       marker_formid)
+from tes4_export.morrowind_ids import (ENGINE_MARKERS, IdIndex, encode_editor_id,
+                                       load_index, marker_formid)
 from tes4_export.morrowind_markers import classify, place_name
 from tes4_export.morrowind_world import cell_grid, quadrant_suffix
 
@@ -699,7 +699,7 @@ def test_no_reference_outlives_its_base_record(morrowind_records):
     bases = {form_id for sig, records in out.items()
              if sig not in ('CELL', 'REFR', 'LAND')
              for form_id, _ in records}
-    bases.update('%08X' % fid for fid in (1, 2, 3, 5, 6, 0x10, 0x3B))
+    bases.update('%08X' % fid for fid in (*ENGINE_MARKERS.values(), 0x10, 0x3B))
     cells = {form_id for form_id, _ in out['CELL']}
     for _, lines in out['REFR']:
         name = next(line[5:] for line in lines if line.startswith('NAME='))

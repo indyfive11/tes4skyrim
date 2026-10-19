@@ -482,6 +482,24 @@ Arvena Thelas is a Dark Elf whose recordings sit under `high elf/f/`. An empty
 list means keep the source race folder, which is correct for generic lines
 recorded once per race.
 
+## A plugin's lines come from its own voice folder
+<a id="own-voice-folder"></a>
+
+Oblivion finds a line under `sound/Voice/<the plugin that defines the INFO>/`,
+so a plugin's run converts only the source folder named after it (any case).
+Every other folder in a shared tree belongs to another plugin: converting it
+under this plugin's name copied a master's whole library into a dialogue-less
+patch, and its lines never play there.
+
+Measured over every extracted tree: each has one voice folder, named for its
+plugin, except Unique Landscapes Compilation, whose second folder
+(`xulbrenariverravine.esp`, a plugin merged into it) holds the same 81 INFO ids
+as `unique landscapes.esp`. Both used to land on the same output names, so the
+copy written last won; now the plugin's own copy does.
+
+Lines are not borrowed from other folders by voicemap id: the voicemap is keyed
+on the 24-bit INFO id, so a master's line can share a patch INFO's low bits.
+
 ## Race identity spans the masters
 <a id="race-identity-spans-the-masters"></a>
 

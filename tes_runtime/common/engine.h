@@ -26,7 +26,6 @@ constexpr std::uint8_t kFormTypeReference = 0x3d;
 constexpr std::uint8_t kFormTypeActor = 0x3e;
 
 // TESObjectREFR / Actor layout the plugins read.
-constexpr std::size_t kRefCount = 0x28;        // BSHandleRefObject, low 10 bits
 constexpr std::size_t kActorValueOwner = 0xb8;
 constexpr std::size_t kVtGet3D = 0x70;             // Get3D(): the 3D of the current camera
 constexpr std::size_t kVtGet3DFirstPerson = 0x6f;  // Get3D(bool firstPerson)
@@ -95,9 +94,6 @@ void ForEachSidecarIn(const std::string& dir, const char* suffix,
 // See: docs/reference/tes_runtime_fragments.md#legacy-sidecar-paths
 void ForEachLegacySidecar(const char* folder, const char* suffix,
                           void (*visit)(const std::string& name, const class Json& doc));
-
-// Releases a reference LookupReferenceByHandle handed out.
-void ReleaseRef(void* ref);
 
 // Drops a heap TaskDelegate onto the game's main-thread task queue.
 void RunOnMainThread(TaskDelegate* task);

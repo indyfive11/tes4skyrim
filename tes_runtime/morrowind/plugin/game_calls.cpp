@@ -88,10 +88,6 @@ using AdvanceSkillFn = void (*)(void* vm, std::uint32_t stack, void* tag,
 using ShowTrainingMenuFn = void (*)(void* vm, std::uint32_t stack, void* tag,
                                     void* trainer);
 
-// Debug.MessageBox(string), global: no `self`, the text in the last argument.
-using MessageBoxFn = void (*)(void* vm, std::uint32_t stack, void* tag,
-                              void* text);
-
 // Game.GetForm(int formId) -> the form, global so its self is a tag.
 using GetFormFn = void* (*)(void* vm, std::uint32_t stack, void* tag,
                             std::int32_t formId);
@@ -195,7 +191,6 @@ GetValueFn     g_getValuePercent = nullptr;
 GetValueFn     g_getBaseValue = nullptr;
 GetRaceFn      g_getRace = nullptr;
 AdvanceSkillFn g_advanceSkill = nullptr;
-MessageBoxFn   g_messageBox = nullptr;
 PlaceAtMeFn    g_placeAtMe = nullptr;
 RefQueryFn     g_isDead = nullptr;
 GetFormFn      g_getForm = nullptr;
@@ -596,17 +591,25 @@ bool GamePaused() {
     return PausingMenuCount() > (ConversationOpen() ? 1u : 0u);
 }
 
-// Posted rather than begun here: BeginConversation tears the current one
-// down, and the script asking for it is still running against that actor.
+// OpForceGreeting -> DialogueManager::startDialogue, synchronously: the
+// greeting is chosen and its result script run before the caller's next line,
+// which may change what the greeting tests. Only a result script's call is
+// posted, since beginning tears down the conversation it runs in.
 void ForceGreeting(const std::string& actor) {
     void* ref = OwnerRef(actor);
-    if (!ref) return;
     const ActorDef* def = FindActor(actor);
-    const std::string shown = def && !def->name.empty() ? def->name : actor;
-    PostToMainThread([actor, ref, shown]() {
+    if (!ref || !def || IsDisabled(actor)) return;
+    if (g_isDead && g_isDead(PapyrusVm(), 0, ref)) return;
+    const std::string shown = def->name.empty() ? actor : def->name;
+    auto begin = [actor, ref, shown]() {
         SetSpeakerRef(actor.c_str(), ref);
         BeginConversation(actor.c_str(), shown.c_str(), PlayerName());
-    });
+    };
+    if (InResultScript()) {
+        PostToMainThread(begin);
+    } else {
+        RunOnGameThread(begin);
+    }
 }
 
 // ------------------------------------------------ barter and persuasion
@@ -849,11 +852,22 @@ bool IsDeadRef(std::uint32_t runtimeFormId) {
 // 🛑 The cell, not `IsDisabled`: enabling queues the 3D, so for the frames
 // after `Enable` the reference is neither disabled nor loaded, and a test on
 // the flag would drop the script on exactly the tick it woke up.
+//
+// 🛑 An INTERIOR must also be the cell the player is in. The engine keeps the
+// interior just left attached for a while, so on `IsAttached` alone the
+// scripts of the previous cell ran on behind the player's back: measured, a
+// chargen script went on enabling its light for 48 seconds after the player
+// had been moved to another cell.
+bool Has3D(void* ref) {
+    return ref && g_is3DLoaded && g_is3DLoaded(PapyrusVm(), 0, ref);
+}
+
 bool InWorld(void* ref) {
-    if (g_is3DLoaded(PapyrusVm(), 0, ref)) return true;
-    if (!g_parentCell || !g_cellAttached) return false;
+    if (Has3D(ref)) return true;
+    if (!g_parentCell || !g_cellAttached || !g_isInterior) return false;
     void* cell = g_parentCell(PapyrusVm(), 0, ref);
-    return cell && g_cellAttached(PapyrusVm(), 0, cell);
+    if (!cell || !g_cellAttached(PapyrusVm(), 0, cell)) return false;
+    return !g_isInterior(PapyrusVm(), 0, cell) || cell == PlayerCell();
 }
 
 LoadState Load3DStateRef(std::uint32_t runtimeFormId) {
@@ -905,11 +919,8 @@ std::uint32_t LoadedRef(const std::string& plugin, std::uint32_t localFormId) {
 }
 
 // A `MessageBox` raised by an object script, which has no dialogue menu to
-// render it. Debug.MessageBox is global, so it takes no `self`.
-//
-// With buttons it goes one layer down instead, to the builder Debug.MessageBox
-// itself wraps: that one takes the button names, which the wrapper hard-codes
-// to a lone "OK". The click is not collected -- see ShowButtonMessage.
+// render it. Without buttons TES3 shows a box that fades on its own, so it
+// becomes Skyrim's notification; with buttons, the engine's modal.
 // See: docs/plans/morrowind_object_scripts.md#messagebox
 void ShowMessage(const std::string& text,
                  const std::vector<std::string>& buttons) {
@@ -917,17 +928,7 @@ void ShowMessage(const std::string& text,
         ShowButtonMessage(text, buttons);
         return;
     }
-    if (!g_messageBox) {
-        Log("game: MessageBox \"%s\" -- Debug.MessageBox unresolved",
-            text.c_str());
-        return;
-    }
-    PostToMainThread([text]() {
-        void* message = nullptr;
-        if (FixedString(&message, text.c_str())) {
-            g_messageBox(PapyrusVm(), 0, nullptr, &message);
-        }
-    });
+    PostToMainThread([text]() { Notify(text); });
 }
 
 // Skyrim's own barter menu on the speaker, opened from the game thread over
@@ -1042,8 +1043,6 @@ void InstallGameCalls() {
     g_getBaseValue = Native<GetValueFn>("Actor.GetBaseActorValue",
                                         ids::kActorGetBaseValue);
     g_getRace = Native<GetRaceFn>("Actor.GetRace", ids::kActorGetRace);
-    g_messageBox = Native<MessageBoxFn>("Debug.MessageBox",
-                                        ids::kDebugMessageBox);
     g_refSay = Native<RefSayFn>("ObjectReference.Say", ids::kRefSay);
     g_soundPlay = Native<SoundPlayFn>("Sound.Play", ids::kSoundPlay);
     g_stopInstance = Native<StopInstanceFn>("Sound.StopInstance",
@@ -1111,9 +1110,10 @@ void InstallGameCalls() {
     InstallControlCalls(hooks);
     InstallStateCalls(hooks);
     InstallCrimeCalls(hooks);
-    InstallMessageCalls();
+    InstallMessageCalls(hooks);
     InstallTeleportCalls();
     InstallFlightCalls(hooks);
+    InstallStillCalls();
     InstallAttributeCalls(hooks);
     InstallAnimCalls(hooks);
     Log("game: %zu spell(s) and %zu magic effect(s) resolvable by id",

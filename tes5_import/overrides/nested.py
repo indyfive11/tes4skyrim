@@ -36,7 +36,8 @@ from .ref_state import (FULL_LOD, PERSISTENT, REF_SIGS, full_lod_bases,
                         placement_fault, record_flags, ref_chain, ref_path,
                         report_full_lod, set_flags, take_mask)
 from ..actors.outfits import split_inventory
-from ..dialogue.converter import convert_INFO
+from ..dialogue.converter import convert_INFO, service_menu_kind
+from ..dialogue.groups import service_gate
 from ..record_types.actor_common import origin_gate, read_items
 from ..record_types.magic_variants import copy_editor_ids
 from ..record_types.world import convert_ACHR, convert_REFR, restamp_wrld_mnam
@@ -1109,6 +1110,22 @@ def _nested_land(rec: dict, ctx: OverrideContext, parent_out: int) -> tuple:
     return record_bytes, ((6, label), (9, label))
 
 
+def _nested_info(rec: dict, ctx: OverrideContext) -> bytes:
+    """A new reply under a master's topic, gated as that topic's own replies are.
+
+    Under the Barter or Training topic it carries the service gate and opens
+    the menu; with no marker faction to gate on it is b''.
+    See: docs/commentary/tes5_import_override.md#new-records-in-master-groups
+    """
+    parent = (ctx.master_export or {}).get((rec.get('ParentDIAL') or '').upper(), {})
+    service = service_menu_kind(parent)
+    gate = service_gate(service) if service else b''
+    if service and not gate:
+        return b''
+    return convert_INFO(rec, injected_ctdas=gate + origin_gate(rec),
+                        service_menu=service)
+
+
 def _convert_nested(sig: str, rec: dict, ctx: OverrideContext, parent_out: int,
                     parent_path: tuple, pending: list) -> tuple:
     """(record bytes, group chain) of one NEW record under a master's parent; b'' skips it.
@@ -1117,7 +1134,7 @@ def _convert_nested(sig: str, rec: dict, ctx: OverrideContext, parent_out: int,
     """
     label = struct.pack('<I', parent_out)
     if sig == 'INFO':
-        return convert_INFO(rec, injected_ctdas=origin_gate(rec)), ((7, label),)
+        return _nested_info(rec, ctx), ((7, label),)
     if sig == 'LAND':
         return _nested_land(rec, ctx, parent_out)
     if sig == 'PGRD':

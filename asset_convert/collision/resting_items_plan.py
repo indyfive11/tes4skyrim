@@ -171,16 +171,30 @@ def build_index(export_root, plugin: str) -> dict:
     return {'cells': cells, 'models': models}
 
 
-def write_index(export_root, plugin: str) -> tuple:
-    """Build and write `plugin`'s index beside its records; (path, fixture models).
+def _merged(indexes) -> dict:
+    """One index holding every item origin and fixture placement of `indexes`."""
+    cells, models = {}, {}
+    for index in indexes:
+        for cell, points in index['cells'].items():
+            cells[cell] = np.vstack([cells[cell], points]) if cell in cells else points
+        for model, (where, places) in index['models'].items():
+            if model in models:
+                places = np.vstack([models[model][1], places])
+                where = models[model][0] + where
+            models[model] = (where, places)
+    return {'cells': cells, 'models': models}
 
-    Writes nothing and returns (None, 0) when no fixture shares a cell with
-    an item.
+
+def write_index(export_root, plugins: list) -> tuple:
+    """Build and write the index of `plugins`, which share one mesh tree; (path, fixture models).
+
+    Written beside the first one's records. Writes nothing and returns
+    (None, 0) when no fixture shares a cell with an item.
     """
-    index = build_index(export_root, plugin)
+    index = _merged(build_index(export_root, p) for p in plugins)
     if not index['models']:
         return None, 0
-    path = Path(record_dir(export_root, plugin)) / _INDEX_NAME
+    path = Path(record_dir(export_root, plugins[0])) / _INDEX_NAME
     with open(path, 'wb') as fh:
         pickle.dump(index, fh, protocol=pickle.HIGHEST_PROTOCOL)
     return str(path), len(index['models'])

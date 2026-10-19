@@ -708,19 +708,18 @@ def _modal_lines() -> list:
 
 
 def _metric_lines() -> list:
-    """The face's vertical metrics and one advance per printable ASCII code,
-    in FONT_EM units, so the plugin can lay text out exactly as the movie."""
+    """The face's vertical metrics and, for every embedded glyph in code
+    order, its code and its advance in FONT_EM units, so the plugin can lay
+    text out exactly as the movie."""
     glyphs, ascent, descent, leading = font_metrics()
-    advances = {code: adv for code, adv, _contours in glyphs}
-    table = ', '.join(str(advances.get(code, 0))
-                      for code in range(ttf_glyphs.FIRST_CODE,
-                                        ttf_glyphs.LAST_CODE + 1))
+    codes = ', '.join(str(code) for code, _adv, _contours in glyphs)
+    advances = ', '.join(str(adv) for _code, adv, _contours in glyphs)
     return [f'constexpr int kFontEm = {ttf_glyphs.FONT_EM};',
             f'constexpr int kFontAscent = {ascent};',
             f'constexpr int kFontDescent = {descent};',
             f'constexpr int kFontLeading = {leading};',
-            f'constexpr int kFirstCode = {ttf_glyphs.FIRST_CODE};',
-            f'constexpr int kAdvance[] = {{{table}}};']
+            f'constexpr char32_t kGlyphCode[] = {{{codes}}};',
+            f'constexpr int kAdvance[] = {{{advances}}};']
 
 
 def _scalar_lines() -> list:

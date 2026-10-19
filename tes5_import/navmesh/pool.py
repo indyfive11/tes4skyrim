@@ -23,12 +23,14 @@ from concurrent.futures import ProcessPoolExecutor
 from core.navmesh_options import CORRIDOR, navmesh_generator
 from core.worker_budget import worker_count
 from . import cache_audit as navm_verify, water_sheet, worker as navm_worker
+from .spawn_nodes import ACTOR_SIGS, is_airborne, spawn_point
 from .world import base_fid, gather_cell_geometry, land_field
 from ..actors.leveled_actors import PLACED_LIST
 from ..overrides.nested import DELETED_FLAG
 from ..record_types.navm_falloutnv import precompute_fallout_navmeshes
 from ..record_types.items import tree_nif_stem
 from ..record_types.world_falloutnv import parent_use_flags
+from ..record_types.world_morrowind import is_tes3_source
 from ..base.master_export import records_of
 from ..base.text_reader import (get_float, get_formid, get_formid_index_offset,
                            get_injected_formids, get_int, get_str)
@@ -368,9 +370,25 @@ def _overhang_index(cells, refr_by_cell, radius_by_base) -> dict:
     return out
 
 
-def _emit_jobs(jobs, cell_rec, land_rec, refr_by_cell, pgrd_by_cell,
+def _spawns_by_cell(by_type: dict, master_export: dict) -> dict:
+    """{cell FormID: sorted actor spawn points} for a Morrowind source (spawn_nodes), else {}."""
+    if not is_tes3_source():
+        return {}
+    airborne = {fid for fid, crea in _records_of(by_type, master_export, ('CREA',))
+                if is_airborne(crea)}
+    out = defaultdict(set)
+    for sig in ACTOR_SIGS:
+        for rec in _merged(by_type, master_export, sig):
+            point = spawn_point(rec)
+            if point is not None and base_fid(rec) not in airborne:
+                out[get_formid(rec, 'ParentCELL')].add(point)
+    return {cell: sorted(points) for cell, points in out.items()}
+
+
+def _emit_jobs(jobs, cell_rec, land_rec, indexes,
                extra_door_refrs=None, extra_refrs=None) -> None:
     """Append one job per PGRD in this cell."""
+    refr_by_cell, _, pgrd_by_cell, spawns_by_cell = indexes
     cell_fid = get_formid(cell_rec, 'FormID')
     cell_refrs = refr_by_cell.get(cell_fid, [])
     if extra_refrs:
@@ -383,6 +401,7 @@ def _emit_jobs(jobs, cell_rec, land_rec, refr_by_cell, pgrd_by_cell,
             'cell_rec': cell_rec,
             'refr_recs': cell_refrs,
             'extra_door_refrs': extra_door_refrs or [],
+            'spawns': spawns_by_cell.get(cell_fid, []),
         })
 
 
@@ -441,7 +460,7 @@ def navmesh_land_at(by_type: dict, master_export: dict = None):
 def _gather_exteriors(jobs, by_type, cells, indexes, pers_doors,
                       overhang=None) -> None:
     """Append exterior jobs, per worldspace, in _build_world_groups order."""
-    refr_by_cell, land_at, pgrd_by_cell = indexes
+    land_at = indexes[1]
     overhang = overhang or {}
     ext_by_wrld = defaultdict(list)
     for cell in cells:
@@ -466,8 +485,7 @@ def _gather_exteriors(jobs, by_type, cells, indexes, pers_doors,
                                        get_int(c, 'XCLC.X'))):
                     square = (wrld_fid, get_int(cell_rec, 'XCLC.X'),
                               get_int(cell_rec, 'XCLC.Y'))
-                    _emit_jobs(jobs, cell_rec, land_at(square),
-                               refr_by_cell, pgrd_by_cell,
+                    _emit_jobs(jobs, cell_rec, land_at(square), indexes,
                                pers_doors.get(square, []),
                                overhang.get(square, []))
 
@@ -506,10 +524,13 @@ def gather_navm_jobs(by_type: dict, door_fids: set = None,
     See: docs/commentary/tes5_import_navmesh.md#pool-orchestration
     """
     cells = by_type.get('CELL', [])
+    if not by_type.get('PGRD'):
+        _gather_exteriors([], by_type, cells, ({}, lambda _square: None, {}, {}), {})
+        return []
     refr_by_cell = _by_parent_cell(_merged(by_type, master_export, 'REFR'))
     pgrd_by_cell = _by_parent_cell(by_type.get('PGRD', []))
     indexes = (refr_by_cell, navmesh_land_at(by_type, master_export),
-               pgrd_by_cell)
+               pgrd_by_cell, _spawns_by_cell(by_type, master_export))
     pers_doors = _persistent_doors_by_grid(cells, refr_by_cell,
                                            door_fids or set())
     overhang = _overhang_index(
@@ -520,7 +541,7 @@ def gather_navm_jobs(by_type: dict, door_fids: set = None,
     for block in sorted(blocks):
         for sub in sorted(blocks[block]):
             for cell_rec in blocks[block][sub]:
-                _emit_jobs(jobs, cell_rec, None, refr_by_cell, pgrd_by_cell)
+                _emit_jobs(jobs, cell_rec, None, indexes)
     _gather_exteriors(jobs, by_type, cells, indexes, pers_doors, overhang)
     return jobs
 

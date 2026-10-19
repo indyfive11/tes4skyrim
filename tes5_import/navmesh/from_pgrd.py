@@ -97,6 +97,7 @@ from ..base.navmesh_pins import (apply_hand_edits, cell_key, digest,
                                  hand_edits_for, plugin_of)
 from ..base.text_reader import get_int, get_float, get_str, get_formid
 from .lookup_grid import build_navmesh_grid
+from .spawn_nodes import add_spawn_nodes
 from .world import base_fid
 from ..base.writer import pack_subrecord, pack_string_subrecord
 
@@ -958,7 +959,7 @@ def cell_pins(rec, cell_rec, geom_cache):
 
 
 def cell_geom_key(rec, land_rec, cell_rec, refr_recs, base_model_by_fid,
-                  door_fids, geom_cache, extra_door_refrs=None):
+                  door_fids, geom_cache, extra_door_refrs=None, spawns=None):
     """This cell's cache hash, derived from its INPUTS with no geometry build.
 
     convert_PGRD computes the same value before deciding whether to build, so
@@ -975,6 +976,7 @@ def cell_geom_key(rec, land_rec, cell_rec, refr_recs, base_model_by_fid,
     points, edges, origin_x, origin_y, is_exterior = _cell_graph(rec, cell_rec)
     if points is None:
         return None
+    add_spawn_nodes(points, edges, spawns)
     doors = []
     if refr_recs:
         doors = collect_doors(refr_recs, door_fids)
@@ -1053,12 +1055,13 @@ def _cell_frame(rec, cell_rec):
 
 def _cell_geometry(rec, cell_fid, points, edges, origin_x, origin_y,
                    is_exterior, land_rec, refr_recs, base_model_by_fid,
-                   door_fids, doors, geom_cache, cell_rec=None):
+                   door_fids, doors, geom_cache, cell_rec=None, lone=()):
     """(verts, tris, ledges, geom_cached, geom_key) from real Havok collision.
 
     Serves a cache hit matching this cell's input hash, else builds the corridor
-    mesh and stores it.  `geom_key` is the hash VALUE; `geom_hash` is the module
-    FUNCTION -- never name a local after it.
+    mesh and stores it.  `lone` are the edgeless spawn nodes in `points`.
+    `geom_key` is the hash VALUE; `geom_hash` is the module FUNCTION -- never
+    name a local after it.
 
     See: docs/commentary/tes5_import_navmesh.md#collision-geometry-and-the-cache-hit
     """
@@ -1091,7 +1094,8 @@ def _cell_geometry(rec, cell_fid, points, edges, origin_x, origin_y,
         ledges_out=ledges,
         door_bases=(set(door_fids.keys())
                     if isinstance(door_fids, dict)
-                    else set(door_fids or ())))
+                    else set(door_fids or ())),
+        lone=lone)
     if verts3d:
         verts3d = [tuple(v) for v in
                    np.asarray(verts3d, dtype=np.float32).tolist()]
@@ -1113,11 +1117,13 @@ def convert_PGRD(rec: dict, writer=None,
                  door_fids: set = None,
                  navm_fid: int = None,
                  geom_cache: tuple = None,
-                 extra_door_refrs: list = None) -> tuple:
+                 extra_door_refrs: list = None,
+                 spawns: list = None) -> tuple:
     """Convert one TES4 PGRD to a TES5 NAVM record.
 
     Returns (navm_bytes, meta), or (None, None) when the pathgrid is too sparse
-    to form a ribbon or the build yields under 3 verts.
+    to form a ribbon or the build yields under 3 verts.  `spawns` are actor
+    spawn points (spawn_nodes) the pathgrid must reach.
 
     See: docs/commentary/tes5_import_navmesh.md#convert-pgrd-arguments
     See: docs/commentary/tes5_import_navmesh.md#collision-geometry-and-the-cache-hit
@@ -1128,6 +1134,7 @@ def convert_PGRD(rec: dict, writer=None,
     points, edges, origin_x, origin_y, is_exterior = _cell_graph(rec, cell_rec)
     if points is None:
         return None, None
+    lone = add_spawn_nodes(points, edges, spawns)
 
     cell_fid, wrld_fid, grid_x, grid_y, water_z = _cell_frame(rec, cell_rec)
 
@@ -1142,7 +1149,7 @@ def convert_PGRD(rec: dict, writer=None,
     verts3d, tris, ledges, geom_cached, geom_key = _cell_geometry(
         rec, cell_fid, points, edges, origin_x, origin_y, is_exterior,
         land_rec, refr_recs, base_model_by_fid, door_fids, doors, geom_cache,
-        cell_rec=cell_rec)
+        cell_rec=cell_rec, lone=lone)
     if verts3d is None or len(verts3d) < 3 or not tris:
         return None, None
 
@@ -1162,16 +1169,8 @@ def convert_PGRD(rec: dict, writer=None,
     nvnm = pack_nvnm(verts3d, tris, adj, tri_flags,
                       wrld_fid, cell_fid, grid_x, grid_y, is_exterior,
                       door_tris=door_tris, ledges=ledges, navm_fid=navm_fid)
-    subs = b''
-    edid = get_str(rec, 'EditorID')
-    if edid:
-        subs += pack_string_subrecord('EDID', f'TES4Navm{edid}')
-    subs += pack_subrecord('NVNM', nvnm)
-    if base_objects:
-        onam = b''.join(struct.pack('<I', b) for b in base_objects)
-        subs += pack_subrecord('ONAM', onam)
-
-    navm_bytes = pack_navm_record(navm_fid, subs)
+    navm_bytes = pack_navm_record(navm_fid,
+                                  _navm_subrecords(rec, nvnm, base_objects))
 
     # Centroid for the NAVI NVMI entry.
     cx = sum(v[0] for v in verts3d) / len(verts3d)
@@ -1203,6 +1202,19 @@ def convert_PGRD(rec: dict, writer=None,
         'door_xndp': {fid: (navm_fid, ti) for (ti, fid) in door_tris},
     }
     return navm_bytes, meta
+
+
+def _navm_subrecords(rec, nvnm: bytes, base_objects: list) -> bytes:
+    """One NAVM's EDID, NVNM and ONAM subrecords, packed."""
+    subs = b''
+    edid = get_str(rec, 'EditorID')
+    if edid:
+        subs += pack_string_subrecord('EDID', f'TES4Navm{edid}')
+    subs += pack_subrecord('NVNM', nvnm)
+    if base_objects:
+        onam = b''.join(struct.pack('<I', b) for b in base_objects)
+        subs += pack_subrecord('ONAM', onam)
+    return subs
 
 
 def _collect_base_objects(refr_recs) -> list:

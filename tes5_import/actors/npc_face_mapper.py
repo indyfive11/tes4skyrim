@@ -454,7 +454,8 @@ def build_pnam_subs(rec: dict, race_edid: str, gender: str = 'Male',
     return subs
 
 
-def build_face_tail_subs(rec: dict, race_edid: str, gender: str) -> bytes:
+def build_face_tail_subs(rec: dict, race_edid: str, gender: str,
+                         morphs=None, skin=None) -> bytes:
     """Build the trailing face subrecords for NPC_: FTST, QNAM, NAM9, NAMA,
     and the skin-tone tint layer (TINI/TINC/TINV/TIAS).
 
@@ -465,12 +466,12 @@ def build_face_tail_subs(rec: dict, race_edid: str, gender: str) -> bytes:
              blended toward white by the interpolation value), as vanilla
              does — QNAM must agree with the skin-tone layer or the face
              is lit a different color than the body
-    NAM9 — 19 face-morph floats mapped from Oblivion FGGS PCA coefficients;
-             falls back to all-zero neutral if FGGS is absent or unparseable
+    NAM9 — `morphs` when given, else 19 floats mapped from Oblivion FGGS
+             (all zero without FGGS)
     NAMA — face-part preset indices: nose=0, unknown=0, eyes=0, mouth=0
-    TINI/TINC/TINV/TIAS — skin-tone tint layer; the engine derives the BODY
-             skin color from this layer, so omitting it leaves every body
-             pale white no matter the race
+    TINI/TINC/TINV/TIAS — skin-tone tint layer in `skin` (r, g, b) when
+             given, else the race's color; the engine derives the BODY skin
+             color from this layer, so omitting it leaves every body pale
     """
     subs = b''
 
@@ -482,6 +483,8 @@ def build_face_tail_subs(rec: dict, race_edid: str, gender: str) -> bytes:
     # Skin tone: the race's authored Oblivion color (see _pick_skin_tone)
     fid = get_formid(rec, 'FormID')
     tini, (r, g, b), tinv = _pick_skin_tone(race_edid, gender, fid)
+    if skin:
+        r, g, b = skin
 
     # QNAM — texture lighting (stored as three 0–1 floats; xEdit × 255 → 0–255)
     # Effective color = lerp(white, tint color, interpolation).
@@ -491,10 +494,8 @@ def build_face_tail_subs(rec: dict, race_edid: str, gender: str) -> bytes:
 
     # NAM9 — face morphs: map from FGGS PCA coefficients when available
     fggs = _parse_fggs(rec)
-    if fggs:
-        morphs = _fggs_to_nam9(fggs)
-    else:
-        morphs = [0.0] * 19
+    if morphs is None:
+        morphs = _fggs_to_nam9(fggs) if fggs else [0.0] * 19
     subs += pack_subrecord('NAM9', struct.pack('<19f', *morphs))
 
     # NAMA — face part preset indices (Nose U32, Unknown S32, Eyes U32, Mouth U32)

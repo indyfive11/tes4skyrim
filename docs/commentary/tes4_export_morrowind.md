@@ -1073,6 +1073,38 @@ OBLIVION race FormID (`RNAM.Race=000191C1` for Dark Elf), because
 `_resolve_npc_race` maps that id through `TES4_RACE_FID_TO_EDID` and
 `RACE_MAP` to the Skyrim race; no RACE record is needed or written.
 
+### <a id="custom-races"></a>A custom race stands in as the vanilla race it names or looks like
+
+A race outside the ten vanilla ids used to fall back to Imperial. `RaceTable`
+reads every RACE and every skin head/hair BODY part from the plugin and its
+declared masters (the same pass that reads their BODY meshes) and gives a
+custom race a vanilla race's FormID by two authored indicators, in order:
+
+1. **Its display name.** Tamriel_Data's six Khajiit breeds (`T_Els_Cathay`,
+   `-raht`, `Dagi-raht`, `Ohmes`, `Ohmes-raht`, `Suthay`) all carry
+   `FNAM=Khajiit`. Several use their own EPoS meshes, so the name is the only
+   indicator for them.
+2. **The head and hair meshes it shares most** with one vanilla race; a tie or
+   no share keeps Imperial. This is the TES3 form of
+   [new races by face parts](tes5_import_actors.md#new-races-by-face-parts).
+
+`MorrowindRace` keeps the authored id, so dialogue filters and face grouping
+still tell the races apart.
+
+| Plugin | Race | NPCs | Becomes | By |
+|---|---|---|---|---|
+| TR_Mainland | the six Khajiit breeds | 91 | Khajiit | name |
+| Arktwend | Normanen | 198 | Nord | meshes |
+| Arktwend | Korinther | 124 | Redguard | meshes |
+| Arktwend | Zwerge, Zwerge Sitzend | 162 | Wood Elf | meshes |
+| Arktwend | Schattenelfen | 25 | Dark Elf | meshes |
+| Arktwend | HydorWesen | 14 | Argonian | meshes |
+| Arktwend | kAllemanen | 12 | Breton | meshes |
+| Arktwend | Alamanen, dAllemanen | 592 | Imperial | meshes |
+
+Races with only their own meshes (Imga, Tsaesci, Ogre, Arktwend's Skelett)
+still fall back to Imperial.
+
 | Morrowind | TES4 |
 |---|---|
 | FLAG Female 0x01 / Essential 0x02 / Respawn 0x04 / Autocalc 0x10 | `ACBS.Flags` 0x01 / 0x02 / 0x08 / 0x10 |

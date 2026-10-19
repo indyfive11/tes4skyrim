@@ -22,9 +22,18 @@ import subprocess
 import xml.etree.ElementTree as ET
 
 from asset_convert import paths
+from asset_convert.havok.animation_data import (clip_block_lines,
+                                                motion_entry_lines)
+from asset_convert.sources.skyrim_assets import get_asset_bytes
 from core.subprocess_flags import POPEN_FLAGS
 
 HKXCONV = str(paths.HKXCONV)
+
+#: The humanoid project folder, relative to Data.
+CHARACTER = 'meshes\\actors\\character\\'
+#: The third-person (character hkx, animation cache project) pairs.
+THIRD_PERSON = (('characters\\defaultmale.hkx', 'DefaultMale.txt'),
+                ('characters female\\defaultfemale.hkx', 'DefaultFemale.txt'))
 
 #: The engine-written hand type variables a weapon-type slot keys on; the Equipped pair holds the drawn type.
 HAND_TYPE_VARS = ('iRightHandType', 'iLeftHandType', 'iRightHandEquipped',
@@ -496,3 +505,47 @@ class CharacterFile:
         self.tree.write(self.xml_path, encoding='us-ascii',
                         xml_declaration=True)
         hkxconv('tohkx', self.xml_path, out_hkx)
+
+
+# ---------------------------------------------------------------------------
+# Vanilla files and clip registration
+# ---------------------------------------------------------------------------
+
+def load_vanilla(rel: str, work_dir: str, stem: str, cls=HumanoidGraph):
+    """The vanilla packfile at `rel` under the humanoid project, decompiled; None when absent."""
+    raw = get_asset_bytes(CHARACTER + rel)
+    if raw is None:
+        return None
+    return cls.from_hkx(raw, work_dir, stem)
+
+
+def register_clips(entries: dict, generators: list, char_out: str,
+                   work_dir: str, characters=THIRD_PERSON) -> list:
+    """Append the generators' animation files to each character file; the animdata appends.
+
+    `entries` maps a manifest stem to its clip entry (`anim`, `duration`,
+    optional `sounds`, `feet`, `motion`); each generator names its `stem`.
+    See: docs/commentary/asset_convert_falloutnv.md#gun-graph
+    """
+    anims = list(dict.fromkeys(entries[g['stem']]['anim'] for g in generators))
+    by_anim = {e['anim']: e for e in entries.values()}
+    out = []
+    for rel, project in characters:
+        cf = load_vanilla(rel, work_dir,
+                          os.path.splitext(os.path.basename(rel))[0], CharacterFile)
+        if cf is None:
+            raise FileNotFoundError(f'vanilla {rel} is not available')
+        index = cf.append_animations(anims)
+        cf.write(os.path.join(char_out, *rel.split('\\')))
+        clips, motions = [], []
+        for g in generators:
+            e = entries[g['stem']]
+            clips += clip_block_lines(
+                {'name': g['name'], 'rate': g['rate'], 'sounds': e.get('sounds', []),
+                 'feet': e.get('feet', []), 'events': g['events'],
+                 'duration': e['duration']}, index[e['anim']])
+        for anim, uid in sorted(index.items(), key=lambda kv: kv[1]):
+            motions += motion_entry_lines(uid, by_anim[anim]['duration'],
+                                          by_anim[anim].get('motion'))
+        out.append({'project': project, 'clips': clips, 'motions': motions})
+    return out

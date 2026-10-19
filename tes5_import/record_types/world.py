@@ -18,6 +18,7 @@ from .world_falloutnv import (marker_substitute, parent_use_flags,
                               tes5_world_flags, world_map_offset)
 from .world_morrowind import is_tes3_source, lock_is_exit_only, tes3_refr_flags
 from .vendor_stock_morrowind import stock_owner
+from .npc_markers_morrowind import final_base, linked_ref_subrecord
 from .items import get_base_origin_shift
 from ..actors.starts_dead import STARTS_DEAD_FLAG, starts_dead
 from ..base.text_reader import remap_formid
@@ -833,7 +834,9 @@ def _refr_base_formid(rec: dict, name_raw: int) -> int:
     master offset.
     See: docs/commentary/tes4_export_falloutnv.md#marker-base-objects
     """
-    marker = TES4_MARKER_FORMID_TO_SKYRIM.get(name_raw)
+    marker = final_base(rec)
+    if marker is None:
+        marker = TES4_MARKER_FORMID_TO_SKYRIM.get(name_raw)
     if marker is None:
         marker = marker_substitute(name_raw)
     return marker if marker is not None else get_formid(rec, 'NAME')
@@ -1091,6 +1094,7 @@ def convert_ACHR(rec: dict) -> bytes:
     name_fid = get_formid(rec, 'NAME')
     if name_fid:
         subs += pack_formid_subrecord('NAME', name_fid)
+    subs += linked_ref_subrecord(rec)
 
     # XLCN — Persistent Location (see convert_REFR). This is what lets a quest
     # marker resolve onto a persistent actor placed inside an interior — without

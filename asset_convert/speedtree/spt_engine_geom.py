@@ -114,17 +114,22 @@ class EngineUnavailable(RuntimeError):
 def find_oblivion_exe(tes4_data: str | os.PathLike | None = None) -> str:
     """Absolute path to the Oblivion.exe the APPLICATION is configured with.
 
-    The exe sits beside the configured Data directory, so this follows
-    whatever `source_paths.find_game_path('oblivion')` resolves -- the config's
-    `tes4DataPath` first, then the registry.  Never hardcodes an install.
+    The exe sits beside a Data directory: `tes4_data` alone when given, else
+    the config's `tes4DataPath` and then the registry's install, whichever of
+    the two has an Oblivion.exe first.  Never hardcodes an install.
 
     Returns '' when no configured install has an Oblivion.exe.
     """
-    data = str(tes4_data or '') or find_game_path('oblivion', load_config())
-    if not data:
-        return ''
-    exe = Path(os.path.dirname(os.path.normpath(str(data)))) / 'Oblivion.exe'
-    return str(exe) if exe.is_file() else ''
+    if tes4_data:
+        installs = [str(tes4_data)]
+    else:
+        installs = [find_game_path('oblivion', load_config()),
+                    find_game_path('oblivion')]
+    for data in filter(None, installs):
+        exe = Path(os.path.dirname(os.path.normpath(data))) / 'Oblivion.exe'
+        if exe.is_file():
+            return str(exe)
+    return ''
 
 
 def engine_available(tes4_data: str | os.PathLike | None = None) -> bool:

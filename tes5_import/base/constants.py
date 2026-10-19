@@ -9,7 +9,16 @@ Constants, lookup tables, and dispatch maps for TES4→TES5 conversion.
 from .equivalents import DEFAULT_RACE, RACE_MAP
 
 #: Re-exported from `equivalents` so race lookups keep one import site.
-__all__ = ['DEFAULT_RACE', 'RACE_MAP']
+__all__ = ['DEFAULT_RACE', 'RACE_MAP', 'mgef_family_keyword_name']
+
+
+def mgef_family_keyword_name(effect_edid: str) -> str:
+    """EditorID and script property name of the KYWD every copy of one MGEF carries.
+
+    See: docs/commentary/tes5_import_magic.md#effect-families
+    """
+    return 'TES4FX_' + effect_edid.strip().strip('"').lower()
+
 
 # Engine-owned globals, keyed by lowercase EditorID.  Skyrim ships these at the
 # SAME FormIDs Oblivion uses (GameYear 0x35 ... TimeScale 0x3A — verified

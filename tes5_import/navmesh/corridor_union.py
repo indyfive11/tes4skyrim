@@ -367,7 +367,7 @@ def _storey_holds_door(edge, group):
         return True
     mx = 0.5 * (edge[0][0] + edge[1][0])
     my = 0.5 * (edge[0][1] + edge[1][1])
-    lv = _levels_at(group, mx, my)
+    lv = levels_at(group, mx, my)
     return not lv or any(abs(q - edge[3]) <= STOREY_GAP_Z for q in lv)
 
 
@@ -950,7 +950,7 @@ def _drop_point_attached(tris):
 
 
 def _levels_batch(strips, points):
-    """_levels_at for MANY points at once, natively.  Returns a list of lists.
+    """levels_at for MANY points at once, natively.  Returns a list of lists.
 
     See: docs/commentary/tes5_import_navmesh.md#levels-are-batched
     """
@@ -991,7 +991,7 @@ def _levels_batch(strips, points):
                             land.grid, land.ox, land.oy)
 
 
-def _levels_at(strips, px, py):
+def levels_at(strips, px, py):
     """Distinct surface heights at (px, py): one per storey covering it.
 
     The heights of every corridor whose ribbon covers the point are clustered;

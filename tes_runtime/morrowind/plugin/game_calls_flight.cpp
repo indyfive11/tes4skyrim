@@ -90,7 +90,7 @@ float FlySpeed(float magnitude) {
 
 void FlightTick(void* player) {
     g_player = player;
-    g_playerController = player && g_controllerOf ? g_controllerOf(player) : nullptr;
+    g_playerController = CharController(player);
     if (!player) return;
     const float swiftSwim = ActiveMagnitude(player, kSwiftSwimEffect);
     if (swiftSwim != g_swiftSwim.exchange(swiftSwim)) {
@@ -113,6 +113,7 @@ void FlightTick(void* player) {
 void EffectTick() {
     void* player = PlayerRef();
     FlightTick(player);
+    TickStillActors(player);
     TickSanctuary(player);
     TickAttributeEffects(player);
 }
@@ -180,12 +181,14 @@ void Steer(void* controller, bool grounded) {
 std::uintptr_t InAirHook(void* state, void* controller) {
     const std::uintptr_t result = g_inAir(state, controller);
     Steer(controller, false);
+    HoldStill(controller, controller == g_playerController.load());
     return result;
 }
 
 std::uintptr_t OnGroundHook(void* state, void* controller) {
     const std::uintptr_t result = g_onGround(state, controller);
     Steer(controller, true);
+    HoldStill(controller, controller == g_playerController.load());
     return result;
 }
 
@@ -226,6 +229,10 @@ SimulateFn SwapSimulate(const char* what, std::uint64_t vtableId,
 }
 
 }  // namespace
+
+void* CharController(void* actor) {
+    return actor && g_controllerOf ? g_controllerOf(actor) : nullptr;
+}
 
 // Every active instance of a runtime-carried effect, in any of its delivery
 // copies. An effect whose conditions switched it off is skipped.

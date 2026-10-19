@@ -24,6 +24,8 @@ using SetValueFn = void (*)(void* vm, std::uint32_t stack, void* actor,
 using PlaceAtMeFn = void* (*)(void* vm, std::uint32_t stack, void* self,
                               void* base, std::int32_t count,
                               bool forcePersist, bool initiallyDisabled);
+// BSTEventSink<T>::ProcessEvent, the slot a VM sink hook replaces.
+using ProcessEventFn = int (*)(void* sink, const void* event, void* source);
 
 extern SetValueFn  g_setValue;
 extern PlaceAtMeFn g_placeAtMe;
@@ -40,6 +42,8 @@ void* ItemForm(const std::string& item);
 void* OwnerRef(const std::string& owner);
 void* PlayerRef();
 void* RefByRuntimeId(std::uint32_t runtimeFormId);
+// Whether `ref` has its 3D now: false for a disabled reference in a loaded cell.
+bool Has3D(void* ref);
 // World units between two references, or -1 when either cannot be measured.
 // The string form `Distance` resolves ids; this one takes what the caller
 // already holds.
@@ -106,6 +110,14 @@ constexpr int kSanctuaryEffect = 42;
 // active-effect list.
 // See: docs/commentary/morrowind_runtime.md#levitate-and-slowfall
 void InstallFlightCalls(GameHooks& hooks);
+// An actor's character controller, or null. game_calls_flight.cpp.
+void* CharController(void* actor);
+// OpenMW keeps an actor no AI is moving where it stands: the InAir and
+// OnGround steps hold each still non-player controller, and the tick names
+// the nearby actors that are not Morrowind's. game_calls_still.cpp.
+void InstallStillCalls();
+void HoldStill(void* controller, bool isPlayer);
+void TickStillActors(void* player);
 // The summed magnitude of every active instance of a runtime-carried effect
 // on `actor`, read off its active-effect list; with `attribute` set, only the
 // instances of that attribute's variant. Game thread.
@@ -138,9 +150,10 @@ void InstallAnimCalls(GameHooks& hooks);
 // See: docs/commentary/morrowind_runtime.md#the-control-switches
 void InstallControlCalls(GameHooks& hooks);
 // The engine's buttoned message box, which Debug.MessageBox cannot raise.
-// Hooked through ShowMessage rather than a hook of its own.
+// Hooked through ShowMessage rather than a hook of its own. Also the engine's
+// Bink player, which `PlayBink` reaches through its hook.
 // See: docs/commentary/morrowind_runtime.md#messagebox-buttons
-void InstallMessageCalls();
+void InstallMessageCalls(GameHooks& hooks);
 void ShowButtonMessage(const std::string& text,
                        const std::vector<std::string>& buttons);
 // Skyrim's corner notification, which is what OpenMW's buttonless message box

@@ -23,4 +23,8 @@ void BeginConversation(const char* speaker, const char* displayName,
 // True while a conversation is open.
 bool ConversationOpen();
 
+// True while a reply's result script runs: a new conversation begun now would
+// tear down the one that script is still running in.
+bool InResultScript();
+
 }  // namespace tesruntime::mw

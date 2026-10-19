@@ -12,8 +12,9 @@ import struct
 
 from asset_convert.ui.swf import Swf
 from tools.generators.gen_morrowind_menu_swf import (CHAR_FONT, FONT_LIB,
-                                                     FONT_NAME, STAGE_H,
-                                                     STAGE_W, TEXT_RGB, TWIP,
+                                                     FONT_NAME, HEADER_PATH,
+                                                     STAGE_H, STAGE_W, TEXT_RGB,
+                                                     TWIP, embed_font,
                                                      hello_world)
 
 #: DefineEditText, ImportAssets2, DefineShape3 and PlaceObject2 tag codes.
@@ -131,3 +132,24 @@ def test_every_placed_character_is_defined_first():
         elif tag.code == _PLACE and tag.data[0] & 0x02:
             placed = struct.unpack_from('<H', tag.data, 3)[0]
             assert placed in defined, f'character {placed} placed before define'
+
+
+def _font_codes(data: bytes) -> list:
+    """The CodeTable of a wide-offset, wide-code DefineFont2 body."""
+    at = 2 + 1 + 1
+    at += 1 + data[at]
+    count = struct.unpack_from('<H', data, at)[0]
+    table = at + 2
+    code_offset = struct.unpack_from('<I', data, table + 4 * count)[0]
+    return list(struct.unpack_from(f'<{count}H', data, table + code_offset))
+
+
+def test_embedded_font_carries_every_language_the_face_does():
+    """Umlauts, Cyrillic and typographic dashes are embedded, and the plugin's
+    width table names exactly the embedded codes, in the same order."""
+    codes = _font_codes(embed_font().data)
+    assert codes == sorted(codes) and codes[0] == ord(' ')
+    assert {ord(c) for c in 'äöüßÄÖÜЖжЁё—…'} <= set(codes)
+    header = open(HEADER_PATH, encoding='ascii').read()
+    table = header.split('kGlyphCode[] = {', 1)[1].split('}', 1)[0]
+    assert [int(v) for v in table.split(',')] == codes

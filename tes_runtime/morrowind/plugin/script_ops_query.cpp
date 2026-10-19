@@ -15,6 +15,7 @@
 #include <components/interpreter/opcodes.hpp>
 
 #include "dialogue_state.h"
+#include "object_tick.h"
 #include "script_ops.h"
 
 namespace tesruntime::mw {
@@ -77,14 +78,15 @@ class OpPlayerQuery : public Interpreter::Opcode0 {
     }
 };
 
-// A query about the player that names nobody and takes no actor at all:
-// `GetPCSleep`.
-template <bool (*GameHooks::*Ask)()>
-class OpWorldQuery : public Interpreter::Opcode0 {
+// `GetPCSleep` and `WakeUpPC`: the tick's sleep latch (object_tick.h).
+class OpGetPcSleep : public Interpreter::Opcode0 {
     void execute(Interpreter::Runtime& runtime) override {
-        const auto ask = Hooks().*Ask;
-        runtime.push(ask && ask() ? 1 : 0);
+        runtime.push(PlayerSleeping() ? 1 : 0);
     }
+};
+
+class OpWakeUpPc : public Interpreter::Opcode0 {
+    void execute(Interpreter::Runtime&) override { WakePlayer(); }
 };
 
 // `HasItemEquipped "id"`: the item is named, the actor is the target.
@@ -201,7 +203,8 @@ void InstallQueryOps(OpcodeInstaller& into) {
         M::opcodeGetSpellReadied);
     into.Real<OpActorQuery<Explicit, &GameHooks::spellReadied>>(
         M::opcodeGetSpellReadiedExplicit);
-    into.Real<OpWorldQuery<&GameHooks::playerSleeping>>(M::opcodeGetPcSleep);
+    into.Real<OpGetPcSleep>(M::opcodeGetPcSleep);
+    into.Real<OpWakeUpPc>(M::opcodeWakeUpPc);
     InstallPair<OpHasItemEquipped>(into, N::opcodeHasItemEquipped,
                                    N::opcodeHasItemEquippedExplicit);
     InstallPair<OpForceSneak>(into, C::opcodeForceSneak,

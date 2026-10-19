@@ -123,9 +123,11 @@ def add_scro_ref(conv, fid: str, xref: CrossRefGraph) -> None:
     """Add a single SCRO FormID as a property ref on the converter.
 
     A QUST stays the generic `Quest` (the body promotes it on dot access);
-    other records take their attached script's type.  A property already
-    typed more specifically than `Quest`, or typed `ActorBase`, is kept.
+    other records take their attached script's type where that class can
+    bind the record.  A property already typed more specifically than
+    `Quest`, or typed `ActorBase`, is kept.
     See: docs/commentary/script_convert.md#property-type-merge
+    See: docs/commentary/script_convert.md#script-type-property-binding
     """
     if fid in _PLAYER_FORMIDS:
         return
@@ -135,13 +137,6 @@ def add_scro_ref(conv, fid: str, xref: CrossRefGraph) -> None:
     rtype = xref.record_type.get(fid, '')
     ptype = record_type_to_papyrus(rtype)
     if rtype != 'QUST':
-        # Prefer the attached script class ONLY where it can actually bind to
-        # this record -- the same guard the body-resolver applies
-        # (resolve_name.script_type_binds, converter.py:1643).  A base-object
-        # item (KEYM/BOOK/ARMO/WEAP/INGR/...) keeps its base Papyrus type: the
-        # VM refuses an ObjectReference-derived script class on a base form and
-        # the property then reads None all session.  An NPC_/CREA (Actor) or a
-        # unique-placed ACTI/LIGH still keeps its script type.
         script_type = xref.get_record_script_type(edid)
         if script_type and script_type_binds(xref, ptype, fid):
             ptype = script_type

@@ -233,7 +233,7 @@ def _job_key(job: dict, geom_cache) -> str:
     return cell_geom_key(job['pgrd_rec'], job['land_rec'], job['cell_rec'],
                          job['refr_recs'], navm_worker._BASE_MODEL_BY_FID,
                          navm_worker._DOOR_FIDS, geom_cache,
-                         job.get('extra_door_refrs'))
+                         job.get('extra_door_refrs'), job.get('spawns'))
 
 
 def _pins_since(job: dict, geom_cache, old_tag: str) -> str:

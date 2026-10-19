@@ -926,7 +926,7 @@ WEAPON_ANIM_SKILL: dict[int, int] = {
     8: -1,   # Staff
 }
 
-#: WEAP DNAM stagger (float at offset 96) by anim type: the commonest value of that type among Skyrim.esm's 2,484 WEAP.
+#: WEAP DNAM stagger (float at offset 96) by anim type: Skyrim.esm's commonest value; a crossbow takes the bow's.
 # See: docs/commentary/tes5_import_magic.md#weapon-skill-and-stagger
 WEAPON_ANIM_STAGGER: dict[int, float] = {
     1: 0.75,   # Sword
@@ -939,6 +939,7 @@ WEAPON_ANIM_STAGGER: dict[int, float] = {
     9: 0.0,    # Crossbow (as Bow)
     8: 0.0,    # Staff
 }
+
 
 def weapon_skill_stagger(anim_type: int) -> tuple:
     """(DNAM skill, stagger) of a weapon animation type; (-1, 0.0) with no row."""

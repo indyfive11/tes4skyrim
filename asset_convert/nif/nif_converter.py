@@ -46,7 +46,7 @@ from asset_convert.nif.nif_converter_morrowind import (
     opaque_unblended_shapes,
     run_morrowind_fixups, source_root_flags, strip_collision_nodes,
     strip_spinning_doors)
-from asset_convert.nif.tex_paths import rewrite_tex_path
+from asset_convert.nif.tex_paths import path_text, rewrite_tex_path
 from asset_convert.nif.shaders import (ALPHA_BLEND_ENABLED,
                                        ALPHA_DST_ONE, ALPHA_DST_SHIFT,
                                        APPLY_HILIGHT2,
@@ -272,9 +272,7 @@ def _norm_tex_ref(raw):
     """
     if not raw:
         return None
-    if isinstance(raw, bytes):
-        raw = raw.decode('utf-8', errors='replace')
-    p = raw.strip().lower().replace('\\', '/').lstrip('/')
+    p = path_text(raw).strip().lower().replace('\\', '/').lstrip('/')
     if not p.endswith('.dds'):
         return None
     if p.startswith('textures/'):

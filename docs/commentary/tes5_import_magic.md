@@ -996,15 +996,20 @@ pool.
 `weapon_skill_stagger`), tested by `tests/test_weapon_skill_stagger.py`.
 
 In the 100-byte SSE WEAP `DNAM`, offset 76 is the weapon's governing SKILL, an
-int32 actor-value index, and the stagger is the FLOAT at offset 96.
-`convert_WEAP` wrote a table named `WEAPON_ANIM_STAGGER` as one BYTE at offset
-76 (5 Normal, 6 Ragdoll, 7 Large Ragdoll, 0 None) and nothing at 96. Read as a
-skill, that made every converted bow and staff govern actor value 0 and every
-dagger actor value 5, and left every weapon with stagger 0.0.
+int32 actor-value index, and the stagger is the FLOAT at offset 96 (xEdit
+`wbDefinitionsTES5.pas`, WEAP `DNAM`: `Skill` is an `itS32`, `Stagger` the last
+float). `convert_WEAP` wrote a table named `WEAPON_ANIM_STAGGER` as one BYTE at
+offset 76 (5 Normal, 6 Ragdoll, 7 Large Ragdoll, 0 None) and nothing at 96.
+Read as a skill, that gave every converted bow, staff and firearm actor value 0
+and every dagger actor value 5, and left every weapon with stagger 0.0. The
+table's 6 and 7 happen to be OneHanded and TwoHanded, so the other melee types
+already parsed to the right skill.
 
 Both fields are now written per Skyrim animation type. `convert_WEAP` is the
 only WEAP `DNAM` writer in the tree: Oblivion, FO3/FNV and Morrowind weapons all
-go through it, and an override reaches it through the convert-and-diff.
+go through it. An override keeps its master's converted `DNAM` unless the plugin
+changes a field that lands in it; then convert-and-diff substitutes this
+converter's whole `DNAM`.
 
 The values are a census of the real Skyrim.esm (2,484 WEAP, all with a 100-byte
 DNAM), by `DNAM` offset 0, value × count:
@@ -1024,13 +1029,14 @@ DNAM), by `DNAM` offset 0, value × count:
 
 6 is OneHanded, 7 TwoHanded, 8 Marksman, 18–22 the magic schools, −1 none.
 
-- **Type 6 is two weapons.** Battleaxes carry 1.15 and warhammers 1.25 (by
-  EditorID: 295 of 298 and 275 of 277). The converter picks axe or mace from the
-  mesh name for one-handed blunt weapons only; a two-handed one is type 6 either
-  way, so it takes the battleaxe's 1.15, the more common value.
-- **A staff takes −1.** Vanilla staves carry the school of their spell; the
-  converted staff's school is not read at this point, and −1 is what vanilla
-  writes for a staff with none.
+- **Type 6 is two weapons.** Battleaxes carry 1.15 and warhammers 1.25: 294 of
+  the 298 records with 1.15 have `battleaxe` in their EditorID, 273 of the 277
+  with 1.25 have `warhammer`. The converter picks axe or mace from the mesh name
+  for one-handed blunt weapons only; a two-handed one is type 6 either way, so
+  it takes the battleaxe's 1.15, the more common value.
+- **A staff takes −1.** 61 of the 71 vanilla staves carry a magic school, 5
+  carry TwoHanded and 5 carry −1. The converted staff's school is not read at
+  this point, so it takes the value vanilla writes for no skill.
 - **Type 0 has no row.** No path emits it: `_weapon_anim_type` returns 1 to 8
   from the TES4 type and the mesh name, or 9 for an FO3/FNV firearm. The 17
   vanilla type-0 records with skill 6 are trap darts and effect weapons
@@ -1045,8 +1051,9 @@ DNAM), by `DNAM` offset 0, value × count:
   `DNAM.Stagger`); it used to print offset 76 as a stagger enum and offset 96
   as `ColorRemapIdx`.
 - **Unconfirmed in game.** The bytes are checked by parse-back
-  (`tests/test_weapon_skill_stagger.py`); what a skill of −1 does to a staff's
-  use, and how the stagger feels, has not been looked at in Skyrim.
+  (`tests/test_weapon_skill_stagger.py`); which skill a converted weapon then
+  uses, what −1 does to a staff, and how the stagger feels have not been looked
+  at in Skyrim.
 
 ## <a id="power-affects"></a>Power Affects Magnitude / Duration
 

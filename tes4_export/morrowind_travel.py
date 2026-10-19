@@ -12,6 +12,8 @@ See: docs/commentary/morrowind_runtime.md#travel-markers
 import struct
 from types import SimpleNamespace
 
+from .tes3_reader import get_string
+
 #: XMarker, 0x3B in Oblivion.esm and in Skyrim.esm alike.
 _XMARKER = '0000003B'
 
@@ -30,8 +32,7 @@ def destinations(rec) -> list:
         if sub.type == 'DODT' and len(sub.data) >= struct.calcsize(_DODT):
             found.append([struct.unpack_from(_DODT, sub.data), ''])
         elif sub.type == 'DNAM' and found and not found[-1][1]:
-            found[-1][1] = sub.data.split(b'\x00', 1)[0].decode('cp1252',
-                                                                'replace')
+            found[-1][1] = get_string(sub)
     return found
 
 

@@ -6,7 +6,7 @@ module that needs them.
 import re
 from collections import Counter
 
-from asset_convert.game_paths import current_namespace
+from asset_convert.game_paths import ascii_path, current_namespace
 
 
 def bs_pp_texture_slots(prop):
@@ -33,6 +33,20 @@ def bs_pp_texture_slots(prop):
 
 #: Source extensions that always ship as DDS, whatever the mesh calls them.
 IMAGE_EXTS = ('tga', 'bmp')
+
+#: Byte encoding of AUTHORED NIF path strings (Windows-1252, as plugins store text).
+PATH_ENCODING = 'cp1252'
+
+
+def path_text(raw) -> str:
+    """A NIF path string as text; bytes are read as Windows-1252."""
+    return raw.decode(PATH_ENCODING, errors='replace') \
+        if isinstance(raw, bytes) else str(raw)
+
+
+def path_bytes(text) -> bytes:
+    """A path as the bytes a NIF stores: its `ascii_path`, the name output ships under."""
+    return ascii_path(text).encode('ascii')
 
 
 #: A leading drive letter: `f:\...`, `F:/...` or drive-relative `f:...`.
@@ -123,9 +137,7 @@ def texture_rel_path(raw) -> str:
     (`full_res_twin` decides its fallback).
     See: docs/commentary/asset_convert_texture.md#per-game-asset-namespace
     """
-    path = raw.decode('utf-8', errors='replace') \
-        if isinstance(raw, bytes) else str(raw)
-    return authored_rel(path)[0]
+    return authored_rel(path_text(raw))[0]
 
 
 def rewrite_tex_path(raw_bytes):
@@ -133,7 +145,7 @@ def rewrite_tex_path(raw_bytes):
 
     See: docs/commentary/asset_convert_shader.md#rewrite-tex-path
     """
-    rel, fixes = authored_rel(raw_bytes.decode('utf-8', errors='replace'))
+    rel, fixes = authored_rel(path_text(raw_bytes))
     _REPAIRS.update(fixes)
     return 'Textures\\' + current_namespace() + '\\' + as_dds(rel)
 

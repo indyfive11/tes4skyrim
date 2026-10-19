@@ -29,6 +29,7 @@ from asset_convert.audio.audio_converter import (
 from asset_convert.audio.voice_races import load_race_voices
 from asset_convert.game_paths import namespace_for
 from output_layout import record_dir
+from script_convert import say_durations
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -294,9 +295,6 @@ def test_organize_voice_files_generates_fuz(tmp_path):
     """A voice line whose transcript is in lip_text comes out as .fuz; a line
     with no transcript stays .xwm."""
     plugin = 'Test.esm'
-    # BSA archives store every internal path lowercase (see
-    # asset_convert/audio/audio_converter.py's organize_voice_files) -- the source
-    # fixture must match, the destination stays 'Voice' (our own convention).
     voice_src = tmp_path / 'extract' / 'sound' / 'voice' / plugin / 'Nord' / 'M'
     voice_src.mkdir(parents=True, exist_ok=True)
     _make_wav(voice_src / 'hello_0000a1b2_1.wav', duration_s=0.5)
@@ -493,9 +491,6 @@ def test_organize_voice_files_basic(tmp_path):
     """Voice files should be reorganised from TES4 layout to TES5 layout."""
     plugin = 'Test.esm'
     # Build TES4 voice layout: sound/Voice/<plugin>/Nord/M/<topic>_<fid>_0.wav
-    # BSA archives store every internal path lowercase (see
-    # asset_convert/audio/audio_converter.py's organize_voice_files) -- the source
-    # fixture must match, the destination stays 'Voice' (our own convention).
     voice_src = tmp_path / 'extract' / 'sound' / 'voice' / plugin / 'Nord' / 'M'
     voice_src.mkdir(parents=True, exist_ok=True)
     wav = _make_wav(voice_src / 'hello_0000a1b2_0.wav')
@@ -520,13 +515,27 @@ def test_organize_voice_files_basic(tmp_path):
 
 
 @needs_ffmpeg
+def test_organize_voice_files_takes_only_the_plugins_own_folder(tmp_path):
+    """A patch sharing its master's tree copies none of the master's lines."""
+    voice = tmp_path / 'extract' / 'sound' / 'voice'
+    for owner in ('master.esm', 'Patch.esp'):
+        (voice / owner / 'Nord' / 'M').mkdir(parents=True)
+    _make_wav(voice / 'master.esm' / 'Nord' / 'M' / 'hello_0000a1b2_0.wav')
+    _make_wav(voice / 'Patch.esp' / 'Nord' / 'M' / 'bye_0000c3d4_0.wav')
+
+    result = organize_voice_files(
+        source_dir=str(tmp_path / 'extract'), dest_dir=str(tmp_path / 'output'),
+        plugin_name='patch.esp', convert_audio=True, ffmpeg_path=FFMPEG)
+    assert result['errors'] == 0 and result['organized'] == 1
+    written = sorted(p.name for p in (tmp_path / 'output').rglob('*.xwm'))
+    assert written == ['bye_0000c3d4_0.xwm']
+
+
+@needs_ffmpeg
 def test_organize_voice_files_uses_voice_map(tmp_path):
     """The importer's voicemap renames files to the prefix Skyrim will
     actually look up (converted owning-quest + topic EditorIDs)."""
     plugin = 'Test.esm'
-    # BSA archives store every internal path lowercase (see
-    # asset_convert/audio/audio_converter.py's organize_voice_files) -- the source
-    # fixture must match, the destination stays 'Voice' (our own convention).
     voice_src = tmp_path / 'extract' / 'sound' / 'voice' / plugin / 'Nord' / 'M'
     voice_src.mkdir(parents=True, exist_ok=True)
     _make_wav(voice_src / 'oldquest_oldtopic_0000a1b2_1.wav')
@@ -555,9 +564,6 @@ def test_organize_voice_files_prunes_renamed_leftovers(tmp_path):
     because the audio is present under the previous name.
     """
     plugin = 'Test.esm'
-    # BSA archives store every internal path lowercase (see
-    # asset_convert/audio/audio_converter.py's organize_voice_files) -- the source
-    # fixture must match, the destination stays 'Voice' (our own convention).
     voice_src = tmp_path / 'extract' / 'sound' / 'voice' / plugin / 'Nord' / 'M'
     voice_src.mkdir(parents=True, exist_ok=True)
     _make_wav(voice_src / 'src_topic_0000a1b2_1.wav')
@@ -601,9 +607,6 @@ def test_organize_voice_files_prune_scope(tmp_path):
     outside the plugin root, and non-voice files anywhere, stay put.
     """
     plugin = 'Test.esm'
-    # BSA archives store every internal path lowercase (see
-    # asset_convert/audio/audio_converter.py's organize_voice_files) -- the source
-    # fixture must match, the destination stays 'Voice' (our own convention).
     voice_src = tmp_path / 'extract' / 'sound' / 'voice' / plugin / 'Nord' / 'M'
     voice_src.mkdir(parents=True, exist_ok=True)
     _make_wav(voice_src / 'q_t_0000a1b2_1.wav')
@@ -636,9 +639,6 @@ def test_organize_voice_files_prune_scope(tmp_path):
 def test_organize_voice_files_no_match_counted(tmp_path):
     """Files that don't match the voice filename pattern are counted as no_match."""
     plugin = 'Test.esm'
-    # BSA archives store every internal path lowercase (see
-    # asset_convert/audio/audio_converter.py's organize_voice_files) -- the source
-    # fixture must match, the destination stays 'Voice' (our own convention).
     voice_src = tmp_path / 'extract' / 'sound' / 'voice' / plugin / 'Nord' / 'M'
     voice_src.mkdir(parents=True, exist_ok=True)
     (voice_src / 'notavoicefile.mp3').write_bytes(b'dummy')
@@ -651,6 +651,42 @@ def test_organize_voice_files_no_match_counted(tmp_path):
     )
     assert result['no_match'] == 1
     assert result['organized'] == 0
+
+
+def test_organize_voice_files_finds_a_capitalised_voice_folder(tmp_path):
+    """A loose mod's `sound/Voice` is read like an extracted `sound/voice`."""
+    voice_src = tmp_path / 'extract' / 'sound' / 'Voice' / 'Test.esm' / 'Nord' / 'M'
+    voice_src.mkdir(parents=True)
+    (voice_src / 'notavoicefile.mp3').write_bytes(b'dummy')
+    result = organize_voice_files(
+        source_dir=str(tmp_path / 'extract'),
+        dest_dir=str(tmp_path / 'output'),
+        convert_audio=False,
+    )
+    assert result['no_match'] == 1
+
+
+def test_a_missing_voice_folder_is_reported_under_its_usual_name(tmp_path, capsys):
+    """With no voice folder in any case, the message still names `sound/voice`."""
+    (tmp_path / 'extract').mkdir()
+    result = organize_voice_files(
+        source_dir=str(tmp_path / 'extract'),
+        dest_dir=str(tmp_path / 'output'),
+        convert_audio=False,
+    )
+    assert result['organized'] == 0
+    assert str(tmp_path / 'extract' / 'sound' / 'voice') in capsys.readouterr().out
+
+
+def test_voice_durations_find_a_capitalised_voice_folder(tmp_path, monkeypatch):
+    """The Say-duration scan reads a loose mod's `sound/Voice` too."""
+    voice_src = tmp_path / 'sound' / 'Voice' / 'Test.esm' / 'Nord' / 'M'
+    voice_src.mkdir(parents=True)
+    (voice_src / 'quest_topic_0000a1b2_1.mp3').write_bytes(b'')
+    monkeypatch.setattr(say_durations, 'mp3_duration', lambda path: 2.5)
+    got = say_durations.scan_voice_durations(str(tmp_path), use_cache=False)
+    assert got.get('info:0000A1B2') == 2.5
+    assert say_durations.scan_voice_durations(str(tmp_path / 'none'), use_cache=False) == {}
 
 
 def test_organize_voice_files_missing_voice_dir(tmp_path):

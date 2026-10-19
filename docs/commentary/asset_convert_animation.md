@@ -551,6 +551,51 @@ Every animated Morrowind object shipped static, because the conversion lost all 
 
 Result after the rebuild: 0 empty keyframe controllers in either output; Tamriel Data meshes with a manager went from 155 (doors) to 502. Banners and shop signs carry a zero-length `Idle` and move only through `PlayGroup Idle2` / `LoopGroup Idle3` from their scripts (`OutsideBanner`), played by MorrowindRuntime ([morrowind_runtime.md](morrowind_runtime.md#object-animation); confirmed blowing in game). The lead-in/lead-out split gave 183 Tamriel Data meshes 222 intros and 222 outros, mostly banner `Idle3`s. Not carried: `Sound:` cues inside a group; an AutoPlay node inside a keyed mesh (keyed groups win; 1 mesh in a 3,146-mesh sample).
 
+### Morrowind NPC animation files: seated, sleeping and dancing NPCs (2026-10-07, PENDING in-game confirmation)
+<a id="morrowind-npc-animation-files"></a>
+
+**Code:** `asset_convert/havok/npc_anim_morrowind.py` (clips, manifest, runtime table), `npc_graph_morrowind.py` (graph), `creature_pipeline.humanoid_appends`; the export fields are `MorrowindAnim` on NPC_ and `MorrowindIdle` on a wander PACK (`tes4_export/record_types/morrowind_actors.py`, `morrowind_packages.py`).
+
+Morrowind has no furniture. An NPC that sits is authored with its own animation file (NPC_ `MODL`, whose `x<name>.kf` overrides groups of the shared base animation) and a wander package whose eight idle chances pick the override: `ANFTaverneNpc03` names `Arktwend\Ani\SitzGespräch.nif`, whose kf holds one 61.9 s `Idle9` group, with chances `0,0,0,0,0,0,0,100`. Both were lost: the exporter wrote `MODL` for creatures only and dropped the chances after parsing them. Census of Arktwend: 41 animation files on 139 NPCs; 57 wander packages are exactly "always idle9".
+
+**What is converted.** For each named file with an `x<name>.kf`, the groups `idle` and `idle2`..`idle9` (the default pose and what a wander package plays), each over its whole Start..Stop span as one looping clip; a group whose Stop is its Start (am_fishman's `Idle`) is a held pose and ships as one frame's worth. A file that defines `walkforward` is a whole base animation set, not a pose file, and is skipped (`base_animkna.nif` on 17 NPCs). A plugin's masters are read too, so a dependent's graph carries its master's clips. Arktwend: 37 files with a kf, 58 clips, 23 s.
+
+**Retarget.** `clip_retarget` with the Oblivion bone map (the `Bip01` names are shared) and `best_animation_pose_morrowind.json`. Those deltas were mined against the T-posed BIND skeleton (`skeleton_bones_morrowind.json`), so that is the source's reference pose, not `base_anim.nif`'s rest: with the rest pose the seated clip's right hand landed at (45.8, 12.2, 89.3) against the source's (20.1, -2.5, 55.2), arms out; with the bind pose (20.7, 10.0, 51.0). The rig gets a `Bip01 NonAccum` child as the creature split does, so the body height rides on `NPC COM`: the seated pelvis drops 28 units on both skeletons and the feet stay on the floor.
+
+**Graph.** `0_master`'s root machine gains one state holding a machine with a looping clip per group, each entered by its own `TES3Anim_<slug>_<group>` event on a `LOCAL|GLOBAL` wildcard, left on `IdleStop` or `TES3AnimStop`. That is the shape of vanilla's `Cart_State` (state 21: a machine of full-body clips whose `IdleCartPrisonerCIdle` wildcards carry the same flags, left on `CartExit`) and of state 122 `IdleDLC2TentacleWarpBook` (left on `IdleStop`). Clips are registered in both third-person character files and animation cache projects through `humanoid_graph.register_clips`, shared with the gun clips.
+
+🛑 **This and the FO3/FNV gun patch both ship `0_master.hkx` and the two character files, each patched from vanilla.** Installed together, one mod's copy overrides the other's and the loser's clips are unregistered. Not solved.
+
+**Switched off (2026-10-10): `creature_pipeline.NPC_ANIMS = False`.** A rebuild deletes the clips, the three patched humanoid files and the runtime table (`npc_graph_morrowind.remove_npc_graphs`). Reasons, measured in Arktwend: the retarget drops a drop authored on `Bip01 Pelvis` (fishman pelvis at 68.9 against the source's 11.9; 9 files lift 12-61 units), travelling idles move only the body (up to 991 units from the actor), every distance-0 wander became a 512-unit Sandbox, and the runtime's TranslateTo hold fights the character controller. Most of these NPCs have a vanilla equivalent instead. Stick-figure renders of each source clip beside the vanilla clip (LE `Skyrim - Animations.bsa`, `hkxcmd EXPORTKF`) matched:
+
+| Arktwend file (NPCs) | Vanilla | Fit |
+|---|---|---|
+| `SitzGespräch` (19), `SitzDrohen` (20), `anim_sit` (2) | `chair_idlebasevar1` (furniture: `InvisibleChairMarker`) | seated, pelvis ~48 both |
+| `AM_Eater` (9) | `animobjectchaireatingidlebase` (chair) | seated eating |
+| `AM_Fishman` (8) | `idlesitledge` (`SitLedgeMarker`) | exact: pelvis at the origin, legs hanging below it |
+| `AM_Beggar` (3), `AM_DreamerA` (2) | `idlesit_crosslegged` (`SitCrossLeggedMarker`) | ground sit; source knees up, vanilla cross-legged |
+| `Schlafen*`, `LiegenM_BR` | `idlelaydown` (`LayDownMarker`) or `bed_leftsleep` (a bed; lies ~50 up) | lying |
+| `PrayerDF` (1) idle8 / idle9 | `idlepray` / `idlepraycrouched_loop` (`PrayCrouchedMarker`; not `idlekneelidle`) | match |
+| `Bar`, `Bar2` (4) | `animobjectdrinkingidlebase` (standing drink; not the counter lean) | hand to mouth, standing |
+| `Miner` (1), `AM_Smith` (3), `AM_Sweeping` (1), `AM_Reader1` (2), `AM_Cough` (1) | `idlepickaxe_wall`, `hammer_table`, `animobjectsweepingidlebase`, `idlebook_read`, `nurelion_uncontrollable cough` | match |
+| `Farmer`, `Farmer2` (2) | `idlepickup_ground` | close: bend to the ground; not `idlehoe` |
+| `AM_LutePlaying` (2) | none: vanilla's lute is standing | no |
+
+Not compared: `AM_Alchemist`, `Camonna`, `SitzenBein`, `Hechtrolle`, and the travelling dances (`TanzDynamic`, `Trinken0x2`, `SexGehen`, `TanzSexlo`, `Hüpfen`, `TanzSexfnb`, `RocknRoll`, `DancingGirl`, `Aliroman`), which have no vanilla counterpart but Cicero's. The seated, lying, kneeling, counter and mining idles are furniture idles (parent `ActivateRootChar`→`Chair`, conditions `IsFurnitureAnimType`/`GetSitting`), so they play only for an actor in furniture, never through `SetVehicle` + `PlayIdle`; vanilla's carriage scripts pair `SetVehicle` with the cart idles alone.
+
+### Vanilla markers for NPC animation files (2026-10-10, PENDING in-game confirmation)
+<a id="vanilla-markers-for-npc-animation-files"></a>
+
+**Code:** `tes5_import/record_types/npc_markers_morrowind.py`, `packages/converter._pick_wander`, the `NAME.Final`/`XLKR` hooks in `record_types/world.py`.
+
+What replaces the converted clips above: the engine's own furniture and idle markers, the way vanilla seats a named NPC. A census of Skyrim.esm's package instances: `SitTarget` aims at furniture (276 instances, among them `WallLeanMarker`, `SitCrossLeggedMarker`, `KneelingMarker`, `InvisibleChairMarkerF`, `Wounded0xFloorMarker`, beds), `UseIdleMarker` at idle markers (60: `PrayerIdleMarker`, `SweepIdleMarker`, `BookReadingIdleMarker`, `TavernDrinkingMarker`, `PlayLuteMarker`), and both also aim at the actor's linked reference (PTDA type 3; 14 and 7 instances). So each own placement of an NPC whose file has a match gets that marker as a new reference (FormID derived from the placement), the placement links to it (`XLKR`, no keyword), and the NPC's wander package, when every NPC sharing it maps to the same kind, becomes `SitTarget`/`UseIdleMarker` on the linked reference. Three idle markers vanilla lacks are minted from vanilla idles: dancing (`IdleCiceroDance1-3`), coughing (`IdleUncontrollableCough`), ground pickup (`IdlePickup_Ground`).
+
+**Placement.** Every furniture model used puts the actor's root at the reference's origin facing its heading (`BSFurnitureMarker` offset 0, heading 0; the invisible chair's node sits 34 up at the seat, the root stays at the floor). Per file, the table carries the turn that lines up the body axis (mean knee minus head) and the offset that puts the vanilla clip's mean pelvis on the source clip's, measured from the clips (`hkxcmd EXPORTKF` of the LE clips beside the source kf). Chairs: 3-4 degrees, pelvis 9-14 units higher; `SitzenBein` 78 degrees; standing poses (miner, smith) take 0 degrees, their axis being too short to measure.
+
+**The markers join the cell AFTER the navmesh pass** (`flush_npc_markers`), so no navmesh input or cache key changes.
+
+Left on Skyrim's default idles: `AM_Alchemist` (the vanilla alchemy idles need the visible workbench), `Camonna` (standing fidgets), `Hechtrolle` (vanilla's roll is a sneak movement clip, not an idle), and files with no kf (`Klaps01`, `Leigen02a`, `Sitzen`).
+
 ## Animated-object behaviour graphs (`asset_convert/havok/hkx_animobject.py`)
 <a id="animated-object-behaviour-graphs"></a>
 

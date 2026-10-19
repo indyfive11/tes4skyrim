@@ -509,11 +509,8 @@ class ChainedMasterIndex:
         yield owner, own_id
 
     def _to_child(self, idx, formid: int) -> int:
-        """Translate one of `idx`'s own-space ids back into the child's space."""
-        for slot, cand in self._by_slot.items():
-            if cand is idx:
-                return (slot << 24) | (formid & 0x00FFFFFF)
-        return formid
+        """An id in `idx`'s space, restated in the child's as its records are."""
+        return _shift_formid(formid, self._index_maps.get(id(idx), {}))
 
     def __contains__(self, formid: int) -> bool:
         idx, own = self._route(formid)
@@ -599,27 +596,11 @@ class ChainedMasterIndex:
         return tuple(out)
 
     def land(self, cell_formid: int) -> int:
-        """The LAND inside a cell, answered by the file that WINS the cell.
-
-        The answer is restated in the slot of whichever master supplied it: a
-        LAND that Tamriel.esp defines carries Tamriel.esp's index byte, while
-        one it merely inherits from Oblivion.esm keeps Oblivion's. Translating
-        through the answering index unconditionally moved every inherited LAND
-        into the overriding master's slot, where no such record exists.
-        """
+        """The LAND in a cell, from the file that wins it, in the child's ids."""
         idx, own = self._route(cell_formid)
         if idx is None:
             return 0
-        fid = idx.land(own)
-        if not fid:
-            return 0
-        # `fid` is in `idx`'s own converted space; its index byte names the
-        # file that DEFINES the land, which may be one of idx's own masters.
-        if (fid >> 24) == idx.own_index:
-            return self._to_child(idx, fid)
-        # Defined further down the chain: the byte already matches the child's
-        # numbering when that master occupies the same slot in both lists.
-        return fid
+        return self._to_child(idx, idx.land(own))
 
     def persistent_cell(self, wrld_formid: int) -> int:
         """A worldspace's persistent CELL from the newest file holding it, in the child's space.
@@ -636,19 +617,14 @@ class ChainedMasterIndex:
         return 0
 
     def navms(self, cell_formid: int) -> list:
-        """The navmeshes inside a cell, answered by the file that WINS it.
-
-        Each id is restated in the slot of whichever master defines it, as
-        `land` does.
+        """The cell's navmeshes, from the file that wins it, in the child's ids.
 
         See: docs/commentary/tes5_import_navmesh.md#master-owned-cells
         """
         idx, own = self._route(cell_formid)
         if idx is None:
             return []
-        return [self._to_child(idx, fid) if (fid >> 24) == idx.own_index
-                else fid
-                for fid in idx.navms(own)]
+        return [self._to_child(idx, fid) for fid in idx.navms(own)]
 
     def find_all_by_edid(self, signature: bytes, edid: str) -> list:
         """Each master's own record with this signature + EditorID, in load order."""

@@ -16,6 +16,7 @@
 #include "ids.h"
 #include "json.h"
 #include "log.h"
+#include "ref_handle.h"
 
 namespace tesruntime {
 
@@ -63,7 +64,6 @@ using SetPositionFn = void (*)(void* vm, std::uint32_t stack, void* self,
                                float x, float y, float z);
 using ImpulseFn = void (*)(void* vm, std::uint32_t stack, void* self,
                            float x, float y, float z, float magnitude);
-using LookupByHandleFn = void* (*)(std::uint32_t* handle, void** out);
 
 struct Part {
     std::string node;
@@ -88,7 +88,6 @@ struct Engine {
     PlaceAtMeFn  placeAtMe = nullptr;
     SetPositionFn setPosition = nullptr;
     ImpulseFn    applyImpulse = nullptr;
-    LookupByHandleFn lookupByHandle = nullptr;
 };
 
 Engine g_engine;
@@ -260,9 +259,7 @@ bool HitOrigin(void* hitData, void* actor, float* pos) {
         return true;
     }
     // A melee HitData carries no impact point: measure from the attacker.
-    std::uint32_t handle = At<std::uint32_t>(hitData, kHitAggressor);
-    void* attacker = nullptr;
-    if (g_engine.lookupByHandle) g_engine.lookupByHandle(&handle, &attacker);
+    void* attacker = RefFromHandle(At<std::uint32_t>(hitData, kHitAggressor));
     if (!attacker) return RefPosition(actor, pos);
     const bool ok = RefPosition(attacker, pos);
     ReleaseRef(attacker);
@@ -358,8 +355,6 @@ bool InstallSevering() {
         Resolve("ObjectReference.SetPosition", ids::kSetPosition, nullptr));
     g_engine.applyImpulse = reinterpret_cast<ImpulseFn>(
         Resolve("ObjectReference.ApplyHavokImpulse", ids::kApplyHavokImpulse, nullptr));
-    g_engine.lookupByHandle = reinterpret_cast<LookupByHandleFn>(
-        Resolve("LookupReferenceByHandle", ids::kLookupByHandle, nullptr));
     const int a = PatchAllCalls(applyHit, reinterpret_cast<void*>(&ApplyHitHook), "ApplyHit");
     const int b = PatchAllCalls(reapply, reinterpret_cast<void*>(&ReapplyHook), "ReapplyDismember");
     return a > 0 && b > 0;

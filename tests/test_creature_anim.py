@@ -16,6 +16,7 @@ import pytest
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
 
+from asset_convert.havok import hkx_behavior
 from asset_convert.havok.kf_decode import (decode_kf, eval_bspline,
                                      split_root_motion, knots,
                                      basis_weights)
@@ -279,6 +280,29 @@ class TestPerPluginProjectNamespace:
             assert obl[key] != fnv[key], key
         assert fnv['project_txt'] == 'falloutnvoblivion_scampproject.txt'
 
+    def test_project_files_are_named_by_the_layouts_last_segment(
+            self, tmp_path, monkeypatch):
+        """The layout's backslash paths contribute a file name, not folders."""
+        import types
+        from asset_convert.game_paths import set_namespace
+        from asset_convert.havok import hkx_behavior
+        set_namespace('tes4')
+        written = []
+        monkeypatch.setattr(hkx_behavior, '_write_and_compile',
+                            lambda xml, path: written.append(path))
+        for build in ('build_behavior_xml', 'build_character_xml',
+                      'build_project_xml'):
+            monkeypatch.setattr(hkx_behavior, build, lambda *a, **k: '')
+        clip_set = types.SimpleNamespace(clips={}, clip_meta=[],
+                                         cast_release_offset=None)
+        hkx_behavior._write_project_files(
+            hkx_behavior.project_layout('rat', 'oblivion'), str(tmp_path),
+            clip_set, [], {}, None, [], [])
+        assert written[1:] == [
+            os.path.join(str(tmp_path), 'characters',
+                         'tes4oblivion_ratcharacter.hkx'),
+            os.path.join(str(tmp_path), 'tes4oblivion_ratproject.hkx')]
+
     def test_namespace_is_the_plugin_stem(self):
         from asset_convert.havok.creature_pipeline import plugin_namespace
         assert plugin_namespace('Oblivion.esm') == 'oblivion'
@@ -315,6 +339,33 @@ class TestPerPluginProjectNamespace:
         idx = anim_file_index(m)
         n_files = len(dict.fromkeys(c['anim'] for c in m['clips']))
         assert all(0 <= i < n_files for i in idx.values())
+
+
+def _stop_with_path(skeleton_nif, _out_hkx):
+    """Stand in for `generate_skeleton_hkx`: stop, naming the nif it was given."""
+    raise LookupError(skeleton_nif)
+
+
+class TestProjectFilePaths:
+    """Where a creature project reads and writes on the build filesystem."""
+
+    def test_a_capitalised_skeleton_is_found(self, tmp_path, monkeypatch):
+        """A loose mod's `Skeleton.NIF` is the skeleton the project is built from."""
+        creature = tmp_path / 'Rat'
+        creature.mkdir()
+        (creature / 'Skeleton.NIF').write_bytes(b'')
+        monkeypatch.setattr(hkx_behavior, 'classify_clips', lambda folder: {})
+        monkeypatch.setattr(hkx_behavior, 'generate_skeleton_hkx', _stop_with_path)
+        with pytest.raises(LookupError) as seen:
+            hkx_behavior.generate_creature_project(
+                str(creature), 'Rat', str(tmp_path / 'out'))
+        assert os.path.isfile(seen.value.args[0])
+        assert isinstance(seen.value.args[0], str)
+
+    def test_a_folder_without_a_skeleton_names_the_usual_path(self, tmp_path):
+        """With no skeleton in any case, the path handed on is `skeleton.nif`."""
+        assert hkx_behavior._skeleton_nif(str(tmp_path)) == os.path.join(
+            str(tmp_path), 'skeleton.nif')
 
 
 def _manifest(ns, folder, n_clips=2):

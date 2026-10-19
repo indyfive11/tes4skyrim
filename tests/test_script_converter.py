@@ -1642,6 +1642,75 @@ class TestPlaceAtMeBindsABaseForm:
         assert conv.get_property_refs()['NQRatte02'] == ptype
 
 
+class TestScroTableAsksWhetherAScriptClassBinds:
+    """The SCRO table types a scripted record by its script class only where that class binds.
+
+    See: docs/commentary/script_convert.md#script-type-property-binding
+    """
+
+    @staticmethod
+    def _conv(rtype, placed=0):
+        """A converter whose SCRO table named one scripted record of `rtype`, placed `placed` times."""
+        from script_convert.scro_refs import add_scro_ref
+        x = CrossRefGraph()
+        x.formid_to_edid['0001FEF0'] = 'TheThing'
+        x.edid_to_formid['thething'] = '0001FEF0'
+        x.record_type['0001FEF0'] = rtype
+        x.record_scri['0001FEF0'] = '000AAAAA'
+        x.script_formid_to_edid['000AAAAA'] = 'TheThingScript'
+        x.script_formid_to_type['000AAAAA'] = 1
+        for n in range(placed):
+            x.record_base['0002AAA%d' % n] = '0001FEF0'
+            x.record_type['0002AAA%d' % n] = 'REFR'
+        conv = ScriptConverter(x)
+        add_scro_ref(conv, '0001FEF0', x)
+        return conv
+
+    @pytest.mark.parametrize('rtype, ptype', [
+        ('KEYM', 'Key'), ('BOOK', 'Book'), ('ARMO', 'Armor'), ('CLOT', 'Armor'), ('WEAP', 'Weapon'),
+        ('INGR', 'Ingredient'), ('MISC', 'MiscObject'), ('ALCH', 'Potion'), ('AMMO', 'Ammo'),
+        ('SLGM', 'SoulGem'), ('SGST', 'Scroll'), ('APPA', 'MiscObject')])
+    def test_a_scripted_item_keeps_its_item_type(self, rtype, ptype):
+        """An inventory base is never declared with its script class."""
+        assert self._conv(rtype).get_property_refs()['TheThing'] == ptype
+
+    @pytest.mark.parametrize('placed', [1, 3])
+    def test_an_item_placed_in_the_world_is_still_a_base(self, placed):
+        """A lone world placement does not turn an item property into that reference."""
+        assert self._conv('KEYM', placed).get_property_refs()['TheThing'] == 'Key'
+
+    @pytest.mark.parametrize('rtype', ['NPC_', 'CREA', 'CONT', 'DOOR', 'FLOR', 'FURN', 'STAT'])
+    def test_a_reference_type_keeps_the_script_class(self, rtype):
+        """Where the record's own type is a reference type the script class binds."""
+        assert self._conv(rtype).get_property_refs()['TheThing'] == 'TES4_TheThingScript'
+
+    @pytest.mark.parametrize('sig', ['REFR', 'ACHR', 'ACRE'])
+    def test_a_placed_reference_keeps_its_bases_script_class(self, sig):
+        """The commonest SCRO entry: a reference whose base carries the script."""
+        from script_convert.scro_refs import add_scro_ref
+        conv = self._conv('ACTI' if sig == 'REFR' else 'NPC_', placed=2)
+        conv.xref.record_type['0002AAA0'] = sig
+        conv.xref.formid_to_edid['0002AAA0'] = 'TheThingRef'
+        conv.xref.edid_to_formid['thethingref'] = '0002AAA0'
+        add_scro_ref(conv, '0002AAA0', conv.xref)
+        assert conv.get_property_refs()['TheThingRef'] == 'TES4_TheThingScript'
+
+    @pytest.mark.parametrize('rtype, placed, ptype', [
+        ('ACTI', 1, 'TES4_TheThingScript'), ('LIGH', 1, 'TES4_TheThingScript'),
+        ('ACTI', 0, 'Activator'), ('ACTI', 2, 'Activator'), ('LIGH', 0, 'Light'), ('LIGH', 2, 'Light')])
+    def test_a_world_object_keeps_the_script_class_only_when_placed_once(self, rtype, placed, ptype):
+        """The measured exception: one placed reference carries the script instance."""
+        assert self._conv(rtype, placed).get_property_refs()['TheThing'] == ptype
+
+    def test_a_later_stage_table_does_not_undo_the_item_type(self):
+        """Each quest stage reads its own SCRO list after earlier stages' bodies."""
+        from script_convert.scro_refs import add_scro_ref
+        conv = self._conv('KEYM')
+        conv.convert_fragment('player.AddItem TheThing 1', 'Quest')
+        add_scro_ref(conv, '0001FEF0', conv.xref)
+        assert conv.get_property_refs()['TheThing'] == 'Key'
+
+
 # ===========================================================================
 # Stale source names recovered from the SCRO table
 # ===========================================================================
@@ -2951,6 +3020,111 @@ class TestSetOwnership:
         conv = self._conv('AurelinwaeRef', 'ACHR')
         out = conv_line(conv, 'AddonsRef.SetOwnership AurelinwaeRef', 'Quest')
         assert 'SetActorOwner(AurelinwaeRef.GetActorBase())' in out
+
+
+class TestOwnerIsABase:
+    """SetOwnership and IsOwner name an actor BASE, a placed actor or a faction."""
+
+    @staticmethod
+    def _conv(edid, sig):
+        """A converter whose graph holds one record, `edid`, of type `sig`."""
+        x = CrossRefGraph()
+        x.edid_to_formid[edid.lower()] = '01001234'
+        x.formid_to_edid['01001234'] = edid
+        x.record_type['01001234'] = sig
+        return ScriptConverter(x)
+
+    @pytest.mark.parametrize('sig', ['NPC_', 'CREA'])
+    def test_a_base_owner_is_passed_as_it_is(self, sig):
+        """DLCFrostcrag's quest says `SetOwnership Aurelinwae`, an NPC_ base."""
+        conv = self._conv('Aurelinwae', sig)
+        out = conv_line(conv, 'AddonsRef.SetOwnership Aurelinwae', 'Quest')
+        assert out.strip() == 'AddonsRef.SetActorOwner(Aurelinwae)'
+        assert conv.sc.property_refs['Aurelinwae'] == 'ActorBase'
+
+    def test_a_placed_actor_owner_is_read_for_its_base(self):
+        """A reference is not the owner Skyrim wants; its base is."""
+        conv = self._conv('AurelinwaeRef', 'ACHR')
+        out = conv_line(conv, 'AddonsRef.SetOwnership AurelinwaeRef', 'Quest')
+        assert out.strip() == 'AddonsRef.SetActorOwner(AurelinwaeRef.GetActorBase())'
+        assert conv.sc.property_refs.get('AurelinwaeRef') != 'ActorBase'
+
+    def test_is_owner_compares_a_base_as_it_is(self):
+        """The read side is split the same way as the write side."""
+        conv = self._conv('Aurelinwae', 'NPC_')
+        out = conv_expr(conv, 'AddonsRef.IsOwner Aurelinwae', 'Quest')
+        assert out == '(AddonsRef.GetActorOwner() == Aurelinwae)'
+        assert conv.sc.property_refs['Aurelinwae'] == 'ActorBase'
+
+    def test_is_owner_reads_a_placed_actor_for_its_base(self):
+        """Unchanged: a reference is compared through its base."""
+        conv = self._conv('AurelinwaeRef', 'ACHR')
+        out = conv_expr(conv, 'AddonsRef.IsOwner AurelinwaeRef', 'Quest')
+        assert out == '(AddonsRef.GetActorOwner() == AurelinwaeRef.GetActorBase())'
+
+    def test_a_faction_owner_is_untouched(self):
+        """A faction never reaches the base test."""
+        conv = self._conv('ThievesGuild', 'FACT')
+        out = conv_line(conv, 'AddonsRef.SetOwnership ThievesGuild', 'Quest')
+        assert out.strip() == 'AddonsRef.SetFactionOwner(ThievesGuild)'
+        assert conv.sc.property_refs.get('ThievesGuild') != 'ActorBase'
+
+    @pytest.mark.parametrize('operand', ['aurelinwae', '"Aurelinwae"'])
+    def test_the_type_goes_to_the_property_however_the_owner_is_spelled(self, operand):
+        """Scripts spell an EditorID in any case, and some quote it."""
+        conv = self._conv('Aurelinwae', 'NPC_')
+        out = conv_line(conv, f'AddonsRef.SetOwnership {operand}', 'Quest')
+        assert out.strip() == 'AddonsRef.SetActorOwner(Aurelinwae)'
+        assert conv.sc.property_refs.get('Aurelinwae') == 'ActorBase'
+
+    def test_the_record_is_found_by_the_name_the_script_wrote(self):
+        """A property cannot start with a digit, so its name is not the EditorID."""
+        conv = self._conv('1stOwner', 'NPC_')
+        out = conv_line(conv, 'AddonsRef.SetOwnership 1stOwner', 'Quest')
+        assert out.strip() == 'AddonsRef.SetActorOwner(d1stOwner)'
+        assert conv.sc.property_refs.get('d1stOwner') == 'ActorBase'
+
+    @pytest.mark.parametrize('operand', ['player', 'Player', 'PlayerRef'])
+    def test_the_player_is_never_retyped(self, operand):
+        """`Player` is an NPC_ record, and every other command passes that name as a reference."""
+        conv = self._conv('Player', 'NPC_')
+        out = conv.convert_standalone(
+            'T', f'scn T\n\nbegin onactivate\n\tsetownership {operand}\n\tmoveto player\nend\n',
+            'ObjectReference', 'T')
+        assert 'ActorBase Property' not in out
+        assert 'SetActorOwner(Player)' not in out and 'SetActorOwner(PlayerRef)' not in out
+
+    def test_an_unresolved_owner_keeps_the_old_read(self):
+        """A local `ref`, or a name no record carries, is read as a reference."""
+        conv = self._conv('Aurelinwae', 'NPC_')
+        out = conv_line(conv, 'AddonsRef.SetOwnership myOwner', 'Quest')
+        assert out.strip() == 'AddonsRef.SetActorOwner(myOwner.GetActorBase())'
+        assert 'ActorBase' not in conv.sc.property_refs.values()
+
+    def test_a_record_that_is_no_actor_keeps_the_old_read(self):
+        """Only NPC_ and CREA are actor bases."""
+        conv = self._conv('SomeDoor', 'DOOR')
+        out = conv_line(conv, 'AddonsRef.SetOwnership SomeDoor', 'Quest')
+        assert out.strip() == 'AddonsRef.SetActorOwner(SomeDoor.GetActorBase())'
+        assert conv.sc.property_refs.get('SomeDoor') != 'ActorBase'
+
+    def test_is_owner_compares_a_faction_as_before(self):
+        """The only form the game files use (15 in Oblivion.esm)."""
+        conv = self._conv('ThievesGuild', 'FACT')
+        out = conv_expr(conv, 'AddonsRef.IsOwner ThievesGuild', 'Quest')
+        assert out == '(AddonsRef.GetFactionOwner() == ThievesGuild)'
+        assert conv.sc.property_refs.get('ThievesGuild') != 'ActorBase'
+
+    @pytest.mark.parametrize('body', ['setessential Aurelinwae 0\n\tsetownership Aurelinwae',
+                                      'setownership Aurelinwae\n\tsetessential Aurelinwae 0'])
+    def test_an_owner_that_is_also_set_essential_is_one_actorbase(self, body):
+        """SetEssential types the name `ActorBase`; reading its base then did not compile."""
+        conv = self._conv('Aurelinwae', 'NPC_')
+        out = conv.convert_standalone('T', f'scn T\n\nbegin onactivate\n\t{body}\nend\n',
+                                      'ObjectReference', 'T')
+        assert 'ActorBase Property Aurelinwae Auto' in out
+        assert 'SetActorOwner(Aurelinwae)' in out and 'Aurelinwae.SetEssential(false)' in out
+        assert 'Aurelinwae.GetActorBase()' not in out
 
 
 class TestInfoFragmentVmadLayout:

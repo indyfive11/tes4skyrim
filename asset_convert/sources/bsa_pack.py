@@ -286,8 +286,8 @@ _BSA_SPECS: 'list[tuple[list[str], str, bool]]' = [
     (['textures'], 'Textures', False),
 ]
 
-#: Loose-only: SKSE sees no archived file. See: docs/reference/tes_runtime_fragments.md#never-packed
-LOOSE_ONLY_DIRS: frozenset = frozenset(['skse'])
+#: Loose-only: SKSE sees no archived file, nor does BinkOpen. See: docs/reference/tes_runtime_fragments.md#never-packed
+LOOSE_ONLY_DIRS: frozenset = frozenset(['skse', 'video'])
 
 # Directory names already claimed by an explicit BSA spec, plus 'meshes' (which
 # is added to the main spec by hand).  Everything else in the plugin output dir
