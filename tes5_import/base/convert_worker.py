@@ -19,8 +19,14 @@ def init_worker(formid_offset: int, cell_loc: dict, grid_loc: dict,
                 world_loc: dict, world_names: dict, origin_shift: dict,
                 mesh_bounds_path: str, injected_formids: dict = None,
                 door_links: dict = None, teleport_grid=None,
-                door_placement: dict = None, tes3_locks: tuple = None):
-    """Pool initializer: replay parent-process module state into this child."""
+                door_placement: dict = None, tes3_locks: tuple = None,
+                land_colours: dict = None):
+    """Pool initializer: replay parent-process module state into this child.
+
+    The land texture colours too: a worker started by forkserver or spawn
+    inherits no module state, and without them no dropped layer folds.
+    See: docs/commentary/asset_convert_terrain.md#land-layer-fold
+    """
     # Join the parent's containment job so this worker cannot outlive a parent
     # that dies without cleanup (crash / external kill). No-op off Windows.
     from core.process_job import join_pool_job
@@ -57,6 +63,16 @@ def init_worker(formid_offset: int, cell_loc: dict, grid_loc: dict,
         from .mesh_bounds import load_mesh_bounds
         load_mesh_bounds(mesh_bounds_path, quiet=True)
 
+    from ..record_types.land_colours import set_land_colours
+    set_land_colours(land_colours)
+
+
+def _require_land_colours(chunk: list) -> None:
+    """Fail the chunk holding a LAND in a process never given the land colours."""
+    from ..record_types.land_colours import colours_loaded
+    if any(kind == 'LAND' for kind, _rec in chunk) and not colours_loaded():
+        raise RuntimeError('LAND chunk in a worker that was never given the land texture colours')
+
 
 def convert_chunk(chunk: list) -> list:
     """Convert a chunk of (kind, rec) items.
@@ -68,6 +84,7 @@ def convert_chunk(chunk: list) -> list:
     """
     from ..record_types.world import (convert_ACHR, convert_CELL, convert_LAND,
                                      convert_REFR)
+    _require_land_colours(chunk)
     dispatch = {
         'CELL': convert_CELL,
         'REFR': convert_REFR,

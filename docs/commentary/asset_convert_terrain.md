@@ -2152,6 +2152,12 @@ six textures). Vanilla Skyrim stays within the shader's six slots in all but
   the plugin's and its masters' `textures\landscape`). When the base is nearer
   it is left to the base; when a colour is unknown the layer is dropped as
   before. A quadrant within the cap is written as before, byte for byte.
+- **The colours reach the LAND workers through the pool's initializer.**
+  LAND converts in a process pool, and a worker started by forkserver (Python
+  3.14's default) or spawn inherits no module state: the first real import
+  folded nothing (3,340 LAND changed where the rule gives 10,039). A worker
+  that was never handed the index fails its whole chunk, so the import stops
+  instead of writing unfolded land; an empty index, handed over, is allowed.
 
 Measured over Tamriel (14,686 LAND, every vertex two quadrants share, blend =
 base then the kept layers in order; colour step = RGB distance of the blended

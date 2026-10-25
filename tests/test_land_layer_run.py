@@ -436,3 +436,56 @@ def test_the_colour_index_reads_each_diffuse(tmp_path):
         assert land_colours.land_colour(remap_formid(0x1235)) is None
     finally:
         land_colours._COLOURS.clear()
+
+
+def _fold_rec():
+    """A quadrant whose sixth layer folds into the red one when colours are known."""
+    return _six([('ALPHA', 0, 0x3001, {p: 1.0 for p in INNER[120:150]}),
+                 ('ALPHA', 0, 0x3000, {p: 0.6 for p in INNER[150:152]})])
+
+
+_FOLD_COLOURS = dict(t1000=(0, 0, 255), t2000=(200, 40, 40), t2001=(40, 200, 40), t2002=(40, 40, 200),
+                     t2003=(120, 120, 120), t3000=(190, 50, 50), t3001=(10, 10, 10))
+
+
+def _worker_args(table):
+    """init_worker's arguments with empty state and the colour `table`."""
+    return (0, {}, {}, {}, {}, {}, '', {}, {}, set(), {}, None, table)
+
+
+def test_a_pool_worker_folds_as_the_parent_does(colours):
+    """Through a forkserver pool, as the import runs LAND: the worker gets the colours.
+
+    Python 3.14 starts workers by forkserver; module state is not inherited, so
+    a worker given no table folded nothing (3,340 LAND changed, not 10,039).
+    """
+    import multiprocessing
+    from concurrent.futures import ProcessPoolExecutor
+    from tes5_import.base import convert_worker
+    from tes5_import.record_types import land_colours
+    colours(**_FOLD_COLOURS)
+    rec = _fold_rec()
+    parent = build_land_layers(rec)
+    with ProcessPoolExecutor(max_workers=1, mp_context=multiprocessing.get_context('forkserver'),
+                             initializer=convert_worker.init_worker,
+                             initargs=_worker_args(land_colours.colour_table())) as ex:
+        [(_key, ok, payload)] = next(ex.map(convert_worker.convert_chunk, [[('LAND', rec)]]))
+    assert ok and parent in payload
+    folded = _atxt(rec)[remap_formid(0x2000)]
+    assert folded[INNER[150]] == pytest.approx(0.6)
+
+
+def test_a_land_chunk_in_a_worker_without_the_colours_fails_whole():
+    """Never a silent no-fold: the chunk raises, and the pool with it."""
+    from tes5_import.base import convert_worker
+    from tes5_import.record_types import land_colours
+    keep = dict(land_colours._STATE)
+    try:
+        land_colours.set_land_colours(None)
+        with pytest.raises(RuntimeError, match='never given the land texture colours'):
+            convert_worker.convert_chunk([('LAND', _fold_rec())])
+        land_colours.set_land_colours({})
+        assert convert_worker.convert_chunk([('LAND', _fold_rec())])[0][1]
+    finally:
+        land_colours._STATE.update(keep)
+        land_colours._COLOURS.clear()

@@ -1217,6 +1217,7 @@ def _precompute_land(by_type: dict, export_dir: str) -> dict:
     from .record_types import items as items_mod
     from .record_types import world as world_mod
     from .record_types import world_morrowind as world_mw
+    from .record_types import land_colours
 
     initargs = (
         get_formid_index_offset(),
@@ -1231,6 +1232,7 @@ def _precompute_land(by_type: dict, export_dir: str) -> dict:
         set(world_mod._WORLD_GRID_CELLS),
         dict(world_mod._DOOR_PLACEMENT),
         world_mw.tes3_lock_state(),
+        land_colours.colour_table(),
     )
 
     chunks = [[('LAND', rec) for rec in lands[i:i + _LAND_CHUNK]]

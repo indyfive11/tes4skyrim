@@ -20,6 +20,9 @@ _SITE = 'land.colour'
 #: Output LTEX FormID -> (r, g, b) mean of its diffuse; built by `load_land_colours`.
 _COLOURS = {}
 
+#: Whether this process was given the index (loaded, or handed over by a pool initializer).
+_STATE = {'loaded': False}
+
 
 def _mean_rgb(path):
     """(r, g, b) mean of the image at `path`, or None when it cannot be read."""
@@ -69,8 +72,26 @@ def load_land_colours(by_type: dict, master_export, roots) -> int:
             missing += 1
             continue
         _COLOURS[fid] = rgb
+    _STATE['loaded'] = True
     print(f'  Land texture colours: {len(_COLOURS)} read, {missing} without a readable diffuse')
     return len(_COLOURS)
+
+
+def colour_table() -> dict:
+    """A copy of the colour index, for a pool worker's initializer."""
+    return dict(_COLOURS)
+
+
+def set_land_colours(table: dict) -> None:
+    """Replace the colour index with `table` (a pool worker's copy of the parent's)."""
+    _COLOURS.clear()
+    _COLOURS.update(table or {})
+    _STATE['loaded'] = table is not None
+
+
+def colours_loaded() -> bool:
+    """True once this process holds the index, even an empty one."""
+    return _STATE['loaded']
 
 
 def land_colour(fid: int):
