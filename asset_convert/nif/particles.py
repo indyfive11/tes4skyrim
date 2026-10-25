@@ -19,10 +19,12 @@ from asset_convert.nif.shaders import (apply_fx_soft_effect,
                                        attach_tex_transform_ctrls,
                                        base_texture_path,
                                        collect_tex_transform_ctrls,
-                                       find_flip_controller)
+                                       find_flip_controller,
+                                       resolve_source_texture)
 from asset_convert.nif.tex_paths import (bs_pp_texture_slots, path_bytes,
                                          path_text, rewrite_tex_path)
 from asset_convert.nif.uv_transform import apply_static_uv, base_map
+from asset_convert.nif.water_fx import plan_water_spray
 
 
 #: Vanilla modifier `order` bands. See: docs/commentary/asset_convert_nif.md#nif-particle-system-conversion
@@ -378,12 +380,13 @@ def _own_alpha_property(alpha_prop):
     return own
 
 
-def convert_particle_system(node, fix_textures):
+def convert_particle_system(node, fix_textures, stats=None):
     """Convert an Oblivion NiParticleSystem's properties for Skyrim.
 
     Oblivion stores its textures in NiTexturingProperty; Skyrim particle
     systems use a BSEffectShaderProperty in bs_properties. All modifiers are
-    kept, rewritten into the Skyrim vocabulary.
+    kept, rewritten into the Skyrim vocabulary; a water spray takes the
+    waterfall look (`stats` carries its texture job).
     See: docs/commentary/asset_convert_nif.md#nif-particle-system-conversion
     """
     psys_curve_hue = _color_curve_carries_hue(node)
@@ -409,6 +412,11 @@ def convert_particle_system(node, fix_textures):
     alpha_prop = _own_alpha_property(alpha_prop)
     node.bs_properties[1] = alpha_prop
     apply_fx_soft_effect(shader, alpha_prop, psys_emissive)
+    if flip_ctrl is None and stats is not None:
+        plan_water_spray(shader, alpha_prop, path_text(diffuse_path),
+                         lambda rel: resolve_source_texture(
+                             rel, stats.get('_src_path', ''), stats.get('_tex_fallback', ())),
+                         stats)
 
 
 def wrap_in_billboard(child, bb_mode):

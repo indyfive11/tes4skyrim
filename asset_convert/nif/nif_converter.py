@@ -488,7 +488,7 @@ def walk_node(parent, node, fix_textures, stats):
         return None
 
     if isinstance(node, NifFormat.NiParticleSystem):
-        convert_particle_system(node, fix_textures)
+        convert_particle_system(node, fix_textures, stats)
         node.flags = NIF_FLAGS
         return node
 
@@ -1374,6 +1374,24 @@ def _build_height_maps(stats, dst_path):
             parallax.build_height_map(job['src'], out)
 
 
+def _build_water_sprays(stats, dst_path):
+    """Write the spray textures plan_water_spray planned, each once.
+
+    See: docs/commentary/asset_convert_shader.md#water-spray-alpha
+    """
+    jobs = stats.pop('_water_spray_textures', {})
+    if not jobs:
+        return
+    out_root = _output_root(dst_path)[0]
+    if out_root is None:
+        return
+    from asset_convert.texture import water_spray
+    for job in jobs.values():
+        out = _texture_out_path(out_root, job['out_rel'])
+        if not os.path.isfile(out):
+            water_spray.build_spray_texture(job['src'], out)
+
+
 def _stage_animobject_graph(data, seq_names, meshes_root, model_rel, result):
     """Plan the pose holds, compile the graph that names them, then apply them.
 
@@ -1474,6 +1492,7 @@ def _run_post_passes(data, stats, result, src_path, dst_path, textures_only):
             convert_flame_nodes(root, src_path, _convert_nif, stats)
     _build_flip_atlases(stats, dst_path)
     _build_height_maps(stats, dst_path)
+    _build_water_sprays(stats, dst_path)
     if is_fallout_source():
         stats['addon_nodes'] = remap_addon_nodes(data)
     if not textures_only:

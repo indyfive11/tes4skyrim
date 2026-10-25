@@ -306,6 +306,74 @@ visibly dimmer, which the project owner spotted in game. 1.5 sits inside the
 vanilla cluster and is what the previous build shipped, so it is also the
 no-regression choice.
 
+## Flowing water takes Skyrim's waterfall shading
+<a id="flowing-water-effects"></a>
+
+**Code:** `asset_convert/nif/water_fx.py`, called from `process_geometry`
+(`geometry_shader.py`) and `convert_particle_system` (`particles.py`)
+
+Oblivion draws its waterfalls, fountains and spray additively (SRC_ALPHA,
+ONE) over low-alpha textures: LandscapeWater.dds is mid-grey at about 28 %
+alpha and the spray textures carry almost none. Converted that way (own emit,
+lighting influence 0, the soft fade at 100 units) they nearly vanish on a
+bright scene, and more so under an ENB. Skyrim's own waterfalls
+(`fxwaterfallbodytall.nif`, `fxwaterfallbodyslope.nif`) blend normally (0x10ED),
+take the scene light (effect lighting, external emittance, influence 191),
+map a white-water palette onto the texture's brightness and fade over 5 to 35
+units.
+
+So an effect shader whose texture FILE name contains `water` takes that setup.
+It is the one shader value here keyed on a texture name, not on an authored
+indicator: nothing in the files tells a water sheet from a fire or magic sheet
+(both are additive and emissive), and the artists named every water texture
+so. Which shader a shape gets is still decided by the authored indicators
+above; this only changes an effect shader once chosen.
+
+- **On a particle system: spray.** Its own texture with the alpha rebuilt from
+  its shape (next section), no palette, alpha test threshold 0, soft 35.
+- **On a sheet, `foam` in the name: foam.** `FXWhiteWater01.dds` with the
+  `GradWhiteWaterMedSoft` palette, no falloff, soft 5.
+- **On any other sheet: fluid.** `FXfluidTile01.dds` with the same palette,
+  view falloff (0.42, 0.17, 1, 0), soft 10, alpha tested at 128.
+
+UV transform, clamp mode and the scroll controllers are kept. A sheet gets its
+own NiAlphaProperty: Oblivion shares one across shapes, and the FX pass reads
+that blend to choose the shader, so changing the shared one in place turned
+the next sheet into a lit shape.
+
+Counts (the converted meshes of Oblivion.esm, Knights.esp, DLCFrostcrag.esp
+and Frostcrag Reborn, 11,468 read): 221 effect textures, 9 of them water
+(LandscapeWater, -Foam, -Particles01, -Particles02, PalaceWater01, -02,
+PalaceWaterSpray01, ManiWaterFoam01, WaterSplash), in 32 meshes and 90
+shaders. In the source all four spray textures sit on particle systems and the
+other five on strips. Re-converted from source, the 12 meshes a hand-built
+test fix put in game (the landscape waterfalls 01-03 and vertical pieces, the
+Frostcrag waterfall, the palace fountain, Mania's surface and statue, the
+Dementia sewer, the splash, the hot tub) carry exactly that fix's shader and
+blend values; beyond the water shaders the only change in the 32 is 29 new
+blend blocks and the 29 sheets that point at them. Seen in game: those 12.
+Not seen: the other 20 (palace courtyard water, the SE10 fountains and
+aqueducts, the horizontal and middle waterfall pieces, and the two Knights
+barriers, `ndbarrier.nif` and `ndbarriersmallcrypt.nif`, whose one water-foam
+layer becomes foam).
+
+### <a id="water-spray-alpha"></a>A spray's alpha is rebuilt from its shape
+
+**Code:** `asset_convert/texture/water_spray.py`, planned by
+`plan_water_spray`, written by `_build_water_sprays` (`nif_converter.py`)
+
+An additive spray texture keeps its shape in the brightness over a flat
+background (LandscapeWaterParticles01: a white blob on grey 222), with an
+alpha near zero, or opaque everywhere (PalaceWaterSpray01: white mist on
+black). Under a normal blend the first draws nothing and the second a box. The
+new alpha is the brightness above the edge band's median, scaled to 0-255; an
+authored alpha that is not opaque everywhere is kept too, doubled. A
+smoothstep fade over the outer 24 texels (scaled down below 256, at least 4)
+clears the quad's edge, and the colour moves to white (40 % of its distance
+to white is kept). The file, `<name>_skya.dds` beside the source path, is
+uncompressed BGRA with every mip level, so distant spray does not shimmer. A
+spray whose source texture cannot be found keeps its old shader.
+
 ## Rewriting a texture path into the `tes4\` tree
 <a id="rewrite-tex-path"></a>
 

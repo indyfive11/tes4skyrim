@@ -33,6 +33,7 @@ from asset_convert.nif.uv_transform import apply_static_uv
 from asset_convert.nif.tri_reconstruct import (UnreconstructibleGeometry,
                                                clear_match_groups,
                                                fix_missing_triangles)
+from asset_convert.nif.water_fx import water_sheet
 
 from asset_convert.nif.pyffi_monkey_patch import apply_patches
 apply_patches()
@@ -627,6 +628,7 @@ def process_geometry(strips_or_shape, fix_textures, stats=None, sky_type=None,
     if norm_tex_ref is not None:
         _record_overlay(tex_set, si.tex_apply_mode, stats, norm_tex_ref)
     _carry_alpha(ts, tex_set, si, stats)
+    water_sheet(ts, stats)
     attach_tex_transform_ctrls(ts.bs_properties[0], si.tex_transforms,
                                si.base_map)
     _mark_skinned(ts)
