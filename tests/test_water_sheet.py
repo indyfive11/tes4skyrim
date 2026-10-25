@@ -123,6 +123,31 @@ def _entry(verts, tris, cell=0x2000, fid=0x00700001):
                             'geometry': (verts, tris, [])})
 
 
+def _view(corners, flags):
+    """A stand-in for a decoded navmesh: one triangle per three corners, with the given flags."""
+    verts = np.asarray(corners, dtype=np.float64).reshape(-1, 3)
+    tris = np.zeros((len(flags), 8), dtype=np.int32)
+    tris[:, 0:3] = np.arange(3 * len(flags)).reshape(-1, 3)
+    tris[:, 6] = flags
+    return types.SimpleNamespace(verts=verts, tris=tris)
+
+
+def _record(corners, flags, cell=0x2000, wrld=WRLD, fid=0x00700001):
+    """A path-grid navmesh entry as the precompute caches it: packed record and meta."""
+    from tes5_import.base.writer import pack_subrecord
+    verts = [tuple(c) for c in corners]
+    tris = [(3 * i, 3 * i + 1, 3 * i + 2) for i in range(len(verts) // 3)]
+    nvnm = from_pgrd.pack_nvnm(verts, tris, from_pgrd.compute_adjacency(tris), list(flags), wrld,
+                               cell, 0, 0, bool(wrld), navm_fid=fid)
+    meta = {'fid': fid, 'cell_fid': cell, 'geometry': (verts, tris, [])}
+    return from_pgrd.pack_navm_record(fid, pack_subrecord('NVNM', nvnm)), meta
+
+
+def _marks(entry):
+    """The triangle flags of a cached navmesh record."""
+    return [int(f) for f in _decode(entry[0], entry[1]['fid']).tris[:, 6]]
+
+
 def _run(by_type, cache=None, master_export=None):
     """(sheets made, cache) of the rule run over `by_type`."""
     cache = {} if cache is None else cache
@@ -168,18 +193,10 @@ def test_an_exterior_cell_without_a_stated_height_has_its_worlds_default(cell, w
     assert ws.water_height(cell, world) == want
 
 
-@pytest.mark.parametrize('cell', [
-    _cell(1, water=-400.0), _cell(1, water=-400.0, flags=0), _cell(1, water=None),
-    _cell(1, water=12.5, flags=3), _cell(1, water=NO_HEIGHT),
-])
-def test_flag_height_is_the_height_the_path_grid_meshes_are_flagged_with(cell):
-    frame = from_pgrd._cell_frame({'ParentCELL': '00000001'}, cell)
-    assert ws.flag_height(cell) == frame[4]
-
-
 @pytest.mark.parametrize('stated', ['nan', 'inf', '-inf', 'deep'])
-def test_flag_height_takes_no_height_that_is_not_a_finite_number(stated):
-    assert ws.flag_height(dict(_cell(1), **{'XCLW.WaterHeight': stated})) is None
+def test_an_exterior_stating_no_finite_height_takes_its_worlds_default(stated):
+    cell = dict(_cell(1, WRLD), **{'XCLW.WaterHeight': stated})
+    assert ws.water_height(cell, DEEP_WORLD) == -2000.0
 
 
 @pytest.mark.parametrize('flags, want', [
@@ -260,15 +277,16 @@ def test_a_swimmer_inside_a_triangle_in_plan_is_at_distance_zero():
     assert ws.stranded([CRAB_AT], _soup(big), 0.0) == []
 
 
-def test_a_triangle_across_the_water_line_is_wet_as_the_path_grid_flags_it():
-    """`from_pgrd` flags a triangle by its centre height; the stranded test judges it the same."""
+def test_a_triangle_is_wet_only_when_its_three_corners_are_under_the_water():
+    """The stranded test and `mark_water` judge one triangle the same way."""
     mostly_under = [(100.0, 0.0, -90.0), (164.0, 0.0, -90.0), (100.0, 64.0, 60.0)]
-    mostly_over = [(100.0, 0.0, 90.0), (164.0, 0.0, 90.0), (100.0, 64.0, -60.0)]
-    for tri in (mostly_under, mostly_over):
-        flagged = from_pgrd._compute_water_flags(tri, [(0, 1, 2)], 0.0)[0] != 0
-        assert (ws.stranded([FISH_AT], _soup(tri), 0.0) == []) is flagged
-    assert ws.stranded([FISH_AT], _soup(mostly_under), 0.0) == []
-    assert ws.stranded([FISH_AT], _soup(mostly_over), 0.0) == [FISH_AT]
+    all_under = [(100.0, 0.0, -90.0), (164.0, 0.0, -90.0), (100.0, 64.0, -1.0)]
+    assert ws.stranded([FISH_AT], _soup(mostly_under), 0.0) == [FISH_AT]
+    assert ws.stranded([FISH_AT], _soup(all_under), 0.0) == []
+    for tri, flagged in ((mostly_under, False), (all_under, True)):
+        view = _view(tri, [0])
+        ws.mark_water(view, 0.0)
+        assert bool(view.tris[0, 6] & ws.WATER) is flagged
 
 
 def test_a_swimmer_inside_a_triangle_wound_the_other_way_is_at_distance_zero():
@@ -284,12 +302,9 @@ def test_a_creature_that_only_swims_is_served_by_a_triangle_under_the_water():
     assert ws.stranded([FISH_AT], _soup(_tri(100, 0, -300)), 0.0) == []
 
 
-def test_a_triangle_under_the_water_of_a_cell_that_flags_none_does_not_serve_a_fish():
-    assert ws.stranded([FISH_AT], _soup(_tri(100, 0, -300)), None) == [FISH_AT]
-
-
-def test_a_cell_that_flags_no_triangle_still_serves_a_walker():
-    assert ws.stranded([CRAB_AT], _soup(_tri(100, 0, -300)), None) == []
+def test_a_triangle_with_a_corner_above_the_water_still_serves_a_walker():
+    shore = [(100.0, 0.0, -90.0), (164.0, 0.0, -90.0), (100.0, 64.0, 60.0)]
+    assert ws.stranded([CRAB_AT], _soup(shore), 0.0) == []
 
 
 def test_a_water_triangle_beyond_reach_does_not_serve_it():
@@ -736,13 +751,12 @@ def test_the_worlds_own_default_height_is_read():
     assert _run(by_type) == (0, {})
 
 
-def test_a_fish_by_an_unflagged_ribbon_under_a_default_sea_gets_a_sheet():
-    """Path-grid triangles carry no water flag where the cell states no height: no home for a fish."""
+def test_a_fish_by_a_ribbon_under_a_default_sea_is_served_by_it():
+    """Under a default sea the ribbon is water too: the fish has a home and gets no sheet."""
     by_type = _sea()
     by_type['CELL'][0].pop('XCLW.WaterHeight')
     cache = {(0x2000, 0x4000): _entry(_tri(2100.0, 2100.0, -480.0), [(0, 1, 2)])}
-    made, cache = _run(by_type, cache)
-    assert made == 1 and len(cache[KEY][1]['geometry'][1]) == 2 * 16 * 16 - 2
+    assert _run(by_type, cache)[0] == 0
 
 
 def test_a_reference_that_places_a_swimming_list_counts():
@@ -1017,6 +1031,169 @@ def test_the_import_phase_lays_the_sheets_before_it_links_the_seams(monkeypatch,
     assert west['edge_link_fids'] == [east['fid']] and east['edge_link_fids'] == [west['fid']]
 
 
+DEEP_TRI = [(100.0, 100.0, -300.0), (164.0, 100.0, -300.0), (100.0, 164.0, -300.0)]
+SHORE_TRI = [(300.0, 100.0, -50.0), (364.0, 100.0, -50.0), (300.0, 164.0, 40.0)]
+DRY_TRI = [(500.0, 100.0, 20.0), (564.0, 100.0, 20.0), (500.0, 164.0, 20.0)]
+
+
+def test_mark_water_sets_the_flag_where_all_three_corners_are_under_and_clears_it_elsewhere():
+    """Deep: flagged; shore (one corner above): cleared; dry: cleared."""
+    view = _view(DEEP_TRI + SHORE_TRI + DRY_TRI, [0x0800, 0x0A00, 0x0A00])
+    assert ws.mark_water(view, 0.0) == 3
+    assert [int(f) for f in view.tris[:, 6]] == [0x0A00, 0x0800, 0x0800]
+
+
+def test_mark_water_keeps_every_other_flag_bit():
+    """Door, generated and edge-link bits survive the water bit's change."""
+    view = _view(DEEP_TRI + DRY_TRI, [0x0800 | 0x0400 | 0x0001, 0x0A00 | 0x0004])
+    ws.mark_water(view, 0.0)
+    assert [int(f) for f in view.tris[:, 6]] == [0x0E01, 0x0804]
+
+
+def test_mark_water_on_an_empty_navmesh_changes_nothing():
+    assert ws.mark_water(_view([], []), 0.0) == 0
+
+
+def _flag_run(by_type, cache, master_export=None):
+    return pool.mark_water_triangles(cache, by_type, master_export), cache
+
+
+def test_a_ribbon_under_a_default_sea_is_flagged_water():
+    """The gap: a cell that leaves its height to the default had no flagged triangle at all."""
+    by_type = _sea()
+    by_type['CELL'][0].pop('XCLW.WaterHeight')
+    entry = _record(DEEP_TRI + SHORE_TRI + DRY_TRI, [0, 0, 0])
+    changed, cache = _flag_run(by_type, {(0x2000, 0x4000): entry})
+    assert changed == 1 and _marks(cache[(0x2000, 0x4000)]) == [0x0A00, 0x0800, 0x0800]
+
+
+def test_a_shore_triangle_the_old_rule_flagged_loses_the_flag():
+    """A stated height: the shore triangle the centre rule flagged loses it."""
+    entry = _record(DEEP_TRI + SHORE_TRI + DRY_TRI, [ws.WATER, ws.WATER, 0])
+    changed, cache = _flag_run(_sea(), {(0x2000, 0x4000): entry})
+    assert changed == 1 and _marks(cache[(0x2000, 0x4000)]) == [0x0A00, 0x0800, 0x0800]
+
+
+def test_only_the_flags_change_in_the_record():
+    """Corners, neighbours, links and the tail are byte-equal; the meta is the same object."""
+    by_type = _sea()
+    by_type['CELL'][0].pop('XCLW.WaterHeight')
+    entry = _record(DEEP_TRI + DRY_TRI, [0, 0])
+    _changed, cache = _flag_run(by_type, {(0x2000, 0x4000): entry})
+    before, after = _decode(entry[0], 0x00700001), _decode(cache[(0x2000, 0x4000)][0], 0x00700001)
+    assert np.array_equal(before.verts, after.verts) and before.links == after.links
+    assert np.array_equal(before.tris[:, :6], after.tris[:, :6]) and before.tail == after.tail
+    assert cache[(0x2000, 0x4000)][1] is entry[1]
+
+
+def test_a_navmesh_already_right_is_not_repacked():
+    """Nothing to change: the cache keeps the very entry it had."""
+    entry = _record(DEEP_TRI + DRY_TRI, [ws.WATER, 0])
+    changed, cache = _flag_run(_sea(), {(0x2000, 0x4000): entry})
+    assert changed == 0 and cache[(0x2000, 0x4000)] is entry
+
+
+@pytest.mark.parametrize('change', [
+    lambda b: b['CELL'][0].update({'DATA.Flags': '0'}),
+    lambda b: b.update(NAVM=[{'Signature': 'NAVM', 'FormID': '00004444'}]),
+    lambda b: b['CELL'][0].update(FormID='00002999'),
+])
+def test_what_the_flag_pass_leaves_alone(change):
+    """No Has Water flag; a source with authored navmesh; a navmesh whose cell is unknown."""
+    by_type = _sea()
+    change(by_type)
+    entry = _record(DEEP_TRI, [0])
+    changed, cache = _flag_run(by_type, {(0x2000, 0x4000): entry, (0x2000, 0x4001): (None, None)})
+    assert changed == 0 and cache[(0x2000, 0x4000)] is entry
+
+
+def test_a_corner_at_the_water_height_is_not_under_it():
+    """A corner level with the surface: the triangle is shore and loses the flag."""
+    view = _view(DEEP_TRI[:2] + [(100.0, 164.0, 0.0)], [0x0A00])
+    assert ws.mark_water(view, 0.0) == 1 and int(view.tris[0, 6]) == 0x0800
+
+
+def test_an_exterior_stating_no_height_is_flagged_at_its_worlds_default():
+    """A world whose sea lies at -2000: a triangle at -300 is above its water, one at -2100 under."""
+    by_type = _sea()
+    by_type['CELL'][0].pop('XCLW.WaterHeight')
+    by_type['WRLD'] = [DEEP_WORLD]
+    sunk = [(x, y, -2100.0) for x, y, _z in DEEP_TRI]
+    entry = _record(DEEP_TRI + sunk, [0x0A00, 0])
+    changed, cache = _flag_run(by_type, {(0x2000, 0x4000): entry})
+    assert changed == 2 and _marks(cache[(0x2000, 0x4000)]) == [0x0800, 0x0A00]
+
+
+def test_an_interior_stating_no_height_is_flagged_at_zero():
+    """An interior with the Has Water flag and no height is read at 0.0."""
+    entry = _record(DEEP_TRI + DRY_TRI, [0, 0], wrld=0)
+    by_type = {'CELL': [_cell(0x2000, water=None)]}
+    changed, cache = _flag_run(by_type, {(0x2000, 0x4000): entry})
+    assert changed == 1 and _marks(cache[(0x2000, 0x4000)]) == [0x0A00, 0x0800]
+
+
+@pytest.mark.parametrize('stated', [3.4028234663852886e+38, 5e9, math.inf])
+def test_an_interior_stating_a_height_beyond_any_water_loses_every_flag(stated):
+    """`from_pgrd` flags all of it; the built plugin has no water there, so the flags go."""
+    entry = _record(DRY_TRI, [ws.WATER], wrld=0)
+    by_type = {'CELL': [_cell(0x2000, water=stated)]}
+    changed, cache = _flag_run(by_type, {(0x2000, 0x4000): entry})
+    assert changed == 1 and _marks(cache[(0x2000, 0x4000)]) == [0x0800]
+
+
+def test_a_masters_cell_is_read_from_the_master():
+    """A plugin's path grid in a master's cell: the cell record comes from the master's export."""
+    by_type = _sea()
+    master = {rec['FormID']: rec for rec in by_type.pop('CELL')}
+    master['00002000'].pop('XCLW.WaterHeight')
+    changed, _cache = _flag_run(by_type, {(0x2000, 0x4000): _record(DEEP_TRI, [0])}, master)
+    assert changed == 1
+
+
+def test_a_masters_world_gives_its_default_height():
+    """The worldspace record comes from the master's export too: its sea lies at -2000."""
+    by_type = _sea()
+    by_type['CELL'][0].pop('XCLW.WaterHeight')
+    sunk = [(x, y, -2100.0) for x, y, _z in DEEP_TRI]
+    entry = _record(DEEP_TRI + sunk, [0x0A00, 0])
+    master = {DEEP_WORLD['FormID']: DEEP_WORLD}
+    changed, cache = _flag_run(by_type, {(0x2000, 0x4000): entry}, master)
+    assert changed == 2 and _marks(cache[(0x2000, 0x4000)]) == [0x0800, 0x0A00]
+
+
+@pytest.mark.parametrize('third', [-1.0, 12.29999999, 12.3, 12.30000001, 60.0])
+def test_the_flags_and_the_stranded_test_agree_to_the_stored_bit(third):
+    """A swimmer is served exactly where the built record is flagged water, at 32-bit corners."""
+    tri = [(100.0, 0.0, -90.0), (164.0, 0.0, -90.0), (100.0, 64.0, third)]
+    by_type = {'CELL': [_cell(0x2000, water=12.3)]}
+    _changed, cache = _flag_run(by_type, {(0x2000, 0x4000): _record(tri, [0], wrld=0)})
+    flagged = bool(_marks(cache[(0x2000, 0x4000)])[0] & ws.WATER)
+    assert (ws.stranded([FISH_AT], _soup(tri), 12.3) == []) is flagged
+
+
+def test_a_decoded_navmesh_packs_back_to_the_same_bytes():
+    """The pass re-packs through `NavMeshView`; untouched, that is the identity."""
+    from tes5_import.navmesh.edge_links import extract_nvnm
+    blob, _p, _s = extract_nvnm(_record(DEEP_TRI + SHORE_TRI + DRY_TRI, [0x0200, 0, 0x0400])[0])
+    assert NavMeshView(0x00700001, blob).pack() == blob
+
+
+def test_the_import_phase_flags_water_and_lays_no_sheet_for_a_served_fish(monkeypatch, tmp_path):
+    """The pass runs in the phase: the ribbon is flagged, and the fish beside it gets no sheet."""
+    for name in ('set_cell_locations', 'set_teleport_grid', 'set_activators',
+                 'set_door_navmesh_links'):
+        monkeypatch.setattr(pipeline_records, name, lambda *a, **k: None)
+    monkeypatch.setattr(pipeline_records, 'build_marker_locations', lambda *a: ())
+    by_type = _sea()
+    by_type['CELL'][0].pop('XCLW.WaterHeight')
+    ribbon = _record([(2100.0, 2100.0, -480.0), (2164.0, 2100.0, -480.0), (2100.0, 2164.0, -480.0)], [0])
+    monkeypatch.setattr(pool, 'precompute_navmeshes', lambda *a, **k: {(0x2000, 0x4000): ribbon})
+    st = types.SimpleNamespace(by_type=by_type, writer=FakeWriter(), ctx=None, num_tes4_masters=0)
+    pipeline_records._phase4a_navmesh(st, str(tmp_path), lambda _name: None, set())
+    assert list(st.navm_cache) == [(0x2000, 0x4000)]
+    assert _marks(st.navm_cache[(0x2000, 0x4000)]) == [0x0A00]
+
+
 class _NoLava:
     @staticmethod
     def refr_for(_cell_rec):
@@ -1026,7 +1203,7 @@ class _NoLava:
 def _temporaries(cache, cell_fid=0x2000, pgrds=()):
     """(trailing records, metas) the cell builder emits for one cell."""
     metas = []
-    leading, trailing = pipeline_records._cell_temporaries(
+    _leading, trailing = pipeline_records._cell_temporaries(
         {'FormID': '%08X' % cell_fid}, cell_fid, _NoLava, {}, {},
         {cell_fid: list(pgrds)}, cache, metas)
     return trailing, metas

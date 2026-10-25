@@ -12,6 +12,7 @@ from asset_convert.game_paths import current_namespace
 from output_layout import asset_cache_chain
 import glob
 import hashlib
+import math
 import operator
 import os
 import struct
@@ -871,8 +872,7 @@ def _cell_sheet(cell: dict, wrld_rec, placed: list, parts: list, land_at,
     if water_z is None:
         return None
     soup = water_sheet.soup_of(parts)
-    lost = water_sheet.stranded([s for s in placed if s[2] < water_z], soup,
-                                water_sheet.flag_height(cell))
+    lost = water_sheet.stranded([s for s in placed if s[2] < water_z], soup, water_z)
     if not lost:
         return None
     wrld = get_formid(cell, 'ParentWRLD')
@@ -902,6 +902,58 @@ def _collision_reader(by_type: dict, master_export: dict, base_model_by_fid: dic
                                     base_model_by_fid, get_collision)
 
     return collision_of
+
+
+def _remarked(entry, cells: dict, worlds: dict):
+    """(record bytes, meta, triangles changed) of a cache entry given the water flags, or None."""
+    from .edge_links import NavMeshView, extract_nvnm
+    from .from_pgrd import pack_navm_record
+    from ..base.writer import pack_subrecord
+    navm_bytes, meta = entry or (None, None)
+    cell = cells.get(meta.get('cell_fid')) if navm_bytes and meta else None
+    if cell is None:
+        return None
+    wrld = get_formid(cell, 'ParentWRLD')
+    water_z = water_sheet.water_height(cell, worlds.get(wrld, {}) if wrld else None)
+    if water_z is None:
+        water_z = -math.inf
+    blob, prefix, suffix = extract_nvnm(navm_bytes)
+    if blob is None:
+        return None
+    view = NavMeshView(meta['fid'], blob)
+    changed = water_sheet.mark_water(view, water_z)
+    if not changed:
+        return None
+    record = pack_navm_record(meta['fid'], prefix + pack_subrecord('NVNM', view.pack()) + suffix)
+    return record, meta, changed
+
+
+def mark_water_triangles(navm_cache: dict, by_type: dict,
+                         master_export: dict = None) -> int:
+    """Give the path-grid navmeshes the water flags the base game's rule gives.
+
+    A triangle is flagged when its three corners are under the water height
+    the built plugin has for its cell, stated or default; every other one
+    loses the flag; a cell without water the built plugin has loses them all.
+    Shapes are not touched.  The water sheets judge a triangle wet by the
+    same rule (`water_sheet.submerged`).  Returns the number of triangles
+    changed.
+    See: docs/commentary/tes5_import_navmesh.md#water-flags
+    """
+    if by_type.get('NAVM'):
+        return 0
+    cells = dict(_records_of(by_type, master_export, ('CELL',)))
+    worlds = dict(_records_of(by_type, master_export, ('WRLD',)))
+    changed = meshes = 0
+    for key in sorted(navm_cache):
+        got = _remarked(navm_cache[key], cells, worlds)
+        if got is not None:
+            navm_cache[key] = got[:2]
+            changed += got[2]
+            meshes += 1
+    if changed:
+        print(f"  Water flags: {changed} triangles changed in {meshes} navmeshes")
+    return changed
 
 
 def add_water_sheets(navm_cache: dict, by_type: dict, writer,

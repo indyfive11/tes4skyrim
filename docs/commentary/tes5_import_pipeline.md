@@ -31,7 +31,7 @@ The layer rules and the decision procedure are in
 - [Phase 1 is serial on purpose](#phase-1-is-serial-on-purpose)
 - [A master-dependent plugin may own an entire world](#master-dependent-plugin-owns-a-world)
 - [Phase 3c — LCTN, and why a pure patch plugin skips it](#phase-3c-locations)
-- [Phase 4 — the three navmesh post-passes, and their order](#phase-4-navmesh-post-passes)
+- [Phase 4 — the navmesh post-passes, and their order](#phase-4-navmesh-post-passes)
 - [The CELL and WRLD group builders](#cell-world-group-builders)
 - [Phase 5 — a master's dialogue is overridden, not re-derived](#phase-5-dialogue-overrides)
 - [`build_dialog_groups` reads far more than DIAL/INFO](#build-dialog-groups-reads-more)
@@ -621,9 +621,13 @@ built whenever this plugin owns any new CELL/WRLD.
 Ownership compares the **RAW (unshifted) index byte**: `get_formid()` would
 apply the load-order offset and put every plugin-owned record one index too high.
 
-## <a id="phase-4-navmesh-post-passes"></a>Phase 4 — the three navmesh post-passes, and their order
+## <a id="phase-4-navmesh-post-passes"></a>Phase 4 — the navmesh post-passes, and their order
 
-The order of these is load-bearing; each note records a real shipped bug.
+Two water passes come first: the [water flags](tes5_import_navmesh.md#water-flags), then the
+[water sheets](tes5_import_navmesh.md#water-sheets). The sheets must exist before the edge links, which link them over
+cell seams; the flags may run before or after the sheets, since both judge a triangle wet by one rule.
+
+The order of the three that follow is load-bearing; each note records a real shipped bug.
 
 **1. Edge links** stitch adjacent exterior cell navmeshes together. Without
 them every cell mesh is an island and **no actor can path across a cell
@@ -664,7 +668,7 @@ with no XNDP the four `CGAssassinsAmbushA1-A4` Travel packages had a destination
 they could not path to. Must run after every navmesh exists and before the group
 builders convert any REFR.
 
-**Debug hook:** `TESCONV_DUMP_NAVM_CACHE=<path>` pickles the precomputed cache so
+**Debug hook:** `TESCONV_DUMP_NAVM_CACHE=<path>` pickles the precomputed cache (before the water passes) so
 the edge-link and split post-passes can be profiled in isolation without paying
 for a full import each iteration.
 

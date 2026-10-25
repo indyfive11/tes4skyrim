@@ -420,7 +420,7 @@ def _door_xtel_targets(st) -> dict:
 
 
 def _phase4a_navmesh(st, export_dir: str, phase_done, skip_types) -> None:
-    """Phase 4a: generate navmeshes, then the three ordered post-passes.
+    """Phase 4a: generate navmeshes, the water flags and sheets, then the three ordered post-passes.
 
     See: docs/commentary/tes5_import_pipeline.md#phase-4-navmesh-post-passes"""
     def _is_own_record(rec) -> bool:
@@ -462,6 +462,7 @@ def _phase4a_navmesh(st, export_dir: str, phase_done, skip_types) -> None:
         print(f"  [debug] navm_cache dumped to {_dump_to} "
               f"({len(st.navm_cache)} entries)")
 
+    navm_pool.mark_water_triangles(st.navm_cache, st.by_type, _navm_master_export)
     navm_pool.add_water_sheets(st.navm_cache, st.by_type, st.writer,
                                st.base_model_by_fid, _navm_master_export)
 

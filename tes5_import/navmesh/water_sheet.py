@@ -42,14 +42,8 @@ _MAX_LIST_DEPTH = 8
 MAX_INDEX = 0x7FFF
 
 
-def flag_height(cell_rec):
-    """The height under which the cell's path-grid triangles are flagged water, or None.
-
-    Only a cell that is flagged Has Water and STATES a height has flagged
-    triangles: this is the rule of `from_pgrd`'s own flagging.
-    """
-    if cell_rec is None or not get_int(cell_rec, 'DATA.Flags', 0) & 0x02:
-        return None
+def _stated_height(cell_rec):
+    """The water height the cell states, when it is a finite number, else None."""
     try:
         height = float(cell_rec.get('XCLW.WaterHeight'))
     except (TypeError, ValueError):
@@ -68,13 +62,35 @@ def water_height(cell_rec, wrld_rec=None):
     """
     if cell_rec is None or not get_int(cell_rec, 'DATA.Flags', 0) & 0x02:
         return None
-    stated = flag_height(cell_rec)
+    stated = _stated_height(cell_rec)
     if stated is not None and abs(stated) < _NO_HEIGHT:
         return stated
     if wrld_rec is None:
         from ..actors.water_placement import water_height as interior_height
         return interior_height(cell_rec)[0]
     return get_float(wrld_rec, 'DNAM.DefaultWaterHeight', SEA_LEVEL)
+
+
+def submerged(corner_z, water_z):
+    """True per triangle whose three corners, as stored (32-bit), are under `water_z`."""
+    return np.asarray(corner_z, dtype=np.float32).max(axis=1) < water_z
+
+
+def mark_water(view, water_z):
+    """Flag water on a decoded navmesh's triangles whose three corners are under `water_z`.
+
+    Every other triangle loses the flag; nothing else changes.  `view` is an
+    `edge_links.NavMeshView`.  Returns how many triangles changed.
+    See: docs/commentary/tes5_import_navmesh.md#water-flags
+    """
+    if not len(view.tris):
+        return 0
+    flags = view.tris[:, 6]
+    under = submerged(view.verts[view.tris[:, 0:3], 2], water_z)
+    marked = np.where(under, flags | WATER, flags & ~WATER)
+    changed = int((marked != flags).sum())
+    view.tris[:, 6] = marked
+    return changed
 
 
 def swim_kind(base, creatures, lists, depth=0):
@@ -126,19 +142,19 @@ def _plan_distance(x, y, plan):
     return np.where(inside, 0.0, dist)
 
 
-def stranded(swimmers, soup, flag_z):
+def stranded(swimmers, soup, water_z):
     """The swimmers of one cell that no existing navmesh serves.
 
-    swimmers: [(x, y, z, walks)], each placed under the water.  soup: the
+    swimmers: [(x, y, z, walks)], each placed under `water_z`.  soup: the
     cell's navmesh as an (N, 3, 3) array.  One that also walks is served by
     any triangle within REACH in plan, one that only swims by a triangle
-    flagged water: one under `flag_z`, the cell's `flag_height`.
+    `mark_water` flags: all three corners under the water.
     See: docs/commentary/tes5_import_navmesh.md#water-sheets
     """
     if not len(soup):
         return list(swimmers)
     plan = soup[:, :, :2]
-    wet = soup[:, :, 2].mean(axis=1) < (-math.inf if flag_z is None else flag_z)
+    wet = submerged(soup[:, :, 2], water_z)
     out = []
     for swimmer in swimmers:
         near = _plan_distance(swimmer[0], swimmer[1], plan) <= REACH
