@@ -234,6 +234,9 @@ def is_outfit_eligible(fid: int) -> bool:
 #: Skyrim amulet (35) and ring (36) bits: jewelry never contends, so every piece is kept.
 _JEWELRY_BITS = 0b110_0000
 
+#: Skyrim slot 32, Body: an outfit that fills it with nothing shows the bare body.
+_BODY_BIT = 1 << 2
+
 
 def _resolve_wearables(fid: int, depth: int = 0, path=()) -> list:
     """The concrete ARMO/CLOT records this outfit entry can put on the body.
@@ -365,18 +368,60 @@ def _priority(fid: int) -> tuple:
     return (is_armor, value, fid)
 
 
+def _claim(order: list) -> set:
+    """The winners of a slot claim over `order`, best item first.
+
+    A guaranteed winner closes its whole slot mask to the items below it; a
+    chance winner closes nothing, so a guaranteed piece under it is kept too.
+    See: docs/commentary/tes5_import_actors.md#outfit-slot-claim
+    """
+    taken = 0
+    winners = set()
+    for fid in order:
+        slots = _equip_slots(fid)
+        if slots and (slots & taken):
+            continue
+        winners.add(fid)
+        if slots and _is_guaranteed(fid):
+            taken |= slots
+    return winners
+
+
+def _cover_the_body(order: list, winners: set) -> set:
+    """`winners`, or a claim that puts back a body garment the first claim left out.
+
+    With no guaranteed winner on the body, the best guaranteed garment that
+    covers it is moved above its guaranteed blockers and the claim runs again;
+    that claim is kept only if the garment wins and every piece it pushes out
+    sits wholly inside its slots. Anything else keeps `winners`.
+    See: docs/commentary/tes5_import_actors.md#outfit-body-garment
+    """
+    if any(_equip_slots(w) & _BODY_BIT and _is_guaranteed(w) for w in winners):
+        return winners
+    for fid in order:
+        slots = _equip_slots(fid)
+        if fid in winners or not slots & _BODY_BIT or not _is_guaranteed(fid):
+            continue
+        blockers = [i for i, w in enumerate(order)
+                    if w in winners and _equip_slots(w) & slots and _is_guaranteed(w)]
+        if not blockers:
+            continue
+        trial = [w for w in order if w != fid]
+        trial.insert(blockers[0], fid)
+        claim = _claim(trial)
+        if fid in claim and not any(_equip_slots(w) & ~slots for w in winners - claim):
+            return claim
+    return winners
+
+
 def split_inventory(items: list) -> tuple:
     """Split an actor's TES4 inventory into (outfit_fids, carried_items).
 
-    `items` is a list of (fid, count) in export order.
-
-    Returns:
-        outfit_fids   — FormIDs for the OTFT's INAM, one winner per biped slot.
-        carried_items — [(fid, count)] for CNTO: everything NOT in the outfit.
-
-    The two are disjoint. Skyrim ADDS the outfit to CNTO on load, so anything
-    listed in both would be duplicated in the actor's inventory — keeping them
-    disjoint is what removes the duplicate-item bug.
+    `items` is a list of (fid, count) in export order. `outfit_fids` holds the
+    OTFT's INAM, one winner per contested slot; `carried_items` is [(fid,
+    count)] for CNTO. The two are disjoint, since Skyrim ADDS the outfit to
+    CNTO on load; a wearable outranked for a slot is carried once, not dropped.
+    See: docs/commentary/tes5_import_actors.md#outfit-slot-claim
     """
     wearable, carried = [], []
     for fid, count in items:
@@ -385,45 +430,14 @@ def split_inventory(items: list) -> tuple:
         else:
             carried.append((fid, count))
 
-    # Resolve biped-slot contention. Items occupying no biped slot (weapons,
-    # ammo, torches) never contend and are all kept. Leveled lists DO contend,
-    # via the union of their leaves' slots — a clothing list left unresolved is
-    # what put Azzan in a middle-class shirt instead of his steel cuirass.
-    #
-    # Claim slots greedily, best item first, but only a GUARANTEED item reserves
-    # a slot against everything below it. A probabilistic list (LVLD.ChanceNone
-    # > 0) frequently rolls nothing, so it must not evict a guaranteed item that
-    # shares its slot — that eviction is what left ~75% of bandits bare-legged,
-    # when chance-based greaves (ChanceNone 75) outranked and discarded the
-    # guaranteed cloth pants under them. When the winner isn't guaranteed we keep
-    # BOTH: Skyrim equips the greaves on the rolls they appear and the guaranteed
-    # pants otherwise, which is how vanilla Skyrim bandit outfits are authored
-    # (chance armor layered over a guaranteed base). Only a guaranteed winner
-    # closes the slot to lower-priority items.
-    #
-    # Reserving the WHOLE slot-mask (not per-slot) still matters: a multi-slot
-    # guaranteed garment can lose one slot and win another, and Skyrim would then
-    # equip it anyway, dragging the lost slot back in (LL0VampireShirt spanned
-    # upper+lower body, lost body to a cuirass but won legs and re-covered the
-    # chest). So a guaranteed item is kept only if EVERY slot it needs is free.
-    taken = 0  # slots reserved by a guaranteed winner — closed to lesser items
-    winners = set()
-    for fid in sorted(set(wearable), key=_priority, reverse=True):
-        slots = _equip_slots(fid)
-        if slots and (slots & taken):
-            continue  # a guaranteed better item already owns one of these slots
-        winners.add(fid)
-        if slots and _is_guaranteed(fid):
-            taken |= slots  # only a sure thing closes the slot behind it
+    order = sorted(set(wearable), key=_priority, reverse=True)
+    winners = _cover_the_body(order, _claim(order))
 
     outfit_fids, seen = [], set()
     for fid in wearable:
         if fid in seen:
-            continue  # a duplicated CNTO line must not double the outfit entry
+            continue
         if fid not in winners:
-            # Outranked for a slot it needs — it stays with the actor as loot
-            # rather than being dropped, matching TES4 (the item was in the
-            # inventory; Oblivion simply chose not to wear it).
             carried.append((fid, 1))
             continue
         outfit_fids.append(fid)

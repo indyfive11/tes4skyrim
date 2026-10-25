@@ -2789,6 +2789,71 @@ class TestOutfitSplit:
         assert outfit == [1]
         assert [f for f, _ in carried] == [2]
 
+    def test_a_shirt_that_covers_the_legs_beats_cheaper_trousers(self):
+        """Edgar Vautrine: trousers (value 3) won the legs of a shirt that covers
+        them (value 2), the shirt went to CNTO and Skyrim showed him in underwear,
+        since an actor wears its outfit, never its pockets. The shirt wins and
+        the trousers, wholly inside its slots, are carried."""
+        from tes5_import.actors.outfits import split_inventory
+        self._index(CLOT=[self._clot('00000001', 'Shirt', self.BODY | self.LEGS, value=2),
+                          self._clot('00000002', 'Trousers', self.LEGS, value=3),
+                          self._clot('00000003', 'Shoes', self.FEET, value=1)])
+        outfit, carried = split_inventory([(1, 1), (2, 1), (3, 1)])
+        assert outfit == [1, 3]
+        assert [f for f, _ in carried] == [2]
+
+    def test_a_robe_that_claims_the_feet_beats_shoes(self):
+        """A value-0 robe that draws its own boots lost its feet to shoes."""
+        from tes5_import.actors.outfits import split_inventory
+        self._index(CLOT=[self._clot('00000001', 'Robe', self.BODY | self.LEGS | self.FEET, value=0),
+                          self._clot('00000002', 'Shoes', self.FEET, value=1)])
+        outfit, carried = split_inventory([(2, 1), (1, 1)])
+        assert outfit == [1]
+        assert [f for f, _ in carried] == [2]
+
+    def test_a_piece_reaching_past_the_garment_keeps_the_old_split(self):
+        """Putting the shirt on would push out a piece that also covers the feet: left as it was."""
+        from tes5_import.actors.outfits import split_inventory
+        self._index(CLOT=[self._clot('00000001', 'Shirt', self.BODY | self.LEGS, value=2),
+                          self._clot('00000002', 'LeggingsAndBoots', self.LEGS | self.FEET, value=3)])
+        outfit, carried = split_inventory([(1, 1), (2, 1)])
+        assert outfit == [2]
+        assert [f for f, _ in carried] == [1]
+
+    def test_a_chance_cuirass_stays_layered_over_the_garment(self):
+        """Only the guaranteed blockers are passed: a chance list ranked above stays a winner."""
+        from tes5_import.actors.outfits import split_inventory
+        self._index(
+            ARMO=[self._armo('00000010', 'Cuirass', self.BODY, value=180)],
+            CLOT=[self._clot('00000001', 'Shirt', self.BODY | self.LEGS, value=2),
+                  self._clot('00000002', 'Trousers', self.LEGS, value=3)],
+            LVLI=[self._lvli('00000003', 'LL0Cuirass25', ['00000010'], chance_none=75)])
+        outfit, carried = split_inventory([(3, 1), (1, 1), (2, 1)])
+        assert outfit == [3, 1]
+        assert [f for f, _ in carried] == [2]
+
+    def test_a_chance_garment_is_not_put_on(self):
+        """A garment that may roll nothing guarantees no body, so it cannot push the trousers out."""
+        from tes5_import.actors.outfits import split_inventory
+        self._index(
+            CLOT=[self._clot('00000010', 'Shirt', self.BODY | self.LEGS, value=2),
+                  self._clot('00000002', 'Trousers', self.LEGS, value=3)],
+            LVLI=[self._lvli('00000001', 'LL0Shirt50', ['00000010'], chance_none=50)])
+        outfit, carried = split_inventory([(1, 1), (2, 1)])
+        assert outfit == [2]
+        assert [f for f, _ in carried] == [1]
+
+    def test_a_guaranteed_body_winner_leaves_the_split_alone(self):
+        """The control: with the body covered, a shirt that lost its legs stays carried."""
+        from tes5_import.actors.outfits import split_inventory
+        self._index(
+            ARMO=[self._armo('00000003', 'Cuirass', self.BODY, value=180)],
+            CLOT=[self._clot('00000001', 'Shirt', self.BODY | self.LEGS, value=2),
+                  self._clot('00000002', 'Trousers', self.LEGS, value=3)])
+        outfit, carried = split_inventory([(3, 1), (1, 1), (2, 1)])
+        assert outfit == [3, 2]
+        assert [f for f, _ in carried] == [1]
+
     def test_repeated_sublist_is_not_a_cycle(self):
         """Oblivion weights an entry by naming it twice (LL2NPCStaff25 lists
         LL1NPCStaff1Normal100 twice). A visited-set shared across siblings reads

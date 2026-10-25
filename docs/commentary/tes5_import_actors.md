@@ -34,6 +34,8 @@ them does.
 - [Health is written as an OFFSET, not a pool](#health-offset)
 - [Morrowind health is absolute — the same manual-NPC rule](#morrowind-health-is-absolute)
 - [Corpses carry Starts Dead, not just 0 health](#corpses-start-dead)
+- [The outfit split: one winner per slot](#outfit-slot-claim)
+  - [An outfit never leaves a body garment in the pocket](#outfit-body-garment)
 - [Hair color: a generated CLFM per authored RGB](#hair-color)
 - [NAM5/NAM6/NAM7/NAM8 are all required](#required-nam-subrecords)
 - [Head parts: RNAM decides who can see the hair](#hdpt-valid-races)
@@ -896,6 +898,61 @@ resolved statically.
 FO3/FNV author the flag themselves on the reference, so their refs are left as
 exported. Creatures share the rule: `creature_health_offset` pins a 0 pool at
 −32768, and their refs get the same flag.
+
+## <a id="outfit-slot-claim"></a>The outfit split: one winner per slot
+
+**Code:** `tes5_import/actors/outfits.py` (`split_inventory`, `_claim`)
+
+An Oblivion NPC holds one inventory and the engine picks what to wear per
+slot; a Skyrim actor wears every entry of its outfit and carries CNTO, with
+the outfit ADDED on top of CNTO at load. The split therefore puts each
+wearable in exactly one of the two, and resolves slot contention itself:
+
+- Items holding no biped slot (weapons, ammo, torches) never contend. A
+  leveled list contends with the union of its leaves' slots: a clothing list
+  left unresolved is what put Azzan in a middle-class shirt instead of his
+  steel cuirass.
+- Slots are claimed best item first (armor, then value, then FormID), and only
+  a GUARANTEED item reserves its slots against everything below it. A chance
+  list (`LVLD.ChanceNone` > 0) often rolls nothing, so it must not evict a
+  guaranteed item sharing its slot: that eviction left about 75 % of bandits
+  bare-legged, when chance greaves (ChanceNone 75) outranked and discarded the
+  guaranteed cloth pants under them. Both are kept instead, which is how
+  vanilla bandit outfits are authored (chance armor over a guaranteed base).
+- The WHOLE slot mask is reserved, not per slot: a multi-slot garment that
+  loses one slot and wins another would still be equipped and drag the lost
+  slot back in (LL0VampireShirt lost the body to a cuirass, won the legs and
+  covered the chest again). A guaranteed item is kept only if every slot it
+  needs is free.
+- A wearable outranked for a slot stays with the actor as loot, once (a
+  duplicated CNTO line does not double the outfit entry), as in Oblivion, where
+  the item was in the inventory and simply not worn.
+
+## <a id="outfit-body-garment"></a>An outfit never leaves a body garment in the pocket
+
+**Code:** `tes5_import/actors/outfits.py` (`_claim`, `_cover_the_body`)
+
+The split hands each contested slot to one winner, best first (armor, then
+value), and a guaranteed winner closes its slots to the items below it. That
+lets a cheap piece holding ONE slot of a bigger garment push the garment out:
+trousers (value 3) win the legs of a shirt that covers them (value 2), shoes
+(value 1) win the feet of a value-0 robe that draws its own boots. The garment
+goes to CNTO, and a Skyrim actor wears its outfit, never what it carries, so
+the body shows bare (in game: Edgar Vautrine in underwear).
+
+So when no guaranteed winner covers the body (slot 32), the best guaranteed
+garment that does is moved above the guaranteed winners that blocked it and
+the claim runs again. The new claim is kept only if the garment wins and
+every piece it pushes out sits wholly inside its slots (they are carried);
+anything else keeps the first claim. A chance piece ranked above the garment
+does not block it, so chance armor stays layered over it as before; a chance
+garment guarantees no body and is never moved.
+
+Counts (all NPC_ and CREA inventories, masters indexed): Oblivion.esm 35 of
+3,396 actors change, all 35 from a bare body to a covered one (26 Mythic Dawn
+and Black Hand robes over shoes or boots, 4 shirts over trousers, a Fallen
+Knight's shirt over steel greaves); Knights.esp, DLCFrostcrag.esp and Frostcrag
+Reborn have no actor of this shape.
 
 ## <a id="hair-color"></a>Hair color: a generated CLFM per authored RGB
 
