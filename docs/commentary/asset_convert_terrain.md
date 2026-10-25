@@ -2129,10 +2129,44 @@ carry alpha layers and NO BTXT, with layer indices 0..n-1.
   16.121. That Skyrim blends by ATXT layer index is inference (our own decoder
   assumes it).
 
-Tripwires, not built: dropped layers are not merged into a kept one (0.54% of
-opacity mass, but 7,543 quadrants lose a layer peaking above 0.5; needs texture
-colours at import) -- revisit if small wrong-texture patches show in game.
 Vanilla's BTXT layer field is 0xFFFF; we write 0.
+
+### <a id="land-layer-fold"></a>A dropped layer folds into the kept one most like it
+
+**Code:** `_emit_quad`, `_drawn_coverage`, `_fold_dropped` in
+`tes5_import/record_types/world.py`; the colours in
+`tes5_import/record_types/land_colours.py`, loaded with the item index.
+
+Two neighbouring quadrants share the vertices of their common edge, and each
+draws its own layers there. A layer dropped on one side and kept on the other
+stops dead on the quadrant border: the hard, square texture edges seen along
+Cyrodiil's roads (12,486 of Tamriel's 45,981 painted quadrants hold more than
+six textures). Vanilla Skyrim stays within the shader's six slots in all but
+377 of its quadrants.
+
+- **Coverage counts every quadrant that draws a vertex**: 4 at a corner, 2 on
+  an edge, 1 inside. A layer painted across the border is drawn by both sides,
+  so it is kept on this side as well.
+- **A dropped layer folds, by max opacity, into the kept layer whose texture
+  is nearest in mean colour** (each LTEX's diffuse, read once per import from
+  the plugin's and its masters' `textures\landscape`). When the base is nearer
+  it is left to the base; when a colour is unknown the layer is dropped as
+  before. A quadrant within the cap is written as before, byte for byte.
+
+Measured over Tamriel (14,686 LAND, every vertex two quadrants share, blend =
+base then the kept layers in order; colour step = RGB distance of the blended
+mean colours; `LIVE-cg75-77-20261024/cg64/seams.py`, through `_emit_quad`):
+
+| | colour off the source by > 20 (all vertices) | edge steps > 20 | edge steps worse than the source by > 20 |
+|---|---|---|---|
+| source (no cap) | 0 | 60,059 | 0 |
+| top 5 by coverage (before) | 56,778 | 78,103 | 17,715 |
+| this rule | 18,169 | 64,732 | 4,450 |
+
+Rules measured and not taken: matching the drop across the edge (zero the
+layer on the other side too; 12,739 worse steps, and it needs a pass across
+cells); the edge weight as a tuned constant (weight 16: 2,881 worse steps but
+21,585 vertices off). Not seen in game yet (needs a re-import).
 
 ## <a id="baked-lod-sources"></a>The source game's baked LOD: tiles and height meshes
 

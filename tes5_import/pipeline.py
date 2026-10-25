@@ -991,7 +991,7 @@ def _prescan_leveled_actors(by_type: dict, ctx, writer, _step_done):
 
 
 def _prescan_outfits_hair_skin(by_type: dict, ctx, export_dir: str, writer):
-    """Load the item/outfit index, faction reactions, the hair plan, skin tones.
+    """Load the item/outfit index, land colours, faction reactions, hair, skin tones.
 
     Master exports are indexed throughout: a dependent plugin's actors
     wear their MASTER's hair and use their MASTER's races, so a
@@ -1001,6 +1001,11 @@ def _prescan_outfits_hair_skin(by_type: dict, ctx, export_dir: str, writer):
     """
     from .actors.outfits import load_item_index
     load_item_index(by_type, ctx.master_export if ctx else None)
+
+    from .record_types.land_colours import load_land_colours
+    load_land_colours(by_type, ctx.master_export if ctx else None,
+                      [assets_for(d) / 'textures' / 'landscape'
+                       for d in [export_dir] + master_export_dirs(ctx)])
 
     from .record_types.actor_common import load_faction_player_reactions
     load_faction_player_reactions(by_type, ctx.master_export if ctx else None)

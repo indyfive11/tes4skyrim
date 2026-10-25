@@ -321,3 +321,118 @@ def test_a_merged_texture_blends_at_its_first_layer():
 
     order = [struct.unpack('<IBBH', p)[0] for t, p in subs if t == b'ATXT']
     assert order == [remap_formid(0x3A00), remap_formid(0x3B00)]
+
+
+#: Vertices well inside a quadrant (rows and columns 2-14) and on its south edge (row 0, columns 2-14).
+INNER = [r * 17 + c for r in range(2, 15) for c in range(2, 15)]
+SOUTH = [c for c in range(2, 15)]
+
+
+@pytest.fixture
+def colours():
+    """Set land texture colours by texture id; cleared after the test."""
+    from tes5_import.record_types import land_colours
+    land_colours._COLOURS.clear()
+
+    def put(**by_tex):
+        for tex, rgb in by_tex.items():
+            land_colours._COLOURS[_fid(int(tex[1:], 16))] = rgb
+    yield put
+    land_colours._COLOURS.clear()
+
+
+def _six(extra):
+    """Base 0x1000, four big inner layers 0x2000-0x2003, then `extra`."""
+    big = [('ALPHA', 0, 0x2000 + i, {p: 1.0 for p in INNER[i * 30:(i + 1) * 30]}) for i in range(4)]
+    return _rec_in_file_order([('BASE', 0, 0x1000, {})] + big + extra)
+
+
+def _atxt(rec):
+    """{texture: {pos: opacity}} of the written alpha layers."""
+    out, cur = {}, None
+    for tag, payload in _subs(build_land_layers(rec)):
+        if tag == b'ATXT':
+            cur = out.setdefault(struct.unpack_from('<I', payload)[0], {})
+        elif tag == b'VTXT':
+            for k in range(0, len(payload), 8):
+                pos, _u, op = struct.unpack_from('<HHf', payload, k)
+                cur[pos] = op
+    return out
+
+
+def test_the_vertices_a_quadrant_shares():
+    """A corner is drawn by four quadrants, an edge vertex by two, the rest by one."""
+    from tes5_import.record_types.world import _quadrants_drawing
+    assert [_quadrants_drawing(p) for p in (0, 16, 272, 288)] == [4, 4, 4, 4]
+    assert [_quadrants_drawing(p) for p in (1, 17, 33, 287)] == [2, 2, 2, 2]
+    assert _quadrants_drawing(18) == 1
+
+
+def test_a_layer_painted_on_the_edge_is_kept_before_an_inner_one():
+    """Six alpha layers: of the two small ones, the one the neighbour draws too survives.
+
+    Less paint of its own (6 vertices against 8), but each edge vertex is drawn
+    on both sides; dropping it cut the paint off on the border.
+    """
+    rec = _six([('ALPHA', 0, 0x3000, {p: 1.0 for p in INNER[120:128]}),
+                ('ALPHA', 0, 0x3001, {p: 1.0 for p in SOUTH[:6]})])
+    kept = set(_atxt(rec))
+    assert remap_formid(0x3001) in kept and remap_formid(0x3000) not in kept
+
+
+def test_a_dropped_layer_folds_into_the_kept_layer_most_like_it(colours):
+    """Its paint goes, by max, to the nearest colour; nothing else changes."""
+    colours(t1000=(0, 0, 255), t2000=(200, 40, 40), t2001=(40, 200, 40), t2002=(40, 40, 200),
+            t2003=(120, 120, 120), t3000=(190, 50, 50), t3001=(10, 10, 10))
+    rec = _six([('ALPHA', 0, 0x3001, {p: 1.0 for p in INNER[120:150]}),
+                ('ALPHA', 0, 0x3000, {p: 0.6 for p in INNER[150:152]})])
+    got = _atxt(rec)
+    red = got[remap_formid(0x2000)]
+    assert remap_formid(0x3000) not in got
+    assert red[INNER[150]] == pytest.approx(0.6) and red[INNER[0]] == pytest.approx(1.0)
+    assert INNER[150] not in got[remap_formid(0x2001)]
+
+
+def test_a_dropped_layer_nearest_the_base_is_left_to_the_base(colours):
+    """When the base looks most like it, nothing is folded: the base shows there."""
+    colours(t1000=(190, 50, 50), t2000=(40, 200, 40), t2001=(40, 40, 200), t2002=(200, 200, 40),
+            t2003=(120, 120, 120), t3000=(200, 40, 40), t3001=(10, 10, 10))
+    rec = _six([('ALPHA', 0, 0x3001, {p: 1.0 for p in INNER[120:150]}),
+                ('ALPHA', 0, 0x3000, {p: 0.6 for p in INNER[150:152]})])
+    got = _atxt(rec)
+    assert all(INNER[150] not in grid for grid in got.values())
+
+
+def test_a_dropped_layer_without_a_colour_is_dropped_as_before(colours):
+    """A rule that cannot tell leaves the old behaviour."""
+    colours(t1000=(0, 0, 255), t2000=(200, 40, 40), t2001=(40, 200, 40), t2002=(40, 40, 200),
+            t2003=(120, 120, 120), t3001=(10, 10, 10))
+    rec = _six([('ALPHA', 0, 0x3001, {p: 1.0 for p in INNER[120:150]}),
+                ('ALPHA', 0, 0x3000, {p: 0.6 for p in INNER[150:152]})])
+    assert all(INNER[150] not in grid for grid in _atxt(rec).values())
+
+
+def test_a_quadrant_within_the_cap_is_written_as_before(colours):
+    """Five alpha layers or fewer: the same bytes with colours known or not."""
+    rec = _six([('ALPHA', 0, 0x3000, {p: 0.5 for p in SOUTH})])
+    plain = build_land_layers(rec)
+    colours(t1000=(0, 0, 255), t2000=(200, 40, 40), t2001=(40, 200, 40), t2002=(40, 40, 200),
+            t2003=(120, 120, 120), t3000=(190, 50, 50))
+    assert build_land_layers(rec) == plain
+
+
+def test_the_colour_index_reads_each_diffuse(tmp_path):
+    """The mean colour of an LTEX's image under the texture roots; a missing one has none."""
+    from PIL import Image
+    from tes5_import.record_types import land_colours
+    (tmp_path / 'Sub').mkdir()
+    Image.new('RGB', (8, 8), (30, 60, 90)).save(tmp_path / 'Sub' / 'Mud01.png', format='PNG')
+    (tmp_path / 'Sub' / 'Mud01.png').rename(tmp_path / 'Sub' / 'Mud01.dds')
+    by_type = {'LTEX': [{'Signature': 'LTEX', 'FormID': '00001234', 'ICON': 'sub\\mud01.dds'},
+                        {'Signature': 'LTEX', 'FormID': '00001235', 'ICON': 'gone.dds'}]}
+    try:
+        assert land_colours.load_land_colours(by_type, None, [tmp_path]) == 1
+        assert land_colours.land_colour(remap_formid(0x1234)) == pytest.approx((30, 60, 90))
+        assert land_colours.land_colour(remap_formid(0x1235)) is None
+    finally:
+        land_colours._COLOURS.clear()

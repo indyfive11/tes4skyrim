@@ -20,6 +20,7 @@ from .world_morrowind import is_tes3_source, lock_is_exit_only, tes3_refr_flags
 from .vendor_stock_morrowind import stock_owner
 from .npc_markers_morrowind import final_base, linked_ref_subrecord
 from .items import get_base_origin_shift
+from .land_colours import colour_distance
 from ..actors.starts_dead import STARTS_DEAD_FLAG, starts_dead
 from ..base.text_reader import remap_formid
 from .common import (
@@ -1171,6 +1172,56 @@ def convert_LAND(rec: dict) -> bytes:
 #: Alpha layers kept per quadrant: the landscape shader has six colour slots, base + 5.
 _MAX_ALPHA_LAYERS = 5
 
+#: Vertices per quadrant side; a VTXT position is row * 17 + column.
+_QUAD_SIDE = 17
+
+
+def _quadrants_drawing(pos: int) -> int:
+    """How many quadrants draw vertex `pos`: 4 at a corner, 2 on an edge, else 1."""
+    row, col = divmod(pos, _QUAD_SIDE)
+    edge = _QUAD_SIDE - 1
+    on_row, on_col = row in (0, edge), col in (0, edge)
+    return 4 if on_row and on_col else 2 if on_row or on_col else 1
+
+
+def _drawn_coverage(layer) -> float:
+    """A layer's opacity summed over every quadrant that draws each vertex."""
+    return sum(op * _quadrants_drawing(pos) for pos, op in layer[1].items())
+
+
+def _fold_target(layer, kept: list, base):
+    """The kept layer the dropped `layer` folds into, or None to drop it.
+
+    The nearest texture by mean colour; none when the base is nearer, or when
+    a colour is unknown.
+    See: docs/commentary/asset_convert_terrain.md#land-layer-fold
+    """
+    near = [(colour_distance(layer[0], k[0]), i) for i, k in enumerate(kept)]
+    near = [(d, i) for d, i in near if d is not None]
+    if not near:
+        return None
+    dist, idx = min(near)
+    to_base = colour_distance(layer[0], base) if base is not None else None
+    if to_base is not None and to_base < dist:
+        return None
+    return kept[idx]
+
+
+def _fold_dropped(layers: list, kept: list, base) -> list:
+    """`kept` with each dropped layer's opacity folded in, by max, where it has a target."""
+    kept = [[tex, dict(vtxt), order] for tex, vtxt, order in kept]
+    kept_ids = {e[0] for e in kept}
+    for layer in layers:
+        if layer[0] in kept_ids:
+            continue
+        target = _fold_target(layer, kept, base)
+        if target is None:
+            continue
+        for pos, op in layer[1].items():
+            if op > target[1].get(pos, 0.0):
+                target[1][pos] = op
+    return kept
+
 
 def _land_layer_vtxt(rec: dict, pfx: str) -> dict:
     """{vertex position: opacity} of one exported ALPHA layer."""
@@ -1221,16 +1272,19 @@ def _blend_order(kept: list) -> list:
 
 
 def _emit_quad(quad: int, base, layers: list) -> bytes:
-    """One quadrant's BTXT (`base` None: none) and its top alpha layers by coverage.
+    """One quadrant's BTXT (`base` None: none) and its alpha layers within the cap.
 
-    Coverage picks WHICH layers survive the cap; they are written in the
-    source blend order, so the near terrain blends as the author painted.
+    Coverage over every quadrant that draws a vertex picks WHICH layers
+    survive; a dropped one folds into the kept layer most like it. They are
+    written in the source blend order, as the author painted.
+    See: docs/commentary/asset_convert_terrain.md#land-layer-fold
     """
     subs = b''
     if base is not None:
         subs += pack_subrecord('BTXT', struct.pack('<IBBxx', base, quad, 0))
-    kept = sorted(layers, key=lambda e: sum(e[1].values()),
-                  reverse=True)[:_MAX_ALPHA_LAYERS]
+    kept = sorted(layers, key=_drawn_coverage, reverse=True)[:_MAX_ALPHA_LAYERS]
+    if len(kept) < len(layers):
+        kept = _fold_dropped(layers, kept, base)
     for idx, (tex, vtxt, _order) in enumerate(_blend_order(kept)):
         subs += pack_subrecord('ATXT', struct.pack('<IBBH', tex, quad, 0, idx))
         if vtxt:
