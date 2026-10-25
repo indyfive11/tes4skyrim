@@ -5247,6 +5247,28 @@ class TestRegionWeatherConversion:
         from tes5_import.record_types.region import convert_REGN
         assert convert_REGN(self._rec(**{'AreaCount': '0'})) is None
 
+    def test_a_border_region_is_kept_for_its_polygon(self):
+        """Oblivion's CyrodiilBorderRegion carries no weather or music, only the
+        Border Region flag (0x40, the same bit in TES5, where Skyrim.esm's own
+        BorderRegionSkyrim holds the player inside its polygon). Dropping it
+        took Cyrodiil's invisible wall away."""
+        from tes5_import.record_types.common import region_was_emitted, reset_emitted_regions
+        from tes5_import.record_types.region import convert_REGN
+        reset_emitted_regions()
+        out = convert_REGN(self._rec(**{'RecordFlags': '64', 'RegionDataCount': '0'}))
+        assert out is not None and out[:4] == b'REGN'
+        assert struct.unpack_from('<I', out, 8)[0] & 0x40
+        assert len(_find_subrecord(out, b'RPLD')) == 32
+        assert _find_subrecord(out, b'RDAT') is None
+        assert region_was_emitted(0x00001234)
+        reset_emitted_regions()
+
+    def test_a_border_region_without_an_area_emits_nothing(self):
+        """A border with no polygon bounds nothing."""
+        from tes5_import.record_types.region import convert_REGN
+        assert convert_REGN(self._rec(**{'RecordFlags': '64', 'RegionDataCount': '0',
+                                         'AreaCount': '0'})) is None
+
     def test_cell_xclr_lists_only_emitted_regions(self):
         """Region weather reaches the sky through the CELL's XCLR list —
         Skyrim.esm puts WeatherWinterhold in 30 cells' XCLR — so exterior

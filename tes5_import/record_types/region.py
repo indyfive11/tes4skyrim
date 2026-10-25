@@ -29,6 +29,9 @@ from .common import (
 _REGN_DATA_WEATHER = 3
 _REGN_DATA_SOUND = 7
 
+#: REGN record flag 0x40, Border Region in TES4 and TES5 alike: the player cannot leave its polygons.
+_REGN_BORDER_FLAG = 0x40
+
 
 #: DNAM bytes 56-227 as (offset, value): properties TES4 lacks, taking Skyrim's DefaultWater values.
 _WATR_DEFAULT_SHADER_FIELDS = (
@@ -109,22 +112,22 @@ def _regn_areas(rec: dict) -> bytes:
 
 
 def convert_REGN(rec: dict):
-    """REGN — Region, converted for its WEATHER and MUSIC entries only.
+    """REGN — Region, converted for its WEATHER and MUSIC entries and its border.
 
-    Returns packed bytes, or None when the region has no weather list, no
-    music type, or no area polygon to apply them in.  Object/grass/sound/map
-    data types drive TES4-side generators with no equivalent here.
-
-    TES5 subrecord order (wbDefinitionsTES5): EDID, RCLR, WNAM,
-    [RPLI, RPLD]*, [RDAT, RDWT|RDMO]*.
+    None when the region has no area polygon, or neither a weather list, a
+    music type nor the Border Region flag; other data types are dropped.
+    TES5 order (wbDefinitionsTES5): EDID, RCLR, WNAM, [RPLI, RPLD]*,
+    [RDAT, RDWT|RDMO]*.
 
     See: docs/commentary/tes5_import_weather.md#regn-weather-where-cyrodiils-weather
     See: docs/commentary/asset_convert_audio.md#exterior-music-comes-from-regnrdmo
+    See: docs/commentary/tes5_import_weather.md#border-region
     """
     weather_entries, music_entries = _regn_data_entries(rec)
     areas = _regn_areas(rec)
+    border = get_int(rec, 'RecordFlags') & _REGN_BORDER_FLAG
 
-    if not areas or (not weather_entries and not music_entries):
+    if not areas or not (weather_entries or music_entries or border):
         return None
 
     subs = b''

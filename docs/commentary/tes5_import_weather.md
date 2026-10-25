@@ -10,6 +10,7 @@
 - [Vanilla-substitution map (Oblivion WTHR -> vanilla Skyrim WTHR)](#vanilla-substitution-map)
 - [Sunless skies — the Oblivion realms must have no sun](#sunless-skies-oblivion-realms-must)
 - [REGN weather — where Cyrodiil's weather variety actually lives](#regn-weather-where-cyrodiils-weather)
+  - [Border regions keep the player inside](#border-region)
 - [Scripted weather (ForceWeather / SetWeather / ReleaseWeatherOverride)](#scripted-weather)
 - [Sky meshes need BSSkyShaderProperty](#sky-meshes-need-bsskyshaderproperty)
 - [Verifying](#verifying)
@@ -613,6 +614,21 @@ Cyrodiil.
   Oblivion.esm: 8,501 exterior cells carry XCLR, 0 dangling refs.
   Known limit: a master-dependent ESP's cells only keep refs to its OWN
   emitted regions, not the master's.
+
+### Border regions keep the player inside
+<a id="border-region"></a>
+
+A region with record flag `0x40` is a **Border Region** in both games (the
+same bit; the CK's "Border Region" box): the player cannot walk out of its
+polygons. Oblivion.esm has four, none with weather or music, so the rule above
+dropped them all and Cyrodiil lost its invisible wall:
+`CyrodiilBorderRegion` (Tamriel, 7 polygons, listed in 5,116 cells' XCLR),
+`BorderManiaDementia` (1,863 cells), `ParadiseBorder` (174) and
+`PalePassWorldBorderRegion` (30). Skyrim.esm has one, `BorderRegionSkyrim`
+(Tamriel, one 173-point polygon, in 5,610 cells' XCLR, plus a map-name entry).
+So `convert_REGN` also keeps a region with that flag and an area: EDID, RCLR,
+WNAM and the polygons, the flag passed through, and the cells' XCLR keeps it
+like any emitted region. A border with no polygon still emits nothing.
 
 ## Scripted weather (ForceWeather / SetWeather / ReleaseWeatherOverride)
 <a id="scripted-weather"></a>
