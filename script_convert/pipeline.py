@@ -699,7 +699,7 @@ def build_quest_script_vars(by_type: dict) -> dict:
 
 
 def _info_begin_fragment(body_lines: list, seq_gate: str,
-                         length: float) -> list:
+                         length: float, guard: bool = False) -> list:
     """Fragment_1 (OnBegin): report the line, then hand the turn over.
 
     The handoff belongs here rather than in OnEnd because TES4's synchronous
@@ -719,11 +719,40 @@ def _info_begin_fragment(body_lines: list, seq_gate: str,
         out.append(f"  If {seq_gate}  ; still this line's turn")
         out.extend('  ' + b for b in handoff)
         out.append('  EndIf')
+    if guard:
+        # LAST: the guard waits (latent) for the line to be over, so nothing
+        # of the begin's own work may sit behind it.
+        out += ['  TES4_EndToken += 1',
+                '  TES4_GuardEnd(akSpeakerRef, TES4_EndToken)']
     return out + ['EndFunction', '']
 
 
+def _info_end_guard(length: float) -> list:
+    """The End-guard: run a line's OnEnd result when the engine never ran it.
+
+    Skyrim runs an INFO's End fragment only when the line plays out; a player
+    who exits the menu (or clicks through a goodbye line) mid-line drops it,
+    and with it the TES4 result -- the tutorial's `setstage charactergen 43`
+    soft-lock of 2026-10-18 (Begin traced, End never). OnBegin arms this guard;
+    it waits until the line is over (menu closed / speaker silent) and, if
+    OnEnd has not marked the token done, calls Fragment_0 itself. OnEnd always
+    runs its own body, so a line two speakers share loses nothing.
+    See: docs/commentary/script_convert.md#end-guard
+    """
+    return ['Int TES4_EndToken = 0',
+            'Int TES4_EndDone = 0',
+            '',
+            'Function TES4_GuardEnd(ObjectReference akSpeakerRef, Int aiToken)',
+            f'  TES4Polyfill.AwaitLineOver(akSpeakerRef, {length:g})',
+            '  If TES4_EndDone < aiToken',
+            '    TES4Polyfill.EndGuardTrace(akSpeakerRef, Self.GetFormID())',
+            '    Fragment_0(akSpeakerRef)',
+            '  EndIf',
+            'EndFunction', '']
+
+
 def _info_end_fragment(body_lines: list, seq_gate: str, reveals,
-                       service_kind, length: float) -> list:
+                       service_kind, length: float, guard: bool = False) -> list:
     """Fragment_0 (OnEnd): unlocks, the TES4 result, then LineEnded LAST.
 
     A poll waiting on this speaker must see the result's state writes before
@@ -733,6 +762,8 @@ def _info_end_fragment(body_lines: list, seq_gate: str, reveals,
     See: docs/commentary/script_convert.md#sequenced-fragment-surgery
     """
     out = ['Function Fragment_0(ObjectReference akSpeakerRef)']
+    if guard:
+        out.append('  TES4_EndDone = TES4_EndToken  ; this line\'s End ran (see TES4_GuardEnd)')
     out += [f'  {gname}.SetValue(1)' for gname in reveals]
     body_lines = state_writes_before_setstage(body_lines)
     counter_step, rest_body = split_counter_step(body_lines, seq_gate)
@@ -835,9 +866,15 @@ def _info_batch(records: list, output_dir: str, xref: CrossRefGraph,
             if declared:
                 out_lines.append('')
 
-            out_lines += _info_begin_fragment(body_lines, seq_gate, length)
+            # A result (or a topic unlock) lost with a dropped OnEnd is a
+            # soft-lock; a service-menu line is left alone (reopening a shop
+            # after the menu closed would be worse than the lost click).
+            guard = bool(body_lines or reveals) and not service_kind
+            out_lines += _info_begin_fragment(body_lines, seq_gate, length, guard)
             out_lines += _info_end_fragment(body_lines, seq_gate, reveals,
-                                            service_kind, length)
+                                            service_kind, length, guard)
+            if guard:
+                out_lines += _info_end_guard(length)
 
             # GetInCell prefix-family helpers the fragment body calls by name.
             # Only a scripted INFO has a converter (and therefore a body).

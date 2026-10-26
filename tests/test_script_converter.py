@@ -3249,6 +3249,57 @@ class TestInfoFragmentEmission:
         assert end.index('speaker = 3') < end.index('TES4Polyfill.LineEnded')
         assert 'Fragment_1' in psc
 
+    def test_a_result_line_arms_the_end_guard(self, tmp_path):
+        """OnEnd is dropped when the player exits mid-line (10-18: the
+        tutorial's 'which sign marked your birth?' lost `setstage
+        charactergen 43`). OnBegin arms a guard LAST; OnEnd marks its token
+        done FIRST; the guard calls Fragment_0 only when OnEnd never ran."""
+        psc = self._emit(tmp_path, {
+            'FormID': '0003246F',
+            'ResultScript': 'setstage charactergen 43',
+        }, {'info:0003246F': 17.84})
+        begin = psc.split('Function Fragment_1', 1)[1].split('EndFunction')[0]
+        end = psc.split('Function Fragment_0', 1)[1].split('EndFunction')[0]
+        guard = psc.split('Function TES4_GuardEnd', 1)[1].split('EndFunction')[0]
+        assert begin.rstrip().endswith('TES4_GuardEnd(akSpeakerRef, TES4_EndToken)')
+        assert begin.index('LineBegan') < begin.index('TES4_EndToken += 1')
+        assert end.split('\n', 1)[1].lstrip().startswith('TES4_EndDone = TES4_EndToken')
+        assert 'TES4Polyfill.AwaitLineOver(akSpeakerRef, 17.84)' in guard
+        assert guard.index('If TES4_EndDone < aiToken') < guard.index('Fragment_0(akSpeakerRef)')
+        assert 'Int TES4_EndToken = 0' in psc and 'Int TES4_EndDone = 0' in psc
+
+    def test_a_line_without_a_result_has_no_guard(self, tmp_path):
+        psc = self._emit(tmp_path, {'FormID': '00032469'}, {'info:00032469': 12.62})
+        assert 'TES4_GuardEnd' not in psc and 'TES4_EndDone' not in psc
+
+    def test_a_service_menu_line_has_no_guard(self, tmp_path):
+        """Reopening a shop after the menu closed would be worse than the lost
+        click: a service line keeps the plain OnEnd."""
+        from script_convert import pipeline
+        rec = {'FormID': '00000ABD', 'ParentDIAL': '000000AB',
+               'ResultScript': 'set characterGen.speaker to 3'}
+        stats = pipeline._new_stats()
+        from script_convert.cross_ref import CrossRefGraph
+        from script_convert.converter import ScriptConverter
+        saved = ScriptConverter.say_topics
+        ScriptConverter.say_topics = set(saved) | {'000000AB'}
+        try:
+            pipeline._info_batch([rec], str(tmp_path), CrossRefGraph(), stats,
+                                 service_topics={'000000AB': next(iter(pipeline.SERVICE_MENU_CALL))})
+        finally:
+            ScriptConverter.say_topics = saved
+        assert not stats['errors'], stats['errors']
+        psc = (tmp_path / 'TES4_TIF__00000ABD.psc').read_text()
+        assert 'TES4_GuardEnd' not in psc
+
+    def test_the_polyfill_waits_for_the_line_to_be_over(self):
+        src = (_STATIC_DIR / 'TES4Polyfill.psc').read_text(encoding='utf-8') \
+            if '_STATIC_DIR' in globals() else open(
+                'script_convert/static_scripts/TES4Polyfill.psc', encoding='utf-8').read()
+        await_ = src[src.index('Function AwaitLineOver('):].split('EndFunction')[0]
+        assert 'IsInDialogueWithPlayer()' in await_ and '_IsSpeaking(a)' in await_
+        assert 'Function EndGuardTrace(' in src
+
     def test_fragment_never_writes_a_timer(self, tmp_path):
         """Fragments carry the speaker only; the conversation timer belongs to
         the calling script (TES4Polyfill.SayLine returns its value)."""

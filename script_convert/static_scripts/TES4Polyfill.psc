@@ -1861,6 +1861,47 @@ Bool Function _OtherLineInProgress() Global
   Return left > 0.0 && left < 120.0
 EndFunction
 
+; End-guard wait (pipeline._info_end_guard): returns once a line is OVER, so
+; its OnBegin can tell whether the engine dropped its OnEnd.  A line spoken in
+; the player's dialogue menu is over when the menu closes (exit or goodbye); any
+; other line when its speaker is no longer speaking -- the Variable09 flag
+; LineEnded clears, bounded by LineBegan's own Variable10 deadline, so a lost
+; End still ends the wait.  The closing grace lets a LATE End run first.
+Function AwaitLineOver(ObjectReference akSpeakerRef, Float afLength) Global
+  If akSpeakerRef == None
+    Return
+  EndIf
+  Actor a = akSpeakerRef as Actor
+  Bool inMenu = akSpeakerRef.IsInDialogueWithPlayer()
+  Float cap = afLength
+  If cap < 10.0
+    cap = 10.0
+  EndIf
+  cap += 90.0
+  Float waited = 0.0
+  If a == None
+    ; Talking activator: no speaking flag of its own -- wait out the line.
+    Utility.Wait(cap - 90.0)
+  ElseIf inMenu
+    While waited < cap && akSpeakerRef.IsInDialogueWithPlayer()
+      Utility.Wait(0.5)
+      waited += 0.5
+    EndWhile
+  Else
+    While waited < cap && _IsSpeaking(a)
+      Utility.Wait(0.5)
+      waited += 0.5
+    EndWhile
+  EndIf
+  Utility.Wait(1.5)
+EndFunction
+
+; The End-guard ran a line's OnEnd result itself: always traced (rare, and the
+; one record that says a soft-lock was avoided).
+Function EndGuardTrace(ObjectReference akSpeakerRef, Int aiInfo) Global
+  Debug.Trace("TES4EndGuard ran a lost OnEnd: speaker=" + akSpeakerRef + " info=" + aiInfo)
+EndFunction
+
 Bool Function _IsSpeaking(Actor a) Global
   If a.GetActorValue("Variable09") > 0.0 && Utility.GetCurrentGameTime() < a.GetActorValue("Variable10")
     Return True

@@ -2063,6 +2063,32 @@ A script that reads either on its OWN reference now takes its pose once:
   body is routinely the only thing that ever calls `Enable()` on that same
   reference. See "The self-enable deadlock" below.
 
+### <a id="end-guard"></a>The End-guard — a dropped OnEnd still runs its result (2026-10-18)
+
+Skyrim runs a TopicInfo's End fragment only when the line PLAYS OUT. A player
+who exits the dialogue menu mid-line, or clicks through a goodbye line, drops
+it, and with it the TES4 result script the converter put there. Measured in
+the tutorial: the Emperor's "...which sign marked your birth?" (INFO 0003246F,
+three responses, goodbye, result `setstage charactergen 43`) traced its Begin
+and never its End; the stage stayed 42 and the conversation poll re-Said a
+line nothing qualified for (TES4Say SAY → DROP every 12 s) — a soft-lock.
+
+Every INFO whose OnEnd carries a result (or a topic unlock) gets a guard:
+
+- OnBegin, LAST, bumps `TES4_EndToken` and calls `TES4_GuardEnd`, which waits
+  in `TES4Polyfill.AwaitLineOver` until the line is over: a menu line when the
+  menu closes, any other line when its speaker stops speaking (the Variable09
+  flag `LineEnded` clears, bounded by `LineBegan`'s Variable10 deadline), plus
+  a 1.5 s grace so a late End runs first.
+- OnEnd, FIRST, marks `TES4_EndDone = TES4_EndToken`, then runs as before. It
+  always runs its own body, so a line two speakers share loses nothing.
+- If the token is still not done, the guard calls `Fragment_0` itself (traced:
+  `TES4EndGuard ran a lost OnEnd`). Its `LineEnded` also frees the speaker.
+
+A service-menu line (barter, training, …) gets no guard: reopening a shop after
+the menu closed would be worse than the lost click. The change is script-only —
+the INFO VMADs already bind both fragments — so a scripts-only rebuild applies it.
+
 ### <a id="polled-conversations"></a>Say() timers — `TES4Polyfill.SayLine` (2026-08-16)
 
 **The single design fact.** TES4's `Say`/`SayTo` were **synchronous**: the
