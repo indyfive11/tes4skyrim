@@ -1174,6 +1174,16 @@ End
         # inside the helper) -- a bare EvaluatePackage was proven insufficient.
         assert 'TES4Polyfill.TES4_Unstick(tes4_actor0)' in body
 
+    def test_unstick_leaves_the_dead_alone(self):
+        """The stage seam re-paths every quest actor on every stage, corpses
+        included; a SetRestrained toggle on a falling corpse freezes its
+        ragdoll half in the floor (the CharacterGen Emperor and Glenroy)."""
+        src = open('script_convert/static_scripts/TES4Polyfill.psc',
+                   encoding='utf-8').read()
+        body = src[src.index('Function TES4_Unstick('):].split('EndFunction')[0]
+        guard = body.index('!a.IsDead()')
+        assert guard < body.index('SetRestrained(true)')
+
     def test_forcegreet_coverage_injects_stage_gated_owner(self):
         """PIECE 1: a stage-gated force-greet OWNER tied to the quest only by a
         package condition (incl. a scriptless one) is injected as an Actor

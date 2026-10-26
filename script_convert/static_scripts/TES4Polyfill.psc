@@ -1327,8 +1327,11 @@ EndFunction
 ; reset, and what Oblivion's SetRestrained suspend/resume did on release.  Guarded
 ; on load; a no-op for an unloaded/None ref.  Used by assemble._reeval_actors (the
 ; stage-change seam every converted SetStage flows through).
+; Never on the dead: restraining a falling corpse freezes its ragdoll where it is
+; (CharacterGen: the Emperor and Glenroy left hanging half in the floor by the
+; stage sets that follow their deaths).
 Function TES4_Unstick(Actor a) Global
-  If a && a.Is3DLoaded()
+  If a && a.Is3DLoaded() && !a.IsDead()
     a.SetRestrained(true)
     a.SetRestrained(false)
     a.EvaluatePackage()
