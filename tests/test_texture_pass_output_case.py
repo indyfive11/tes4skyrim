@@ -67,3 +67,76 @@ def test_a_forward_slash_path_is_split_too():
     """A shader path written with `/` gets the same lowercase top folder."""
     out = nif_converter._texture_out_path(os.sep.join(['', 'o', '']), 'Textures/tes4/a_flip.dds')
     assert out == os.sep.join(['', 'o', 'textures', 'tes4', 'a_flip.dds'])
+
+
+def test_the_parallax_audit_finds_a_map_in_lowercase_textures(tmp_path):
+    """`parallax_check verify` reads a `Textures\\` slot-3 path from `textures/`."""
+    from tools.audit import parallax_check
+    _touch('', str(tmp_path / 'textures' / 'tes4' / 'rocks' / 'stone_p.dds'))
+    got = parallax_check._height_map_file(tmp_path, 'Textures\\tes4\\rocks\\stone_p.dds')
+    assert got == tmp_path / 'textures' / 'tes4' / 'rocks' / 'stone_p.dds'
+
+
+def test_the_parallax_audit_still_reads_an_older_capitalised_tree(tmp_path):
+    """A tree an older build wrote under `Textures/` is still found."""
+    from tools.audit import parallax_check
+    _touch('', str(tmp_path / 'Textures' / 'tes4' / 'stone_p.dds'))
+    got = parallax_check._height_map_file(tmp_path, 'Textures\\tes4\\stone_p.dds')
+    assert got == tmp_path / 'Textures' / 'tes4' / 'stone_p.dds'
+
+
+def test_the_parallax_audit_reports_a_missing_map(tmp_path):
+    """A map in no spelling comes back as joined, so the check calls it missing."""
+    from tools.audit import parallax_check
+    got = parallax_check._height_map_file(tmp_path, 'Textures\\tes4\\stone_p.dds')
+    assert parallax_check._check_height_dds(got) == 'missing'
+
+
+def test_the_parallax_regen_looks_in_lowercase_textures(tmp_path, capsys, monkeypatch):
+    """`parallax_check regen` lists the maps under the `textures/` the passes write."""
+    from tools.audit import parallax_check
+    monkeypatch.setattr(parallax_check, 'Pool', _SerialPool)
+    _touch('', str(tmp_path / 'Test.esm' / 'textures' / 'tes4' / 'stone_p.dds'))
+    rc = parallax_check.regen('Test.esm', str(tmp_path), 1.0, None, None, None, workers=1)
+    assert rc == 2
+    assert 'MISSING SOURCE for tes4/stone_p.dds' in capsys.readouterr().out
+
+
+def test_the_parallax_regen_names_the_lowercase_folder_when_none_match(tmp_path, capsys):
+    """With no map matching `only`, regen names the `textures/` folder it searched."""
+    from tools.audit import parallax_check
+    _touch('', str(tmp_path / 'Test.esm' / 'textures' / 'tes4' / 'stone_p.dds'))
+    rc = parallax_check.regen('Test.esm', str(tmp_path), 1.0, None, None, 'no-such-map')
+    assert rc == 1
+    assert capsys.readouterr().out.startswith(
+        'no height maps under ' + str(tmp_path / 'Test.esm' / 'textures'))
+
+
+class _SerialPool:
+    """`multiprocessing.Pool` stand-in that maps in this process."""
+
+    def __init__(self, *_args, **_kwargs):
+        """Takes the worker count and ignores it."""
+
+    def __enter__(self):
+        """The pool itself."""
+        return self
+
+    def __exit__(self, *_exc):
+        """Nothing to shut down."""
+        return False
+
+    def imap_unordered(self, fn, items, _chunksize=1):
+        """`fn` over `items`, in order."""
+        return map(fn, items)
+
+
+def test_the_parallax_regen_also_reads_an_older_capitalised_folder(tmp_path, capsys, monkeypatch):
+    """With `textures/` and an older `Textures/` both present, regen sees the old map."""
+    from tools.audit import parallax_check
+    monkeypatch.setattr(parallax_check, 'Pool', _SerialPool)
+    _touch('', str(tmp_path / 'Test.esm' / 'textures' / 'tes4' / 'stone.dds'))
+    _touch('', str(tmp_path / 'Test.esm' / 'Textures' / 'tes4' / 'stone_p.dds'))
+    rc = parallax_check.regen('Test.esm', str(tmp_path), 1.0, None, None, None, workers=1)
+    assert rc == 2
+    assert 'MISSING SOURCE for tes4/stone_p.dds' in capsys.readouterr().out
